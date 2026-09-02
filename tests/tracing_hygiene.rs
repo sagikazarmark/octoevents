@@ -9,7 +9,7 @@
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use http::Request;
 use http_body_util::Full;
 use octoevents::{Secret, Verifier, WebhookReceiverBuilder};
@@ -95,7 +95,14 @@ fn spans_record_routing_metadata_but_never_the_signature_or_secret() {
 }
 
 fn signature(secret: &[u8], body: &[u8]) -> String {
+    use std::fmt::Write as _;
+
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).unwrap();
     mac.update(body);
-    format!("sha256={:x}", mac.finalize().into_bytes())
+    let tag = mac.finalize().into_bytes();
+    let mut out = String::from("sha256=");
+    for byte in tag {
+        write!(out, "{byte:02x}").unwrap();
+    }
+    out
 }

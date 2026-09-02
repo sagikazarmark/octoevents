@@ -3,7 +3,7 @@
 #![cfg(feature = "octocrab")]
 
 use bytes::Bytes;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use octoevents::{Envelope, HeaderView, Secret, Verifier};
 use sha2::Sha256;
 
@@ -90,7 +90,14 @@ fn signed_envelope(body: &'static [u8], event: &str) -> Envelope {
 }
 
 fn signature(secret: &[u8], body: &[u8]) -> String {
+    use std::fmt::Write as _;
+
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).unwrap();
     mac.update(body);
-    format!("sha256={:x}", mac.finalize().into_bytes())
+    let tag = mac.finalize().into_bytes();
+    let mut out = String::from("sha256=");
+    for byte in tag {
+        write!(out, "{byte:02x}").unwrap();
+    }
+    out
 }
