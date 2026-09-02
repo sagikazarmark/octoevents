@@ -1,0 +1,6 @@
+name = "octoevents-worker-example"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-08-26"
+
+[build]
+command = "worker-build --release"
