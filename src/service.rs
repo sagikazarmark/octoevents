@@ -298,7 +298,7 @@ mod tests {
     };
 
     use bytes::Bytes;
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use http::{Request, StatusCode};
     use http_body::Body as _;
     use http_body_util::Full;
@@ -320,9 +320,16 @@ mod tests {
     }
 
     fn signature(secret: &[u8], body: &[u8]) -> String {
+        use std::fmt::Write as _;
+
         let mut mac = Hmac::<Sha256>::new_from_slice(secret).unwrap();
         mac.update(body);
-        format!("sha256={:x}", mac.finalize().into_bytes())
+        let tag = mac.finalize().into_bytes();
+        let mut out = String::from("sha256=");
+        for byte in tag {
+            write!(out, "{byte:02x}").unwrap();
+        }
+        out
     }
 
     #[tokio::test]
