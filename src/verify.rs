@@ -5,7 +5,7 @@ use sha2::Sha256;
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 
-use crate::Secret;
+use crate::{Secret, trace};
 
 const SHA256_PREFIX: &str = "sha256=";
 const SHA256_BYTES: usize = 32;
@@ -120,7 +120,7 @@ impl Verifier {
         let received = match decode_signature(signature_header) {
             Ok(received) => received,
             Err(error) => {
-                record_outcome("malformed");
+                trace::record("outcome", "malformed");
                 return Err(error);
             }
         };
@@ -136,10 +136,10 @@ impl Verifier {
         }
 
         if matched == 1 {
-            record_outcome("verified");
+            trace::record("outcome", "verified");
             Ok(())
         } else {
-            record_outcome("mismatch");
+            trace::record("outcome", "mismatch");
             Err(VerifyError::Mismatch)
         }
     }
@@ -152,12 +152,6 @@ fn require_non_empty(secret: Secret) -> Secret {
         "webhook secret must not be empty"
     );
     secret
-}
-
-fn record_outcome(outcome: &'static str) {
-    #[cfg(feature = "tracing")]
-    tracing::Span::current().record("outcome", outcome);
-    let _ = outcome;
 }
 
 fn decode_signature(value: &str) -> Result<[u8; SHA256_BYTES], VerifyError> {

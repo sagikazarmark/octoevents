@@ -111,7 +111,6 @@ where
 ///
 /// [`WebhookEvent`]: octocrab::models::webhook_events::WebhookEvent
 #[cfg(feature = "octocrab")]
-#[cfg_attr(docsrs, doc(cfg(feature = "octocrab")))]
 pub trait EventHandler {
     /// The error this handler reports for a failed delivery.
     type Error;
@@ -139,7 +138,6 @@ pub trait EventHandler {
 }
 
 #[cfg(feature = "octocrab")]
-#[cfg_attr(docsrs, doc(cfg(feature = "octocrab")))]
 impl<F, Fut, E> EventHandler for F
 where
     F: Fn(EventMeta, WebhookEvent) -> Fut,
@@ -156,13 +154,11 @@ where
 /// An [`EventHandler`] adapted to the [`WebhookHandler`] the receiver
 /// accepts; built by [`EventHandler::into_webhook_handler`].
 #[cfg(feature = "octocrab")]
-#[cfg_attr(docsrs, doc(cfg(feature = "octocrab")))]
 pub struct EventAdapter<H> {
     handler: H,
 }
 
 #[cfg(feature = "octocrab")]
-#[cfg_attr(docsrs, doc(cfg(feature = "octocrab")))]
 impl<H> WebhookHandler for EventAdapter<H>
 where
     H: EventHandler + MaybeSync,
@@ -289,21 +285,14 @@ where
     }
 }
 
-// The decode steps shared by the adapters (receiver path) and the dispatcher's
-// routes. Crate-private: decoding is a step inside handling, not a consumer
-// operation, and `Envelope::parse` already covers ad-hoc views.
+// The payload decode step shared by `PayloadAdapter` (receiver path) and the
+// dispatcher's payload routes. Crate-private: it trusts the caller to have
+// checked the kind, and `Envelope::parse` already covers ad-hoc views.
 impl Envelope {
     /// Decodes the payload as `P` without checking the kind; callers that
     /// have not already routed by kind check it first.
     pub(crate) fn decode_payload<P: Payload>(&self) -> Result<P, DecodeError> {
         serde_json::from_slice(&self.raw).map_err(DecodeError::Json)
-    }
-
-    /// Decodes the payload as octocrab's `WebhookEvent` for the envelope's
-    /// kind.
-    #[cfg(feature = "octocrab")]
-    pub(crate) fn decode_event(&self) -> Result<WebhookEvent, DecodeError> {
-        self.parse_typed().map_err(DecodeError::Json)
     }
 }
 

@@ -61,7 +61,7 @@ fn signed_real_fixture_corpus_is_routable_and_typed() {
             fixture.action
         );
         assert!(
-            envelope.parse_typed().is_ok(),
+            envelope.decode_event().is_ok(),
             "event: {} should be represented by octocrab",
             fixture.event,
         );
@@ -73,7 +73,7 @@ fn signed_unrepresentable_json_keeps_the_raw_body() {
     let body = include_bytes!("fixtures/unrepresentable.json");
     let envelope = signed_envelope(body, "pull_request");
 
-    assert!(envelope.parse_typed().is_err());
+    assert!(envelope.decode_event().is_err());
     assert_eq!(envelope.raw, bytes::Bytes::from_static(body));
 }
 

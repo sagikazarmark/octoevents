@@ -33,7 +33,6 @@ use crate::{Action, EventKind};
 /// operand's type, so `(kind, action) | (kind, action)` could never work, and
 /// an operator that works depending on operand order is worse than none.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(docsrs, doc(cfg(feature = "octocrab")))]
 pub struct EventMatcher {
     slots: Vec<(EventKind, Option<Action>)>,
 }

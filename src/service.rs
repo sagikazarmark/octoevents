@@ -1,8 +1,6 @@
 #[cfg(feature = "tower")]
 use std::{
     convert::Infallible,
-    future::Future,
-    pin::Pin,
     task::{Context, Poll},
 };
 use std::{fmt, sync::Arc};
@@ -14,15 +12,14 @@ use http_body_util::{BodyExt as _, Empty};
 #[cfg(feature = "tower")]
 use tower_service::Service;
 
+#[cfg(feature = "tower")]
+use crate::runtime::BoxFuture;
 use crate::{
     DEFAULT_BODY_LIMIT, Envelope, EventKind, HeaderView, MaybeSend, MaybeSync, ReceiveError,
-    ResponseStatus, Verifier, WebhookHandler,
+    ResponseStatus, Verifier, WebhookHandler, trace,
 };
 
 type ServiceResponse = Response<Empty<Bytes>>;
-#[cfg(feature = "tower")]
-type ServiceFuture =
-    Pin<Box<dyn Future<Output = Result<ServiceResponse, Infallible>> + Send + 'static>>;
 
 /// Builds a [`WebhookReceiver`].
 #[derive(Debug, Clone)]
@@ -172,7 +169,7 @@ where
         // the headers alone, so unsigned traffic never occupies `body_limit`
         // bytes of memory. `Envelope::from_signed` repeats the check for
         // transports that construct envelopes directly.
-        if let Some(error) = headers.signature_failure() {
+        if let Err(error) = headers.require_signature() {
             return record_outcome(ResponseStatus::for_receive_error(&error.into()));
         }
 
@@ -246,15 +243,14 @@ where
 /// # let _ = app;
 /// ```
 #[cfg(feature = "tower")]
-#[cfg_attr(docsrs, doc(cfg(feature = "tower")))]
 impl<H, B> Service<Request<B>> for WebhookReceiver<H>
 where
-    H: WebhookHandler + Send + Sync + 'static,
-    B: Body<Data = Bytes> + Send + Unpin + 'static,
+    H: WebhookHandler + MaybeSend + MaybeSync + 'static,
+    B: Body<Data = Bytes> + MaybeSend + Unpin + 'static,
 {
     type Response = ServiceResponse;
     type Error = Infallible;
-    type Future = ServiceFuture;
+    type Future = BoxFuture<Result<ServiceResponse, Infallible>>;
 
     fn poll_ready(&mut self, _context: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
@@ -280,23 +276,17 @@ fn body_too_large(limit: usize) -> ResponseStatus {
     ResponseStatus::for_receive_error(&ReceiveError::BodyTooLarge { limit })
 }
 
-#[cfg(feature = "tracing")]
 fn record_headers(headers: &HeaderView<'_>) {
-    let span = tracing::Span::current();
-    if let Some(delivery_id) = headers.recorded_delivery_id() {
-        span.record("delivery_id", delivery_id);
+    if let Some(delivery_id) = headers.delivery_id.as_deref() {
+        trace::record("delivery_id", delivery_id);
     }
-    if let Some(event) = headers.recorded_event_name() {
-        span.record("event", event);
+    if let Some(event) = headers.event_name.as_deref() {
+        trace::record("event", event);
     }
 }
 
-#[cfg(not(feature = "tracing"))]
-fn record_headers(_headers: &HeaderView<'_>) {}
-
 fn record_outcome(status: ResponseStatus) -> ResponseStatus {
-    #[cfg(feature = "tracing")]
-    tracing::Span::current().record("outcome", status.as_u16());
+    trace::record("outcome", status.as_u16());
     status
 }
 

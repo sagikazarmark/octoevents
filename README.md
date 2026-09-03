@@ -11,10 +11,10 @@
 
 | Feature | Default | Provides |
 | --- | --- | --- |
-| `http` | yes | `WebhookReceiver`, its builder, and `http::HeaderMap` envelope construction |
-| `octocrab` | no | `EventHandler` over octocrab's decoded `WebhookEvent`, `Payload` impls for octocrab's per-kind payload structs, `Envelope::parse_typed`, and the `Dispatcher` |
+| `http` | yes | `WebhookReceiver` and its builder, `Envelope::from_signed_parts` and `HeaderView` construction from an `http::HeaderMap`, and `ResponseStatus` conversion into `http::StatusCode` |
+| `octocrab` | no | `EventHandler` over octocrab's decoded `WebhookEvent`, `Payload` impls for octocrab's per-kind payload structs, `Envelope::decode_event`, and the `Dispatcher` |
 | `tower` | no | `tower_service::Service` impl for `WebhookReceiver` |
-| `tracing` | no | receive and dispatch spans without sensitive values |
+| `tracing` | no | verify, receive, and dispatch spans without sensitive values |
 
 Enabling `octocrab` makes octocrab's pre-1.0 version part of this crate's
 public API; the core (envelope, verification, receiver, `WebhookHandler`,

@@ -1,26 +1,25 @@
-use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
+use std::{collections::HashMap, future::Future, sync::Arc};
 
 use octocrab::models::webhook_events::WebhookEvent;
 
 use crate::{
     Action, DecodeError, Envelope, EventHandler, EventKind, EventMatcher, EventMeta, MaybeSend,
-    MaybeSync, Payload, PayloadHandler, WebhookHandler,
+    MaybeSync, Payload, PayloadHandler, WebhookHandler, runtime::BoxFuture, trace,
 };
 
+// Erased handlers. A trait object admits only one non-auto trait, so these
+// cannot be written as `dyn Fn(..) + MaybeSend + MaybeSync` and carry the
+// platform split by hand; see `runtime` for the rationale.
 #[cfg(not(target_arch = "wasm32"))]
-type BoxFuture<E> = Pin<Box<dyn Future<Output = Result<(), E>> + Send + 'static>>;
+type EventFn<E> =
+    Arc<dyn Fn(EventMeta, WebhookEvent) -> BoxFuture<Result<(), E>> + Send + Sync + 'static>;
 #[cfg(target_arch = "wasm32")]
-type BoxFuture<E> = Pin<Box<dyn Future<Output = Result<(), E>> + 'static>>;
+type EventFn<E> = Arc<dyn Fn(EventMeta, WebhookEvent) -> BoxFuture<Result<(), E>> + 'static>;
 
 #[cfg(not(target_arch = "wasm32"))]
-type EventFn<E> = Arc<dyn Fn(EventMeta, WebhookEvent) -> BoxFuture<E> + Send + Sync + 'static>;
+type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + Send + Sync + 'static>;
 #[cfg(target_arch = "wasm32")]
-type EventFn<E> = Arc<dyn Fn(EventMeta, WebhookEvent) -> BoxFuture<E> + 'static>;
-
-#[cfg(not(target_arch = "wasm32"))]
-type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<E> + Send + Sync + 'static>;
-#[cfg(target_arch = "wasm32")]
-type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<E> + 'static>;
+type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>;
 
 /// A handler that routes verified envelopes to typed handlers by kind and
 /// action.
@@ -80,7 +79,6 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<E> + 'static>;
 /// Enabling the `octocrab` feature makes octocrab's pre-1.0 version part of
 /// this crate's public API, and the dispatcher is built on it: an octocrab
 /// major bump is a breaking change for this type.
-#[cfg_attr(docsrs, doc(cfg(feature = "octocrab")))]
 pub struct Dispatcher<E> {
     routes: Arc<Routes<E>>,
 }
@@ -127,7 +125,7 @@ where
         in_flight
             .run_chain(&self.routes.always)
             .await
-            .inspect_err(|_| record_outcome("handler_error"))?;
+            .inspect_err(|_| trace::record("outcome", "handler_error"))?;
 
         // Routes are keyed by kind first so a delivery is looked up entirely by
         // reference: no EventKind or Action is cloned to build a lookup key.
@@ -149,25 +147,27 @@ where
             in_flight
                 .run_chain(chain)
                 .await
-                .inspect_err(|_| record_outcome("handler_error"))?;
+                .inspect_err(|_| trace::record("outcome", "handler_error"))?;
         }
 
         if matched {
-            record_outcome("ok");
+            trace::record("outcome", "ok");
             return Ok(());
         }
 
         let result = in_flight.run_chain(&self.routes.fallback).await;
-        record_outcome(if result.is_ok() {
-            "fallback_ok"
-        } else {
-            "fallback_error"
-        });
+        trace::record(
+            "outcome",
+            if result.is_ok() {
+                "fallback_ok"
+            } else {
+                "fallback_error"
+            },
+        );
         result
     }
 }
 
-#[cfg_attr(docsrs, doc(cfg(feature = "octocrab")))]
 impl<E> WebhookHandler for Dispatcher<E>
 where
     E: From<DecodeError> + 'static,
@@ -220,7 +220,6 @@ impl InFlight<'_> {
 }
 
 /// A builder for [`Dispatcher`].
-#[cfg_attr(docsrs, doc(cfg(feature = "octocrab")))]
 pub struct DispatcherBuilder<E> {
     routes: Routes<E>,
 }
@@ -354,12 +353,6 @@ where
                 .map_err(E::from)
         })
     }))
-}
-
-fn record_outcome(outcome: &'static str) {
-    #[cfg(feature = "tracing")]
-    tracing::Span::current().record("outcome", outcome);
-    let _ = outcome;
 }
 
 /// A registered handler, erased to its error type but keeping its flavour so

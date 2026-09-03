@@ -171,8 +171,11 @@ impl FromStr for TargetType {
 #[derive(Clone, Default)]
 pub struct HeaderView<'a> {
     signature: Option<Cow<'a, str>>,
-    delivery_id: Option<Cow<'a, str>>,
-    event_name: Option<Cow<'a, str>>,
+    // Crate-visible so the receiver can record them on its span before
+    // verification; the signature stays private and is reached only through
+    // `require_signature`, so it cannot be recorded by accident.
+    pub(crate) delivery_id: Option<Cow<'a, str>>,
+    pub(crate) event_name: Option<Cow<'a, str>>,
     content_type: Option<Cow<'a, str>>,
     target_type: Option<Cow<'a, str>>,
     target_id: Option<Cow<'a, str>>,
@@ -260,33 +263,23 @@ impl<'a> HeaderView<'a> {
         self
     }
 
-    /// The signature-header failure `Envelope::from_signed` would report,
-    /// decidable from the headers alone. The receiver uses it to refuse an
-    /// unsigned request before reading the body.
-    #[cfg(feature = "http")]
-    pub(crate) fn signature_failure(&self) -> Option<VerifyError> {
+    /// The signature to verify, or the header failure [`Envelope::from_signed`]
+    /// reports for it.
+    ///
+    /// Decidable from the headers alone, so the receiver uses it to refuse an
+    /// unsigned request before reading the body, and `from_signed` uses it so
+    /// both paths agree on which failure a header earns.
+    pub(crate) fn require_signature(&self) -> Result<&str, VerifyError> {
         if self.malformed_signature {
-            Some(VerifyError::MalformedSignature)
-        } else if self.signature.is_none() {
-            Some(VerifyError::MissingSignature)
-        } else {
-            None
+            return Err(VerifyError::MalformedSignature);
         }
-    }
-
-    #[cfg(all(feature = "tracing", feature = "http"))]
-    pub(crate) fn recorded_delivery_id(&self) -> Option<&str> {
-        self.delivery_id.as_deref()
-    }
-
-    #[cfg(all(feature = "tracing", feature = "http"))]
-    pub(crate) fn recorded_event_name(&self) -> Option<&str> {
-        self.event_name.as_deref()
+        self.signature
+            .as_deref()
+            .ok_or(VerifyError::MissingSignature)
     }
 }
 
 #[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 impl<'a> From<&'a http::HeaderMap> for HeaderView<'a> {
     fn from(headers: &'a http::HeaderMap) -> Self {
         fn value<'a>(headers: &'a http::HeaderMap, name: &'static str) -> Option<Cow<'a, str>> {
@@ -364,13 +357,7 @@ impl Envelope {
         headers: &HeaderView<'_>,
         body: Bytes,
     ) -> Result<Self, ReceiveError> {
-        if headers.malformed_signature {
-            return Err(VerifyError::MalformedSignature.into());
-        }
-        let signature = headers
-            .signature
-            .as_deref()
-            .ok_or(VerifyError::MissingSignature)?;
+        let signature = headers.require_signature()?;
         verifier.verify(signature, &body)?;
 
         if !headers
@@ -425,7 +412,6 @@ impl Envelope {
     ///
     /// Returns the same errors as [`Envelope::from_signed`].
     #[cfg(feature = "http")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
     pub fn from_signed_parts(
         verifier: &Verifier,
         headers: &http::HeaderMap,

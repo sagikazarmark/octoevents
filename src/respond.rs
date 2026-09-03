@@ -51,7 +51,6 @@ impl ResponseStatus {
 }
 
 #[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 impl From<ResponseStatus> for http::StatusCode {
     fn from(status: ResponseStatus) -> Self {
         match status {

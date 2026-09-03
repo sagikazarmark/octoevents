@@ -4,7 +4,7 @@
 //! and `Rc` state. `MaybeSend`/`MaybeSync` relax the handler bounds there, and
 //! this file proves every handler flavour compiles through the full erasure
 //! path with such state. Build it with
-//! `cargo build --test wasm_handlers --target wasm32-unknown-unknown --features octocrab`;
+//! `cargo build --test wasm_handlers --target wasm32-unknown-unknown --features octocrab,tower`;
 //! it is never run, and it must not compile natively.
 
 #![cfg(target_arch = "wasm32")]
@@ -48,6 +48,26 @@ fn the_receiver_accepts_single_threaded_handler_state() {
             }
         },
     );
+}
+
+/// The `tower_service::Service` impl boxes the handler's future, and that box
+/// must drop `Send` on `wasm32` exactly as the handler traits do.
+#[cfg(feature = "tower")]
+#[test]
+fn the_tower_service_impl_accepts_single_threaded_handler_state() {
+    use bytes::Bytes;
+    use http::Request;
+    use http_body_util::Full;
+    use octoevents::{Secret, Verifier, WebhookReceiverBuilder};
+    use tower_service::Service;
+
+    fn assert_service<S: Service<Request<Full<Bytes>>>>(_: &S) {}
+
+    let receiver =
+        WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(Counter {
+            calls: Rc::new(Cell::new(0)),
+        });
+    assert_service(&receiver);
 }
 
 #[cfg(feature = "octocrab")]

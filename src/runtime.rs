@@ -3,6 +3,36 @@
 //! On native targets these traits retain ordinary thread-safety guarantees.
 //! On `wasm32`, where Cloudflare Workers run on one JavaScript event loop,
 //! they impose no bound and allow futures and handlers containing JS values.
+//!
+//! Every `target_arch = "wasm32"` split in the crate lives here, except the
+//! `dyn Fn` aliases in `dispatch`, which cannot be expressed through these
+//! traits because a trait object admits only one non-auto trait.
+
+use std::{future::Future, pin::Pin};
+
+/// A boxed `'static` future that is `Send` on native targets and unconstrained
+/// on `wasm32`.
+///
+/// The boxed counterpart of [`MaybeSend`]: wherever a handler's future is
+/// erased behind a `dyn Future`, this alias carries the same platform split so
+/// a `MaybeSend` future can be boxed on either target.
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(
+    dead_code,
+    reason = "consumed only by the erasure paths behind `tower` and `octocrab`; \
+              left unconditional so a new erasure site needs no gate here"
+)]
+pub(crate) type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
+
+/// A boxed `'static` future that is `Send` on native targets and unconstrained
+/// on `wasm32`.
+#[cfg(target_arch = "wasm32")]
+#[allow(
+    dead_code,
+    reason = "consumed only by the erasure paths behind `tower` and `octocrab`; \
+              left unconditional so a new erasure site needs no gate here"
+)]
+pub(crate) type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
 
 /// `Send` on native targets; no requirement on `wasm32`.
 ///

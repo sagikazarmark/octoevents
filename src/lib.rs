@@ -106,8 +106,13 @@
 //! `Payload` impls expose octocrab's types, so an octocrab major bump is a
 //! breaking change for them. The core (envelope, verification, receiver,
 //! `WebhookHandler`, `PayloadHandler`) does not depend on it.
+// `doc_cfg` propagates each `#[cfg]` into the rendered docs on its own,
+// including from a gated module to the items inside it, so gated items carry
+// no separate `doc(cfg(...))`.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+#[cfg(feature = "octocrab")]
+mod decode;
 #[cfg(feature = "octocrab")]
 mod dispatch;
 mod envelope;
@@ -121,28 +126,23 @@ mod runtime;
 mod secret;
 #[cfg(feature = "http")]
 mod service;
-#[cfg(feature = "octocrab")]
-mod typed;
+mod trace;
 mod verify;
 
 #[cfg(feature = "octocrab")]
-#[cfg_attr(docsrs, doc(cfg(feature = "octocrab")))]
 pub use dispatch::{Dispatcher, DispatcherBuilder};
 pub use envelope::{Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef, TargetType};
 pub use events::{Action, EventKind};
 pub use handler::{DecodeError, HandleError, PayloadAdapter, PayloadHandler, WebhookHandler};
 #[cfg(feature = "octocrab")]
-#[cfg_attr(docsrs, doc(cfg(feature = "octocrab")))]
 pub use handler::{EventAdapter, EventHandler};
 #[cfg(feature = "octocrab")]
-#[cfg_attr(docsrs, doc(cfg(feature = "octocrab")))]
 pub use matcher::EventMatcher;
 pub use payload::Payload;
 pub use respond::ResponseStatus;
 pub use runtime::{MaybeSend, MaybeSync};
 pub use secret::Secret;
 #[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 pub use service::{WebhookReceiver, WebhookReceiverBuilder};
 pub use verify::{Verifier, VerifyError};
 
