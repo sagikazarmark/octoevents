@@ -42,8 +42,6 @@ enum AppError {
     Decode(#[from] DecodeError),
     #[error(transparent)]
     Store(#[from] StoreError),
-    #[error(transparent)]
-    Label(#[from] LabelError),
     #[error("no handler for {kind} {action:?}")]
     Unhandled {
         kind: EventKind,
@@ -125,12 +123,8 @@ struct Labeler {
     label: String, // stands in for a GitHub API client
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("could not label pull request #{0}")]
-struct LabelError(u64);
-
 impl PayloadHandler<PullRequestWebhookEventPayload> for Labeler {
-    type Error = LabelError;
+    type Error = Infallible;
 
     async fn handle(
         &self,
@@ -142,7 +136,16 @@ impl PayloadHandler<PullRequestWebhookEventPayload> for Labeler {
         if payload.action != Opened {
             return Ok(());
         }
-        let installation = meta.installation_id.ok_or(LabelError(payload.number))?;
+        // A GitHub App acts on the API as the installation that delivered the
+        // event, which `EventMeta` carries. A repository webhook (what
+        // `gh webhook forward` creates) has none, so there is nothing to act as.
+        let Some(installation) = meta.installation_id else {
+            println!(
+                "skip labeling PR #{}: not delivered through a GitHub App installation",
+                payload.number
+            );
+            return Ok(());
+        };
         println!(
             "label PR #{} '{}' as {} via installation {installation}",
             payload.number,
