@@ -1,0 +1,98 @@
+use crate::{Action, EventKind};
+
+/// The kinds and actions one dispatcher registration selects.
+///
+/// A matcher expands to a list of slots, each an event kind with an optional
+/// action. Build one from any of the shapes below; every `Dispatcher::on`
+/// call accepts `impl Into<EventMatcher>`, so a matcher is rarely named:
+///
+/// ```
+/// use octoevents::{Action, EventKind, EventMatcher};
+///
+/// // One kind, every action.
+/// let _ = EventMatcher::from(EventKind::PullRequest);
+/// // Several kinds.
+/// let _ = EventMatcher::from([EventKind::Issues, EventKind::IssueComment]);
+/// // One kind and one action.
+/// let _ = EventMatcher::from((EventKind::PullRequest, Action::Opened));
+/// // One kind and several actions.
+/// let _ = EventMatcher::from((
+///     EventKind::PullRequest,
+///     [Action::Opened, Action::Synchronize, Action::Reopened],
+/// ));
+/// // Heterogeneous kind/action pairs.
+/// let _ = EventMatcher::from([
+///     (EventKind::PullRequest, Action::Opened),
+///     (EventKind::Issues, Action::Closed),
+/// ]);
+/// // Any mix, combined.
+/// let _ = EventMatcher::from(EventKind::Push).or((EventKind::Release, Action::Published));
+/// ```
+///
+/// There is deliberately no `|` operator: operator dispatch is on the left
+/// operand's type, so `(kind, action) | (kind, action)` could never work, and
+/// an operator that works depending on operand order is worse than none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(docsrs, doc(cfg(feature = "octocrab")))]
+pub struct EventMatcher {
+    slots: Vec<(EventKind, Option<Action>)>,
+}
+
+impl EventMatcher {
+    /// Extends this matcher with the slots of another.
+    #[must_use]
+    pub fn or(mut self, other: impl Into<Self>) -> Self {
+        self.slots.extend(other.into().slots);
+        self
+    }
+
+    pub(crate) fn into_slots(self) -> Vec<(EventKind, Option<Action>)> {
+        self.slots
+    }
+}
+
+impl From<EventKind> for EventMatcher {
+    fn from(kind: EventKind) -> Self {
+        Self {
+            slots: vec![(kind, None)],
+        }
+    }
+}
+
+impl<const N: usize> From<[EventKind; N]> for EventMatcher {
+    fn from(kinds: [EventKind; N]) -> Self {
+        Self {
+            slots: kinds.into_iter().map(|kind| (kind, None)).collect(),
+        }
+    }
+}
+
+impl From<(EventKind, Action)> for EventMatcher {
+    fn from((kind, action): (EventKind, Action)) -> Self {
+        Self {
+            slots: vec![(kind, Some(action))],
+        }
+    }
+}
+
+impl<const N: usize> From<(EventKind, [Action; N])> for EventMatcher {
+    fn from((kind, actions): (EventKind, [Action; N])) -> Self {
+        Self {
+            slots: actions
+                .into_iter()
+                .map(|action| (kind.clone(), Some(action)))
+                .collect(),
+        }
+    }
+}
+
+impl<const N: usize> From<[(EventKind, Action); N]> for EventMatcher {
+    fn from(pairs: [(EventKind, Action); N]) -> Self {
+        Self {
+            slots: pairs
+                .into_iter()
+                .map(|(kind, action)| (kind, Some(action)))
+                .collect(),
+        }
+    }
+}

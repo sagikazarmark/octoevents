@@ -51,9 +51,13 @@ fn signed_real_fixture_corpus_is_routable_and_typed() {
     for fixture in fixtures {
         let envelope = signed_envelope(fixture.body, fixture.event);
 
-        assert_eq!(envelope.kind.as_str(), fixture.event);
+        assert_eq!(envelope.meta.kind.as_str(), fixture.event);
         assert_eq!(
-            envelope.action.as_ref().map(octoevents::Action::as_str),
+            envelope
+                .meta
+                .action
+                .as_ref()
+                .map(octoevents::Action::as_str),
             fixture.action
         );
         assert!(

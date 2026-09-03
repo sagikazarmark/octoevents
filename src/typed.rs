@@ -1,6 +1,81 @@
-use octocrab::models::webhook_events::WebhookEvent;
+use octocrab::models::webhook_events::{WebhookEvent, payload};
 
-use crate::Envelope;
+use crate::{Envelope, EventKind};
+
+// Every per-kind payload struct octocrab models, bound to its event kind so
+// each can drive a `PayloadHandler`. The structs carry no
+// `deny_unknown_fields`, and octocrab itself builds them from the same
+// flattened JSON object, so decoding the whole payload into one works.
+// `ScheduleWebhookEventPayload` is deliberately absent: `schedule` is a
+// workflow trigger, not a webhook event GitHub delivers.
+crate::impl_payload! {
+    payload::BranchProtectionRuleWebhookEventPayload => EventKind::BranchProtectionRule,
+    payload::CheckRunWebhookEventPayload => EventKind::CheckRun,
+    payload::CheckSuiteWebhookEventPayload => EventKind::CheckSuite,
+    payload::CodeScanningAlertWebhookEventPayload => EventKind::CodeScanningAlert,
+    payload::CommitCommentWebhookEventPayload => EventKind::CommitComment,
+    payload::CreateWebhookEventPayload => EventKind::Create,
+    payload::DeleteWebhookEventPayload => EventKind::Delete,
+    payload::DependabotAlertWebhookEventPayload => EventKind::DependabotAlert,
+    payload::DeployKeyWebhookEventPayload => EventKind::DeployKey,
+    payload::DeploymentWebhookEventPayload => EventKind::Deployment,
+    payload::DeploymentProtectionRuleWebhookEventPayload => EventKind::DeploymentProtectionRule,
+    payload::DeploymentStatusWebhookEventPayload => EventKind::DeploymentStatus,
+    payload::DiscussionWebhookEventPayload => EventKind::Discussion,
+    payload::DiscussionCommentWebhookEventPayload => EventKind::DiscussionComment,
+    payload::ForkWebhookEventPayload => EventKind::Fork,
+    payload::GithubAppAuthorizationWebhookEventPayload => EventKind::GithubAppAuthorization,
+    payload::GollumWebhookEventPayload => EventKind::Gollum,
+    payload::InstallationWebhookEventPayload => EventKind::Installation,
+    payload::InstallationRepositoriesWebhookEventPayload => EventKind::InstallationRepositories,
+    payload::InstallationTargetWebhookEventPayload => EventKind::InstallationTarget,
+    payload::IssueCommentWebhookEventPayload => EventKind::IssueComment,
+    payload::IssuesWebhookEventPayload => EventKind::Issues,
+    payload::LabelWebhookEventPayload => EventKind::Label,
+    payload::MarketplacePurchaseWebhookEventPayload => EventKind::MarketplacePurchase,
+    payload::MemberWebhookEventPayload => EventKind::Member,
+    payload::MembershipWebhookEventPayload => EventKind::Membership,
+    payload::MergeGroupWebhookEventPayload => EventKind::MergeGroup,
+    payload::MetaWebhookEventPayload => EventKind::Meta,
+    payload::MilestoneWebhookEventPayload => EventKind::Milestone,
+    payload::OrgBlockWebhookEventPayload => EventKind::OrgBlock,
+    payload::OrganizationWebhookEventPayload => EventKind::Organization,
+    payload::PackageWebhookEventPayload => EventKind::Package,
+    payload::PageBuildWebhookEventPayload => EventKind::PageBuild,
+    payload::PersonalAccessTokenRequestWebhookEventPayload => EventKind::PersonalAccessTokenRequest,
+    payload::PingWebhookEventPayload => EventKind::Ping,
+    payload::ProjectWebhookEventPayload => EventKind::Project,
+    payload::ProjectCardWebhookEventPayload => EventKind::ProjectCard,
+    payload::ProjectColumnWebhookEventPayload => EventKind::ProjectColumn,
+    payload::ProjectsV2WebhookEventPayload => EventKind::ProjectsV2,
+    payload::ProjectsV2ItemWebhookEventPayload => EventKind::ProjectsV2Item,
+    payload::PublicWebhookEventPayload => EventKind::Public,
+    payload::PullRequestWebhookEventPayload => EventKind::PullRequest,
+    payload::PullRequestReviewWebhookEventPayload => EventKind::PullRequestReview,
+    payload::PullRequestReviewCommentWebhookEventPayload => EventKind::PullRequestReviewComment,
+    payload::PullRequestReviewThreadWebhookEventPayload => EventKind::PullRequestReviewThread,
+    payload::PushWebhookEventPayload => EventKind::Push,
+    payload::RegistryPackageWebhookEventPayload => EventKind::RegistryPackage,
+    payload::ReleaseWebhookEventPayload => EventKind::Release,
+    payload::RepositoryWebhookEventPayload => EventKind::Repository,
+    payload::RepositoryAdvisoryWebhookEventPayload => EventKind::RepositoryAdvisory,
+    payload::RepositoryDispatchWebhookEventPayload => EventKind::RepositoryDispatch,
+    payload::RepositoryImportWebhookEventPayload => EventKind::RepositoryImport,
+    payload::RepositoryVulnerabilityAlertWebhookEventPayload => EventKind::RepositoryVulnerabilityAlert,
+    payload::SecretScanningAlertWebhookEventPayload => EventKind::SecretScanningAlert,
+    payload::SecretScanningAlertLocationWebhookEventPayload => EventKind::SecretScanningAlertLocation,
+    payload::SecurityAdvisoryWebhookEventPayload => EventKind::SecurityAdvisory,
+    payload::SecurityAndAnalysisWebhookEventPayload => EventKind::SecurityAndAnalysis,
+    payload::SponsorshipWebhookEventPayload => EventKind::Sponsorship,
+    payload::StarWebhookEventPayload => EventKind::Star,
+    payload::StatusWebhookEventPayload => EventKind::Status,
+    payload::TeamWebhookEventPayload => EventKind::Team,
+    payload::TeamAddWebhookEventPayload => EventKind::TeamAdd,
+    payload::WatchWebhookEventPayload => EventKind::Watch,
+    payload::WorkflowDispatchWebhookEventPayload => EventKind::WorkflowDispatch,
+    payload::WorkflowJobWebhookEventPayload => EventKind::WorkflowJob,
+    payload::WorkflowRunWebhookEventPayload => EventKind::WorkflowRun,
+}
 
 impl Envelope {
     /// Parses the payload using octocrab's deep webhook models.
@@ -28,7 +103,7 @@ impl Envelope {
     /// cannot represent.
     #[cfg_attr(docsrs, doc(cfg(feature = "octocrab")))]
     pub fn parse_typed(&self) -> Result<WebhookEvent, serde_json::Error> {
-        WebhookEvent::try_from_header_and_body(self.kind.as_str(), &self.raw)
+        WebhookEvent::try_from_header_and_body(self.meta.kind.as_str(), &self.raw)
     }
 }
 
@@ -37,16 +112,11 @@ mod tests {
     use bytes::Bytes;
     use octocrab::models::webhook_events::{WebhookEventPayload, WebhookEventType};
 
-    use crate::{Common, Envelope, EventKind};
+    use crate::{Envelope, EventKind, EventMeta};
 
     fn envelope(kind: EventKind, raw: &'static [u8]) -> Envelope {
         Envelope {
-            delivery_id: "delivery".into(),
-            kind,
-            action: None,
-            common: Common::default(),
-            target_type: None,
-            target_id: None,
+            meta: EventMeta::new("delivery", kind),
             raw: Bytes::from_static(raw),
         }
     }
@@ -90,5 +160,62 @@ mod tests {
 
         assert!(envelope.parse_typed().is_err());
         assert_eq!(envelope.raw, Bytes::from_static(b"not json"));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn octocrab_payload_types_decode_the_fixture_corpus_for_their_kind() {
+        use std::str::FromStr as _;
+
+        use octocrab::models::webhook_events::payload::{
+            CheckRunWebhookEventPayload, InstallationRepositoriesWebhookEventPayload,
+            InstallationWebhookEventPayload, PingWebhookEventPayload,
+            PullRequestWebhookEventPayload,
+        };
+
+        use crate::{Payload, PayloadHandler as _, WebhookHandler as _};
+
+        async fn decodes<P: Payload + 'static>(event: &str, body: &'static [u8]) -> bool {
+            let handler = (|_: EventMeta, _: P| async { Ok::<_, ()>(()) }).into_webhook_handler();
+            let kind = EventKind::from_str(event).unwrap();
+            assert_eq!(P::KIND, kind, "{event} maps to the wrong kind");
+            handler.handle(envelope(kind, body)).await.is_ok()
+        }
+
+        assert!(
+            decodes::<PullRequestWebhookEventPayload>(
+                "pull_request",
+                include_bytes!("../tests/fixtures/pull_request.opened.json"),
+            )
+            .await
+        );
+        assert!(
+            decodes::<CheckRunWebhookEventPayload>(
+                "check_run",
+                include_bytes!("../tests/fixtures/check_run.completed.json"),
+            )
+            .await
+        );
+        assert!(
+            decodes::<InstallationWebhookEventPayload>(
+                "installation",
+                include_bytes!("../tests/fixtures/installation.created.json"),
+            )
+            .await
+        );
+        assert!(
+            decodes::<InstallationRepositoriesWebhookEventPayload>(
+                "installation_repositories",
+                include_bytes!("../tests/fixtures/installation_repositories.removed.json"),
+            )
+            .await
+        );
+        assert!(
+            decodes::<PingWebhookEventPayload>(
+                "ping",
+                include_bytes!("../tests/fixtures/ping.json")
+            )
+            .await
+        );
     }
 }

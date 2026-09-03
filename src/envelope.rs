@@ -19,15 +19,27 @@ const TARGET_TYPE_HEADER: &str = "x-github-hook-installation-target-type";
 #[cfg(feature = "http")]
 const TARGET_ID_HEADER: &str = "x-github-hook-installation-target-id";
 
-/// The routing-oriented subset shared by GitHub webhook payloads.
+/// The routing metadata of a webhook: everything in an [`Envelope`] except
+/// the payload bytes.
 ///
-/// This view is produced by the crate and only read by consumers, so it is
+/// Typed handlers receive this alongside a decoded payload, so the delivery
+/// ID and installation ID are available without going back to the envelope.
+///
+/// The crate produces this view and consumers only read it, so it is
 /// `#[non_exhaustive]`: GitHub can add a stable routing field (an enterprise
 /// reference, for example) without that becoming a breaking change here.
-/// Build one in tests from [`Common::default`] and assign the fields you need.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Build one in tests with [`EventMeta::new`] and assign the optional fields
+/// you need.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
-pub struct Common {
+pub struct EventMeta {
+    /// The `X-GitHub-Delivery` value. Use it as a downstream idempotency key.
+    pub delivery_id: String,
+    /// The event kind parsed from `X-GitHub-Event`.
+    pub kind: EventKind,
+    /// The payload's top-level action, when available.
+    #[serde(default)]
+    pub action: Option<Action>,
     /// The GitHub App installation ID, when present.
     #[serde(default)]
     pub installation_id: Option<u64>,
@@ -40,11 +52,45 @@ pub struct Common {
     /// The sender login, when present.
     #[serde(default)]
     pub sender: Option<String>,
+    /// The webhook installation target type.
+    #[serde(default)]
+    pub target_type: Option<TargetType>,
+    /// The webhook installation target ID.
+    #[serde(default)]
+    pub target_id: Option<u64>,
+}
+
+impl EventMeta {
+    /// Creates metadata for one delivery of one kind, with every optional
+    /// field empty.
+    ///
+    /// ```
+    /// use octoevents::{Action, EventKind, EventMeta};
+    ///
+    /// let mut meta = EventMeta::new("72d3162e-cc78-11e3-81ab-4c9367dc0958", EventKind::Issues);
+    /// meta.action = Some(Action::Opened);
+    /// meta.installation_id = Some(42);
+    /// # let _ = meta;
+    /// ```
+    #[must_use]
+    pub fn new(delivery_id: impl Into<String>, kind: EventKind) -> Self {
+        Self {
+            delivery_id: delivery_id.into(),
+            kind,
+            action: None,
+            installation_id: None,
+            repository: None,
+            organization: None,
+            sender: None,
+            target_type: None,
+            target_id: None,
+        }
+    }
 }
 
 /// A compact repository reference extracted without parsing a full payload model.
 ///
-/// `#[non_exhaustive]` for the same reason as [`Common`]. Build one in tests
+/// `#[non_exhaustive]` for the same reason as [`EventMeta`]. Build one in tests
 /// from [`RepositoryRef::default`] and assign the fields you need; the crate itself
 /// never produces a defaulted value.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -266,6 +312,12 @@ impl<'a> From<&'a http::HeaderMap> for HeaderView<'a> {
 
 /// A GitHub webhook and its routing metadata.
 ///
+/// An envelope is the composition of its routing metadata and the exact
+/// payload bytes: `meta` is everything a handler needs to route, deduplicate,
+/// and authenticate against GitHub, and `raw` is the signed input. Typed
+/// handlers receive only [`EventMeta`] with a decoded payload, so the metadata
+/// has one home rather than being duplicated onto every decoded view.
+///
 /// [`Envelope::from_signed`] is the only path in this crate that turns an
 /// untrusted request into an envelope, and it authenticates before it extracts.
 /// The fields are nevertheless public and the struct is deliberately *not*
@@ -273,22 +325,18 @@ impl<'a> From<&'a http::HeaderMap> for HeaderView<'a> {
 /// unit-test handlers and dispatchers without HTTP, and to reconstruct one that
 /// a trusted internal transport forwarded (see the [`Deserialize`] impl). A
 /// value obtained that way carries no authentication claim; only one returned
-/// by [`Envelope::from_signed`] does. The cost of that choice is that adding a
-/// field here is a breaking change.
+/// by [`Envelope::from_signed`] does. Extensibility lives in [`EventMeta`],
+/// which is `#[non_exhaustive]` and built with [`EventMeta::new`].
+///
+/// On the wire the metadata is flattened beside `raw`, so a serialized
+/// envelope is one flat JSON object with no `meta` nesting. Envelopes
+/// serialized before the metadata split nested four fields under `common`;
+/// those fields deserialize as `None` from such a document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Envelope {
-    /// The `X-GitHub-Delivery` value. Use it as a downstream idempotency key.
-    pub delivery_id: String,
-    /// The event kind parsed from `X-GitHub-Event`.
-    pub kind: EventKind,
-    /// The payload's top-level action, when available.
-    pub action: Option<Action>,
-    /// Stable routing fields partially extracted from the payload.
-    pub common: Common,
-    /// The webhook installation target type.
-    pub target_type: Option<TargetType>,
-    /// The webhook installation target ID.
-    pub target_id: Option<u64>,
+    /// The routing metadata extracted from the headers and the payload probe.
+    #[serde(flatten)]
+    pub meta: EventMeta,
     /// The exact bytes over which the signature was calculated.
     ///
     /// Serialized as standard base64 so an envelope survives a JSON hop to an
@@ -338,43 +386,37 @@ impl Envelope {
         let probe = serde_json::from_slice::<Probe<'_>>(&body).unwrap_or_default();
 
         let kind = EventKind::from_str(event_name).unwrap_or_else(|never| match never {});
-        let action = probe
+        let mut meta = EventMeta::new(delivery_id, kind);
+        meta.action = probe
             .action
             .and_then(parse_probe::<String>)
             .map(|action| Action::from_str(&action).unwrap_or_else(|never| match never {}));
+        meta.installation_id = probe
+            .installation
+            .and_then(parse_probe::<IdOnly>)
+            .map(|installation| installation.id);
+        meta.repository = probe
+            .repository
+            .and_then(parse_probe::<RepoProbe>)
+            .map(RepositoryRef::from);
+        meta.organization = probe
+            .organization
+            .and_then(parse_probe::<LoginOnly>)
+            .map(|organization| organization.login);
+        meta.sender = probe
+            .sender
+            .and_then(parse_probe::<LoginOnly>)
+            .map(|sender| sender.login);
+        meta.target_type = headers
+            .target_type
+            .as_deref()
+            .map(|value| TargetType::from_str(value).unwrap_or_else(|never| match never {}));
+        meta.target_id = headers
+            .target_id
+            .as_deref()
+            .and_then(|value| value.parse().ok());
 
-        Ok(Self {
-            delivery_id: delivery_id.to_owned(),
-            kind,
-            action,
-            common: Common {
-                installation_id: probe
-                    .installation
-                    .and_then(parse_probe::<IdOnly>)
-                    .map(|installation| installation.id),
-                repository: probe
-                    .repository
-                    .and_then(parse_probe::<RepoProbe>)
-                    .map(RepositoryRef::from),
-                organization: probe
-                    .organization
-                    .and_then(parse_probe::<LoginOnly>)
-                    .map(|organization| organization.login),
-                sender: probe
-                    .sender
-                    .and_then(parse_probe::<LoginOnly>)
-                    .map(|sender| sender.login),
-            },
-            target_type: headers
-                .target_type
-                .as_deref()
-                .map(|value| TargetType::from_str(value).unwrap_or_else(|never| match never {})),
-            target_id: headers
-                .target_id
-                .as_deref()
-                .and_then(|value| value.parse().ok()),
-            raw: body,
-        })
+        Ok(Self { meta, raw: body })
     }
 
     /// Authenticates and constructs an envelope from standard HTTP headers.
@@ -512,7 +554,7 @@ mod tests {
     use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
 
-    use super::{Common, Envelope, HeaderView, ReceiveError, RepositoryRef, TargetType};
+    use super::{Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef, TargetType};
     use crate::{Action, EventKind, Secret, Verifier, VerifyError};
 
     const BODY: &[u8] = br#"{
@@ -551,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn verifies_then_extracts_the_common_view() {
+    fn verifies_then_extracts_the_metadata() {
         let verifier = verifier();
         let signature = signature(b"secret", BODY);
 
@@ -559,25 +601,24 @@ mod tests {
             Envelope::from_signed(&verifier, &headers(&signature), Bytes::from_static(BODY))
                 .unwrap();
 
-        assert_eq!(envelope.delivery_id, "delivery");
-        assert_eq!(envelope.kind, EventKind::PullRequest);
-        assert_eq!(envelope.action, Some(Action::Opened));
-        assert_eq!(envelope.target_type, Some(TargetType::Repository));
-        assert_eq!(envelope.target_id, Some(7));
+        let meta = &envelope.meta;
+        assert_eq!(meta.delivery_id, "delivery");
+        assert_eq!(meta.kind, EventKind::PullRequest);
+        assert_eq!(meta.action, Some(Action::Opened));
+        assert_eq!(meta.installation_id, Some(42));
         assert_eq!(
-            envelope.common,
-            Common {
-                installation_id: Some(42),
-                repository: Some(RepositoryRef {
-                    id: 1,
-                    name: "repo".into(),
-                    full_name: "octo/repo".into(),
-                    owner: "octo".into(),
-                }),
-                organization: Some("github".into()),
-                sender: Some("monalisa".into()),
-            }
+            meta.repository,
+            Some(RepositoryRef {
+                id: 1,
+                name: "repo".into(),
+                full_name: "octo/repo".into(),
+                owner: "octo".into(),
+            })
         );
+        assert_eq!(meta.organization.as_deref(), Some("github"));
+        assert_eq!(meta.sender.as_deref(), Some("monalisa"));
+        assert_eq!(meta.target_type, Some(TargetType::Repository));
+        assert_eq!(meta.target_id, Some(7));
         assert_eq!(envelope.raw, Bytes::from_static(BODY));
     }
 
@@ -589,9 +630,67 @@ mod tests {
         let envelope =
             Envelope::from_signed(&verifier(), &headers(&signature), body.clone()).unwrap();
 
-        assert_eq!(envelope.action, None);
-        assert_eq!(envelope.common, Common::default());
+        let mut expected = EventMeta::new("delivery", EventKind::PullRequest);
+        expected.target_type = Some(TargetType::Repository);
+        expected.target_id = Some(7);
+        assert_eq!(envelope.meta, expected);
         assert_eq!(envelope.raw, body);
+    }
+
+    #[test]
+    fn a_synthetic_envelope_is_built_from_the_metadata_constructor() {
+        let mut meta = EventMeta::new("synthetic", EventKind::Issues);
+        meta.action = Some(Action::Opened);
+        meta.installation_id = Some(42);
+
+        let envelope = Envelope {
+            meta,
+            raw: Bytes::from_static(br#"{"action":"opened"}"#),
+        };
+
+        // The constructor stores what it was given and leaves the rest empty.
+        assert_eq!(envelope.meta.delivery_id, "synthetic");
+        assert_eq!(envelope.meta.kind, EventKind::Issues);
+        assert_eq!(envelope.meta.repository, None);
+        assert_eq!(envelope.meta.organization, None);
+        assert_eq!(envelope.meta.sender, None);
+        assert_eq!(envelope.meta.target_type, None);
+        assert_eq!(envelope.meta.target_id, None);
+    }
+
+    #[test]
+    fn serializes_the_metadata_flat_beside_the_raw_bytes() {
+        let signature = signature(b"secret", BODY);
+        let envelope =
+            Envelope::from_signed(&verifier(), &headers(&signature), Bytes::from_static(BODY))
+                .unwrap();
+
+        let value = serde_json::to_value(envelope).unwrap();
+        let object = value.as_object().unwrap();
+
+        // The meta/raw split is a Rust-side composition only: on the wire the
+        // metadata sits at the top level with no `meta` nesting.
+        let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "action",
+                "delivery_id",
+                "installation_id",
+                "kind",
+                "organization",
+                "raw",
+                "repository",
+                "sender",
+                "target_id",
+                "target_type",
+            ]
+        );
+        assert_eq!(value["delivery_id"], "delivery");
+        assert_eq!(value["kind"], "pull_request");
+        assert_eq!(value["installation_id"], 42);
+        assert_eq!(value["repository"]["full_name"], "octo/repo");
     }
 
     #[test]
@@ -608,10 +707,10 @@ mod tests {
 
         let envelope = Envelope::from_signed(&verifier(), &headers(&signature), body).unwrap();
 
-        assert_eq!(envelope.action, Some(Action::Opened));
-        assert_eq!(envelope.common.installation_id, Some(42));
-        assert_eq!(envelope.common.sender.as_deref(), Some("monalisa"));
-        assert_eq!(envelope.common.repository, None);
+        assert_eq!(envelope.meta.action, Some(Action::Opened));
+        assert_eq!(envelope.meta.installation_id, Some(42));
+        assert_eq!(envelope.meta.sender.as_deref(), Some("monalisa"));
+        assert_eq!(envelope.meta.repository, None);
     }
 
     #[test]
@@ -626,8 +725,11 @@ mod tests {
 
         let envelope = Envelope::from_signed(&verifier(), &headers, body).unwrap();
 
-        assert_eq!(envelope.kind, EventKind::Unknown("brand_new".into()));
-        assert_eq!(envelope.action, Some(Action::Unknown("brand_new".into())));
+        assert_eq!(envelope.meta.kind, EventKind::Unknown("brand_new".into()));
+        assert_eq!(
+            envelope.meta.action,
+            Some(Action::Unknown("brand_new".into()))
+        );
     }
 
     #[test]
@@ -705,7 +807,7 @@ mod tests {
 
         assert_eq!(received, envelope);
         assert_eq!(received.raw, Bytes::from_static(BODY));
-        assert_eq!(received.target_type, Some(TargetType::Repository));
+        assert_eq!(received.meta.target_type, Some(TargetType::Repository));
     }
 
     #[test]
@@ -726,7 +828,7 @@ mod tests {
             Envelope::from_signed(&verifier(), &headers, Bytes::from_static(UNICODE_BODY)).unwrap();
 
         assert_eq!(envelope.raw.as_ref(), UNICODE_BODY);
-        assert_eq!(envelope.action, Some(Action::Opened));
+        assert_eq!(envelope.meta.action, Some(Action::Opened));
 
         let parsed: serde_json::Value = envelope.parse().unwrap();
         assert_eq!(parsed["zen"], "⚡ é café 🐙");
@@ -753,12 +855,12 @@ mod tests {
         let envelope =
             Envelope::from_signed_parts(&verifier(), &map, Bytes::from_static(BODY)).unwrap();
 
-        assert_eq!(envelope.delivery_id, "delivery");
-        assert_eq!(envelope.kind, EventKind::PullRequest);
-        assert_eq!(envelope.action, Some(Action::Opened));
-        assert_eq!(envelope.target_type, Some(TargetType::Integration));
-        assert_eq!(envelope.target_id, Some(12345));
-        assert_eq!(envelope.common.installation_id, Some(42));
+        assert_eq!(envelope.meta.delivery_id, "delivery");
+        assert_eq!(envelope.meta.kind, EventKind::PullRequest);
+        assert_eq!(envelope.meta.action, Some(Action::Opened));
+        assert_eq!(envelope.meta.target_type, Some(TargetType::Integration));
+        assert_eq!(envelope.meta.target_id, Some(12345));
+        assert_eq!(envelope.meta.installation_id, Some(42));
     }
 
     #[cfg(feature = "http")]

@@ -49,6 +49,10 @@ rustdoc-args = ["--cfg", "docsrs"]
 name = "axum"
 required-features = ["tower"]
 
+[[example]]
+name = "dispatcher"
+required-features = ["tower", "octocrab"]
+
 [lints.rust]
 missing_docs = "warn"
 unsafe_code = "forbid"
