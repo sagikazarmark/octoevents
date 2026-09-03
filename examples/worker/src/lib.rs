@@ -14,7 +14,7 @@ async fn fetch(
         .build(move |envelope: octoevents::Envelope| {
             let object_url = object_url.clone();
             async move {
-                let installation_id = envelope.common.installation_id.ok_or_else(|| {
+                let installation_id = envelope.meta.installation_id.ok_or_else(|| {
                     worker::Error::RustError("payload has no installation ID".into())
                 })?;
                 let endpoint = format!(

@@ -28,7 +28,7 @@ octocrab = { version = "0.54.1", default-features = false, features = [
 ], optional = true }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.143", features = ["raw_value"] }
-sha2 = "0.11.0"          # see the base64/hmac note above
+sha2 = "0.11.0"
 subtle = "2.6.1"
 thiserror = "2.0.16"
 tower-service = { version = "0.3.3", optional = true }
@@ -48,6 +48,10 @@ rustdoc-args = ["--cfg", "docsrs"]
 [[example]]
 name = "axum"
 required-features = ["tower"]
+
+[[example]]
+name = "dispatcher"
+required-features = ["tower", "octocrab"]
 
 [lints.rust]
 missing_docs = "warn"
