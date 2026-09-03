@@ -1,8 +1,8 @@
 //! The `tracing` feature must never record secret-derived values.
 //!
-//! Section 4.2 of the specification makes this a standing invariant rather than
-//! a best effort: delivery ID, event name and outcome are recordable; signature
-//! header values, computed MACs and secrets are not.
+//! This is a standing invariant rather than a best effort: delivery ID, event
+//! name and outcome are recordable; signature header values, computed MACs
+//! and secrets are not.
 
 #![cfg(all(feature = "tracing", feature = "tower", not(target_arch = "wasm32")))]
 

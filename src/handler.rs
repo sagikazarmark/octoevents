@@ -290,8 +290,8 @@ where
 }
 
 // The decode steps shared by the adapters (receiver path) and the dispatcher's
-// routes. Crate-private: the glossary's "decode" is a step inside handling,
-// not a consumer operation, and `Envelope::parse` already covers ad-hoc views.
+// routes. Crate-private: decoding is a step inside handling, not a consumer
+// operation, and `Envelope::parse` already covers ad-hoc views.
 impl Envelope {
     /// Decodes the payload as `P` without checking the kind; callers that
     /// have not already routed by kind check it first.
