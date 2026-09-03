@@ -17,7 +17,7 @@ _Avoid_: Delivery (reserved for the outbound `octodelivery` project), event, mes
 The envelope's routing metadata without the payload bytes: delivery ID, kind,
 action, installation ID, repository, organization, sender, target. What typed
 handlers receive alongside a decoded payload.
-_Avoid_: Common (the former nested group; its name carried no meaning), header (it also holds probed payload fields)
+_Avoid_: Common (the former nested group; its name carried no meaning), header (it also holds probed payload fields), delivery (reserved for `octodelivery`), receipt (reads as acknowledgement, and sits too close to Receiver), context (implies ambient services; this is plain data), routing (delivery ID and sender are not routing)
 
 **Receiver**:
 The component that authenticates, bounds, and dispatches one HTTP request,
