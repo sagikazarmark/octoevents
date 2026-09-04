@@ -4,7 +4,7 @@ use octocrab::models::webhook_events::WebhookEvent;
 
 use crate::{
     Action, DecodeError, Envelope, EventHandler, EventKind, EventMatcher, EventMeta, MaybeSend,
-    MaybeSync, Payload, PayloadHandler, WebhookHandler, runtime::BoxFuture, trace,
+    MaybeSync, Payload, PayloadHandler, WebhookHandler, matcher::Slot, runtime::BoxFuture, trace,
 };
 
 // Erased handlers. A trait object admits only one non-auto trait, so these
@@ -47,7 +47,7 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// use octoevents::{Action, DecodeError, Dispatcher, EventKind, EventMeta};
 ///
 /// #[derive(Debug)]
-/// enum AppError { Decode(DecodeError) }
+/// enum AppError { Decode(DecodeError), Unhandled(EventKind) }
 /// impl From<DecodeError> for AppError {
 ///     fn from(error: DecodeError) -> Self { Self::Decode(error) }
 /// }
@@ -68,9 +68,17 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 ///         println!("label PR #{}", payload.number);
 ///         Ok::<_, std::convert::Infallible>(())
 ///     })
+///     .fallback(|meta: EventMeta, _: WebhookEvent| async move {
+///         Err::<(), _>(AppError::Unhandled(meta.kind))
+///     })
 ///     .build();
 /// # let _ = dispatcher;
 /// ```
+///
+/// `E` must implement `From` of every registered handler's error, including
+/// [`Infallible`](std::convert::Infallible) for handlers that cannot fail;
+/// that impl is the one-line `match never {}` above. Handlers written against
+/// `E` itself need nothing further.
 ///
 /// No method accepts a [`WebhookHandler`]: work on the raw bytes (persist,
 /// forward) wraps the dispatcher in a webhook handler instead, so the
@@ -95,7 +103,7 @@ impl<E> Dispatcher<E>
 where
     E: From<DecodeError> + 'static,
 {
-    /// Starts building a dispatcher whose unmatched events succeed.
+    /// Starts building a dispatcher whose unmatched deliveries succeed.
     #[must_use]
     pub fn builder() -> DispatcherBuilder<E> {
         DispatcherBuilder::default()
@@ -267,8 +275,8 @@ where
         E: From<H::Error>,
     {
         let route = event_route(handler);
-        for (kind, action) in matcher.into().into_slots() {
-            self.insert(kind, action, route.clone());
+        for slot in matcher.into().into_slots() {
+            self.insert(slot, route.clone());
         }
         self
     }
@@ -285,7 +293,7 @@ where
         H: PayloadHandler<P> + MaybeSend + MaybeSync + 'static,
         E: From<H::Error>,
     {
-        self.insert(P::KIND, None, payload_route(handler));
+        self.insert(Slot::any_action(P::KIND), payload_route(handler));
         self
     }
 
@@ -312,9 +320,9 @@ where
         }
     }
 
-    fn insert(&mut self, kind: EventKind, action: Option<Action>, route: Route<E>) {
-        let routes = self.routes.by_kind.entry(kind).or_default();
-        let chain = match action {
+    fn insert(&mut self, slot: Slot, route: Route<E>) {
+        let routes = self.routes.by_kind.entry(slot.kind).or_default();
+        let chain = match slot.action {
             Some(action) => routes.by_action.entry(action).or_default(),
             None => &mut routes.any_action,
         };
@@ -399,89 +407,20 @@ impl<E> Default for KindRoutes<E> {
 mod tests {
     use std::{future::Future, pin::Pin, sync::Arc};
 
-    use bytes::Bytes;
     use octocrab::models::webhook_events::WebhookEvent;
     use tokio::sync::Mutex;
 
     use super::Dispatcher;
-    use crate::{Action, DecodeError, Envelope, EventKind, EventMatcher, EventMeta};
-
-    /// The application error every handler's error converts into.
-    #[derive(Debug, PartialEq)]
-    enum AppError {
-        Decode,
-        Handler(&'static str),
-    }
-
-    impl From<DecodeError> for AppError {
-        fn from(_: DecodeError) -> Self {
-            Self::Decode
-        }
-    }
-
-    impl From<&'static str> for AppError {
-        fn from(message: &'static str) -> Self {
-            Self::Handler(message)
-        }
-    }
-
-    impl From<std::convert::Infallible> for AppError {
-        fn from(never: std::convert::Infallible) -> Self {
-            match never {}
-        }
-    }
+    use crate::{
+        Action, DecodeError, EventKind, EventMatcher, EventMeta,
+        test_support::{
+            AppError, check_run_completed, envelope_with_action, installation_created, ping,
+            pull_request_opened, unknown, unrepresentable,
+        },
+    };
 
     type Calls = Arc<Mutex<Vec<&'static str>>>;
     type Recorded<E> = Pin<Box<dyn Future<Output = Result<(), E>> + Send>>;
-
-    fn fixture(kind: EventKind, action: Option<Action>, raw: &'static [u8]) -> Envelope {
-        let mut meta = EventMeta::new("delivery", kind);
-        meta.action = action;
-        Envelope {
-            meta,
-            raw: Bytes::from_static(raw),
-        }
-    }
-
-    fn pull_request_opened() -> Envelope {
-        fixture(
-            EventKind::PullRequest,
-            Some(Action::Opened),
-            include_bytes!("../tests/fixtures/pull_request.opened.json"),
-        )
-    }
-
-    fn check_run_completed() -> Envelope {
-        fixture(
-            EventKind::CheckRun,
-            Some(Action::Completed),
-            include_bytes!("../tests/fixtures/check_run.completed.json"),
-        )
-    }
-
-    fn installation_created() -> Envelope {
-        fixture(
-            EventKind::Installation,
-            Some(Action::Created),
-            include_bytes!("../tests/fixtures/installation.created.json"),
-        )
-    }
-
-    fn ping() -> Envelope {
-        fixture(
-            EventKind::Ping,
-            None,
-            include_bytes!("../tests/fixtures/ping.json"),
-        )
-    }
-
-    fn unknown() -> Envelope {
-        fixture(
-            EventKind::Unknown("future_event".into()),
-            None,
-            include_bytes!("../tests/fixtures/unknown.json"),
-        )
-    }
 
     /// An event handler that appends `value` to the shared log.
     fn record(
@@ -651,9 +590,9 @@ mod tests {
         // The action list is exact: a pull request being synchronized does not
         // reach the [opened, closed] handler.
         calls.lock().await.clear();
-        let synchronized = fixture(
+        let synchronized = envelope_with_action(
             EventKind::PullRequest,
-            Some(Action::Synchronize),
+            Action::Synchronize,
             include_bytes!("../tests/fixtures/pull_request.opened.json"),
         );
         dispatcher.dispatch(synchronized).await.unwrap();
@@ -817,9 +756,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_event_decode_failure_stops_the_delivery_at_the_first_event_handler() {
-        // A pull_request delivery octocrab cannot represent. A consumer view
-        // over the same bytes still decodes, so payload handlers around the
-        // event handler show exactly where the chain stopped.
+        // Payload handlers over a consumer view sit either side of the event
+        // handler, so the log shows exactly where the chain stopped.
         #[derive(serde::Deserialize)]
         struct Anything {}
         crate::impl_payload!(Anything => EventKind::PullRequest);
@@ -843,14 +781,8 @@ mod tests {
             .on(EventKind::PullRequest, record(&calls, "event-after"))
             .build();
 
-        let unrepresentable = fixture(
-            EventKind::PullRequest,
-            None,
-            include_bytes!("../tests/fixtures/unrepresentable.json"),
-        );
-
         assert_eq!(
-            dispatcher.dispatch(unrepresentable).await,
+            dispatcher.dispatch(unrepresentable()).await,
             Err(AppError::Decode)
         );
         assert_eq!(calls.lock().await.as_slice(), ["payload-before"]);
@@ -870,13 +802,7 @@ mod tests {
             })
             .build();
 
-        let unrepresentable = fixture(
-            EventKind::PullRequest,
-            None,
-            include_bytes!("../tests/fixtures/unrepresentable.json"),
-        );
-
-        assert_eq!(dispatcher.dispatch(unrepresentable).await, Ok(()));
+        assert_eq!(dispatcher.dispatch(unrepresentable()).await, Ok(()));
     }
 
     #[tokio::test]

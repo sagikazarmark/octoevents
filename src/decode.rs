@@ -1,6 +1,6 @@
 //! Decoding with octocrab's webhook models: its per-kind payload structs as
-//! [`Payload`](crate::Payload) types, and a whole delivery as its
-//! [`WebhookEvent`].
+//! [`Payload`](crate::Payload) types, and an envelope's payload of any kind
+//! as its [`WebhookEvent`].
 
 use octocrab::models::webhook_events::{WebhookEvent, payload};
 
@@ -91,10 +91,10 @@ impl Envelope {
     /// Best-effort: octocrab's webhook models are hand-maintained and
     /// self-described as beta. An event kind octocrab does not know still
     /// decodes -- it arrives as [`WebhookEventPayload::Unknown`] carrying the
-    /// generic JSON -- so an error here means the body was not a JSON object
-    /// or a known kind's payload drifted. [`Envelope::raw`] is unaffected
-    /// either way, and [`Envelope::parse`] deserializes a caller-defined view
-    /// that only breaks on fields you name.
+    /// generic JSON -- so an error here means the payload was not a JSON
+    /// object or a known kind's payload drifted. [`Envelope::raw`] is
+    /// unaffected either way, and [`Envelope::decode`] decodes a caller-defined
+    /// view that only breaks on fields you name.
     ///
     /// Decodes [`Envelope::raw`] on every call. Bind the result rather than
     /// calling it repeatedly: a delivery can carry megabytes of JSON.
@@ -109,8 +109,8 @@ impl Envelope {
     ///
     /// # Errors
     ///
-    /// Returns [`DecodeError::Json`] for non-object bodies and payloads
-    /// octocrab cannot represent.
+    /// Returns [`DecodeError::Json`] for payloads that are not a JSON object
+    /// and payloads octocrab cannot represent.
     pub fn decode_event(&self) -> Result<WebhookEvent, DecodeError> {
         WebhookEvent::try_from_header_and_body(self.meta.kind.as_str(), &self.raw)
             .map_err(DecodeError::Json)
@@ -122,14 +122,7 @@ mod tests {
     use bytes::Bytes;
     use octocrab::models::webhook_events::{WebhookEventPayload, WebhookEventType};
 
-    use crate::{Envelope, EventKind, EventMeta};
-
-    fn envelope(kind: EventKind, raw: &'static [u8]) -> Envelope {
-        Envelope {
-            meta: EventMeta::new("delivery", kind),
-            raw: Bytes::from_static(raw),
-        }
-    }
+    use crate::{EventKind, test_support::envelope};
 
     #[test]
     fn returns_octocrab_models_when_the_payload_is_supported() {
@@ -165,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn fails_for_invalid_json_without_touching_the_raw_body() {
+    fn fails_for_invalid_json_without_touching_the_raw_bytes() {
         let envelope = envelope(EventKind::Ping, b"not json");
 
         assert!(envelope.decode_event().is_err());
@@ -183,13 +176,13 @@ mod tests {
             PullRequestWebhookEventPayload,
         };
 
-        use crate::{Payload, PayloadHandler as _, WebhookHandler as _};
+        use crate::{EventMeta, Payload, PayloadHandler as _, WebhookHandler as _};
 
-        async fn decodes<P: Payload + 'static>(event: &str, body: &'static [u8]) -> bool {
+        async fn decodes<P: Payload + 'static>(event_name: &str, raw: &'static [u8]) -> bool {
             let handler = (|_: EventMeta, _: P| async { Ok::<_, ()>(()) }).into_webhook_handler();
-            let kind = EventKind::from_str(event).unwrap();
-            assert_eq!(P::KIND, kind, "{event} maps to the wrong kind");
-            handler.handle(envelope(kind, body)).await.is_ok()
+            let kind = EventKind::from_str(event_name).unwrap();
+            assert_eq!(P::KIND, kind, "{event_name} maps to the wrong kind");
+            handler.handle(envelope(kind, raw)).await.is_ok()
         }
 
         assert!(

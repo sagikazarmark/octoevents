@@ -387,10 +387,10 @@ mod tests {
 
     #[tokio::test]
     async fn returns_no_content_after_successful_dispatch() {
-        let service = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
             .build(|_: Envelope| async { Ok::<_, ()>(()) });
 
-        let response = service.receive(request(b"{}", "push")).await;
+        let response = receiver.receive(request(b"{}", "push")).await;
 
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
@@ -398,12 +398,12 @@ mod tests {
     #[tokio::test]
     async fn accepts_a_struct_handler_that_is_not_clone() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let service =
+        let receiver =
             WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(Recorder {
                 calls: Arc::clone(&calls),
             });
 
-        let response = service.receive(request(b"{}", "push")).await;
+        let response = receiver.receive(request(b"{}", "push")).await;
 
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert_eq!(calls.load(Ordering::Relaxed), 1);
@@ -412,10 +412,10 @@ mod tests {
     #[cfg(feature = "tower")]
     #[tokio::test]
     async fn the_tower_service_impl_applies_the_same_policy() {
-        let service = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
             .build(|_: Envelope| async { Ok::<_, ()>(()) });
 
-        let response = service.oneshot(request(b"{}", "push")).await.unwrap();
+        let response = receiver.oneshot(request(b"{}", "push")).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
@@ -424,12 +424,12 @@ mod tests {
     #[tokio::test]
     async fn the_tower_service_impl_accepts_a_struct_handler() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let service =
+        let receiver =
             WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(Recorder {
                 calls: Arc::clone(&calls),
             });
 
-        let response = service.oneshot(request(b"{}", "push")).await.unwrap();
+        let response = receiver.oneshot(request(b"{}", "push")).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert_eq!(calls.load(Ordering::Relaxed), 1);
@@ -438,14 +438,14 @@ mod tests {
     #[tokio::test]
     async fn a_payload_handler_receives_its_decoded_view_with_the_metadata() {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let service = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
+        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
             IssueRecorder {
                 seen: Arc::clone(&seen),
             }
             .into_webhook_handler(),
         );
 
-        let response = service
+        let response = receiver
             .receive(request(
                 br#"{"action":"opened","issue":{"number":7,"title":"ignored"}}"#,
                 "issues",
@@ -462,7 +462,7 @@ mod tests {
     #[tokio::test]
     async fn a_payload_handler_rejects_an_envelope_of_the_wrong_kind() {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let service = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
+        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
             IssueRecorder {
                 seen: Arc::clone(&seen),
             }
@@ -470,7 +470,7 @@ mod tests {
         );
 
         // The body would decode as an IssueView; only the kind is wrong.
-        let response = service
+        let response = receiver
             .receive(request(
                 br#"{"action":"opened","issue":{"number":7}}"#,
                 "pull_request",
@@ -484,14 +484,14 @@ mod tests {
     #[tokio::test]
     async fn a_payload_handler_fails_the_delivery_when_the_payload_does_not_decode() {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let service = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
+        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
             IssueRecorder {
                 seen: Arc::clone(&seen),
             }
             .into_webhook_handler(),
         );
 
-        let response = service
+        let response = receiver
             .receive(request(br#"{"action":"opened"}"#, "issues"))
             .await;
 
@@ -502,20 +502,7 @@ mod tests {
     #[cfg(feature = "octocrab")]
     #[tokio::test]
     async fn accepts_a_dispatcher_as_its_handler() {
-        use crate::{DecodeError, Dispatcher};
-
-        #[derive(Debug)]
-        struct AppError;
-        impl From<DecodeError> for AppError {
-            fn from(_: DecodeError) -> Self {
-                Self
-            }
-        }
-        impl From<std::convert::Infallible> for AppError {
-            fn from(never: std::convert::Infallible) -> Self {
-                match never {}
-            }
-        }
+        use crate::{Dispatcher, test_support::AppError};
 
         let calls = Arc::new(AtomicUsize::new(0));
         let handler_calls = Arc::clone(&calls);
@@ -528,11 +515,11 @@ mod tests {
                 },
             )
             .build();
-        let service = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
             .handle_ping(true)
             .build(dispatcher);
 
-        let response = service
+        let response = receiver
             .receive(request(
                 include_bytes!("../tests/fixtures/ping.json"),
                 "ping",
@@ -578,14 +565,14 @@ mod tests {
         }
 
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let service = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
+        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
             EventRecorder {
                 seen: Arc::clone(&seen),
             }
             .into_webhook_handler(),
         );
 
-        let response = service
+        let response = receiver
             .receive(request(
                 include_bytes!("../tests/fixtures/pull_request.opened.json"),
                 "pull_request",
@@ -608,7 +595,7 @@ mod tests {
 
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let handler_seen = Arc::clone(&seen);
-        let service = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
+        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
             (move |meta: EventMeta, payload: PullRequestWebhookEventPayload| {
                 let seen = Arc::clone(&handler_seen);
                 async move {
@@ -624,7 +611,7 @@ mod tests {
             .into_webhook_handler(),
         );
 
-        let response = service
+        let response = receiver
             .receive(request(
                 include_bytes!("../tests/fixtures/pull_request.opened.json"),
                 "pull_request",
@@ -647,31 +634,31 @@ mod tests {
     async fn short_circuits_ping_unless_enabled() {
         let calls = Arc::new(AtomicUsize::new(0));
         let handler_calls = Arc::clone(&calls);
-        let service = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
+        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
             move |_: Envelope| {
                 handler_calls.fetch_add(1, Ordering::Relaxed);
                 async { Ok::<_, ()>(()) }
             },
         );
 
-        let response = service.receive(request(b"{}", "ping")).await;
+        let response = receiver.receive(request(b"{}", "ping")).await;
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert_eq!(calls.load(Ordering::Relaxed), 0);
 
         let handler_calls = Arc::clone(&calls);
-        let service = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
             .handle_ping(true)
             .build(move |_: Envelope| {
                 handler_calls.fetch_add(1, Ordering::Relaxed);
                 async { Ok::<_, ()>(()) }
             });
-        service.receive(request(b"{}", "ping")).await;
+        receiver.receive(request(b"{}", "ping")).await;
         assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
     async fn maps_authentication_and_request_errors() {
-        let service = || {
+        let receiver = || {
             WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
                 .build(|_: Envelope| async { Ok::<_, ()>(()) })
         };
@@ -684,7 +671,7 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(
-            service().receive(mismatch).await.status(),
+            receiver().receive(mismatch).await.status(),
             StatusCode::UNAUTHORIZED
         );
 
@@ -694,7 +681,7 @@ mod tests {
             .headers_mut()
             .insert("x-hub-signature", "sha1=legacy".parse().unwrap());
         assert_eq!(
-            service().receive(sha1_only).await.status(),
+            receiver().receive(sha1_only).await.status(),
             StatusCode::UNAUTHORIZED
         );
 
@@ -703,7 +690,7 @@ mod tests {
             .headers_mut()
             .insert("x-hub-signature-256", "invalid".parse().unwrap());
         assert_eq!(
-            service().receive(malformed).await.status(),
+            receiver().receive(malformed).await.status(),
             StatusCode::BAD_REQUEST
         );
 
@@ -713,7 +700,7 @@ mod tests {
             "application/x-www-form-urlencoded".parse().unwrap(),
         );
         assert_eq!(
-            service().receive(form).await.status(),
+            receiver().receive(form).await.status(),
             StatusCode::BAD_REQUEST
         );
     }
@@ -741,7 +728,7 @@ mod tests {
             }
         }
 
-        let service = || {
+        let receiver = || {
             WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
                 .build(|_: Envelope| async { Ok::<_, ()>(()) })
         };
@@ -759,34 +746,34 @@ mod tests {
         };
 
         assert_eq!(
-            service().receive(request(None)).await.status(),
+            receiver().receive(request(None)).await.status(),
             StatusCode::UNAUTHORIZED
         );
         // A signed request reaches the read loop and reports the body failure.
         let signed = signature(b"secret", b"{}");
         assert_eq!(
-            service().receive(request(Some(&signed))).await.status(),
+            receiver().receive(request(Some(&signed))).await.status(),
             StatusCode::BAD_REQUEST
         );
     }
 
     #[tokio::test]
     async fn stops_at_the_body_limit_before_authentication() {
-        let service = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
             .body_limit(1)
             .build(|_: Envelope| async { Ok::<_, ()>(()) });
 
-        let response = service.receive(request(b"{}", "push")).await;
+        let response = receiver.receive(request(b"{}", "push")).await;
 
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]
     async fn handler_errors_return_bare_internal_server_errors() {
-        let service = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
             .build(|_: Envelope| async { Err::<(), _>("private error") });
 
-        let response = service.receive(request(b"{}", "push")).await;
+        let response = receiver.receive(request(b"{}", "push")).await;
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(response.body().size_hint().exact(), Some(0));
@@ -799,20 +786,20 @@ mod tests {
         // to be, either.
         struct NotCloneOrDebug;
 
-        let service = WebhookReceiverBuilder::new(Verifier::new(Secret::new("super-secret")))
+        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("super-secret")))
             .body_limit(64)
             .build(|_: Envelope| async { Err::<(), _>(NotCloneOrDebug) });
 
-        let debug = format!("{:?}", service.clone());
+        let debug = format!("{:?}", receiver.clone());
         assert!(debug.contains("body_limit: 64"), "{debug}");
         assert!(debug.contains("[REDACTED]"), "{debug}");
         assert!(!debug.contains("super-secret"), "{debug}");
 
-        let service = WebhookReceiverBuilder::new(Verifier::new(Secret::new("super-secret")))
+        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("super-secret")))
             .build(Recorder {
                 calls: Arc::new(AtomicUsize::new(0)),
             });
-        let _ = format!("{:?}", service.clone());
+        let _ = format!("{:?}", receiver.clone());
     }
 
     #[test]

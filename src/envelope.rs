@@ -420,12 +420,16 @@ impl Envelope {
         Self::from_signed(verifier, &HeaderView::from(headers), body)
     }
 
-    /// Deserializes the exact payload into a caller-defined view.
+    /// Decodes the exact payload into a caller-defined view.
+    ///
+    /// For a view bound to one kind, implement [`Payload`](crate::Payload)
+    /// and use a payload handler instead; this method checks nothing about the
+    /// kind.
     ///
     /// # Errors
     ///
-    /// Returns serde's parse error when the payload does not fit `T`.
-    pub fn parse<T: serde::de::DeserializeOwned>(&self) -> Result<T, serde_json::Error> {
+    /// Returns serde's error when the payload does not fit `T`.
+    pub fn decode<T: serde::de::DeserializeOwned>(&self) -> Result<T, serde_json::Error> {
         serde_json::from_slice(&self.raw)
     }
 }
@@ -816,8 +820,8 @@ mod tests {
         assert_eq!(envelope.raw.as_ref(), UNICODE_BODY);
         assert_eq!(envelope.meta.action, Some(Action::Opened));
 
-        let parsed: serde_json::Value = envelope.parse().unwrap();
-        assert_eq!(parsed["zen"], "⚡ é café 🐙");
+        let decoded: serde_json::Value = envelope.decode().unwrap();
+        assert_eq!(decoded["zen"], "⚡ é café 🐙");
     }
 
     #[cfg(feature = "http")]

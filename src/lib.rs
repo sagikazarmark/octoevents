@@ -126,6 +126,8 @@ mod runtime;
 mod secret;
 #[cfg(feature = "http")]
 mod service;
+#[cfg(test)]
+mod test_support;
 mod trace;
 mod verify;
 

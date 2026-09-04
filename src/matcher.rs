@@ -34,7 +34,7 @@ use crate::{Action, EventKind};
 /// an operator that works depending on operand order is worse than none.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventMatcher {
-    slots: Vec<(EventKind, Option<Action>)>,
+    slots: Vec<Slot>,
 }
 
 impl EventMatcher {
@@ -45,15 +45,38 @@ impl EventMatcher {
         self
     }
 
-    pub(crate) fn into_slots(self) -> Vec<(EventKind, Option<Action>)> {
+    pub(crate) fn into_slots(self) -> Vec<Slot> {
         self.slots
+    }
+}
+
+/// One kind, optionally narrowed to one action: the unit a matcher expands to
+/// and the dispatcher registers a route under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Slot {
+    pub(crate) kind: EventKind,
+    pub(crate) action: Option<Action>,
+}
+
+impl Slot {
+    /// A slot for every action of `kind`.
+    pub(crate) fn any_action(kind: EventKind) -> Self {
+        Self { kind, action: None }
+    }
+
+    /// A slot for one action of `kind`.
+    fn action(kind: EventKind, action: Action) -> Self {
+        Self {
+            kind,
+            action: Some(action),
+        }
     }
 }
 
 impl From<EventKind> for EventMatcher {
     fn from(kind: EventKind) -> Self {
         Self {
-            slots: vec![(kind, None)],
+            slots: vec![Slot::any_action(kind)],
         }
     }
 }
@@ -61,7 +84,7 @@ impl From<EventKind> for EventMatcher {
 impl<const N: usize> From<[EventKind; N]> for EventMatcher {
     fn from(kinds: [EventKind; N]) -> Self {
         Self {
-            slots: kinds.into_iter().map(|kind| (kind, None)).collect(),
+            slots: kinds.into_iter().map(Slot::any_action).collect(),
         }
     }
 }
@@ -69,7 +92,7 @@ impl<const N: usize> From<[EventKind; N]> for EventMatcher {
 impl From<(EventKind, Action)> for EventMatcher {
     fn from((kind, action): (EventKind, Action)) -> Self {
         Self {
-            slots: vec![(kind, Some(action))],
+            slots: vec![Slot::action(kind, action)],
         }
     }
 }
@@ -79,7 +102,7 @@ impl<const N: usize> From<(EventKind, [Action; N])> for EventMatcher {
         Self {
             slots: actions
                 .into_iter()
-                .map(|action| (kind.clone(), Some(action)))
+                .map(|action| Slot::action(kind.clone(), action))
                 .collect(),
         }
     }
@@ -90,7 +113,7 @@ impl<const N: usize> From<[(EventKind, Action); N]> for EventMatcher {
         Self {
             slots: pairs
                 .into_iter()
-                .map(|(kind, action)| (kind, Some(action)))
+                .map(|(kind, action)| Slot::action(kind, action))
                 .collect(),
         }
     }

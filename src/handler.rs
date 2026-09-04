@@ -102,7 +102,19 @@ where
 ///
 /// A closure `Fn(EventMeta, WebhookEvent) -> Fut` is an event handler too;
 /// annotate its parameter types and, where nothing else fixes it, its error
-/// type (`Ok::<_, E>(())`).
+/// type (`Ok::<_, E>(())`):
+///
+/// ```
+/// use octocrab::models::webhook_events::WebhookEvent;
+/// use octoevents::{EventHandler, EventMeta};
+///
+/// fn audit() -> impl EventHandler<Error = std::convert::Infallible> {
+///     |meta: EventMeta, event: WebhookEvent| async move {
+///         println!("{} {:?}", meta.delivery_id, event.kind);
+///         Ok::<_, std::convert::Infallible>(())
+///     }
+/// }
+/// ```
 ///
 /// Enabling the `octocrab` feature makes octocrab's pre-1.0 version part of
 /// this crate's public API: `WebhookEvent` is octocrab's type, so an octocrab
@@ -204,7 +216,22 @@ where
 ///
 /// A closure `Fn(EventMeta, P) -> Fut` is a payload handler too; annotate
 /// its parameter types and, where nothing else fixes it, its error type
-/// (`Ok::<_, E>(())`).
+/// (`Ok::<_, E>(())`):
+///
+/// ```
+/// use octoevents::{EventKind, EventMeta, PayloadHandler};
+///
+/// #[derive(serde::Deserialize)]
+/// struct PullRequestNumber { number: u64 }
+/// octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
+///
+/// fn log() -> impl PayloadHandler<PullRequestNumber, Error = std::convert::Infallible> {
+///     |meta: EventMeta, pr: PullRequestNumber| async move {
+///         println!("{}: PR #{}", meta.delivery_id, pr.number);
+///         Ok::<_, std::convert::Infallible>(())
+///     }
+/// }
+/// ```
 ///
 /// Register one on a `Dispatcher` with `handle_with`, or hand it to the
 /// receiver directly through [`PayloadHandler::into_webhook_handler`].
@@ -287,7 +314,7 @@ where
 
 // The payload decode step shared by `PayloadAdapter` (receiver path) and the
 // dispatcher's payload routes. Crate-private: it trusts the caller to have
-// checked the kind, and `Envelope::parse` already covers ad-hoc views.
+// checked the kind, and `Envelope::decode` already covers ad-hoc views.
 impl Envelope {
     /// Decodes the payload as `P` without checking the kind; callers that
     /// have not already routed by kind check it first.
@@ -319,9 +346,10 @@ pub enum DecodeError {
 /// The handler's own error type is carried as is; it is not required to
 /// implement any conversion.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum HandleError<E> {
     /// The envelope could not be decoded, so the handler did not run.
-    #[error("payload could not be decoded for the handler")]
+    #[error("envelope could not be decoded into the handler's input")]
     Decode(#[source] DecodeError),
     /// The handler ran and failed.
     #[error("handler failed")]
@@ -330,10 +358,8 @@ pub enum HandleError<E> {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
-    use bytes::Bytes;
-
     use super::{DecodeError, HandleError, PayloadHandler, WebhookHandler};
-    use crate::{Envelope, EventKind, EventMeta};
+    use crate::{EventKind, EventMeta, test_support::envelope};
 
     #[derive(serde::Deserialize)]
     struct Opened {
@@ -341,13 +367,6 @@ mod tests {
     }
 
     crate::impl_payload!(Opened => EventKind::Issues);
-
-    fn envelope(kind: EventKind, raw: &'static [u8]) -> Envelope {
-        Envelope {
-            meta: EventMeta::new("delivery", kind),
-            raw: Bytes::from_static(raw),
-        }
-    }
 
     #[tokio::test]
     async fn the_payload_adapter_names_the_kind_mismatch_it_refused() {
