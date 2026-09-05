@@ -323,9 +323,14 @@ impl<'a> From<&'a http::HeaderMap> for HeaderView<'a> {
 ///
 /// On the wire the metadata is flattened beside `raw`, so a serialized
 /// envelope is one flat JSON object with no `meta` nesting. Envelopes
-/// serialized before the metadata split nested four fields under `common`;
-/// those fields deserialize as `None` from such a document.
+/// serialized by 0.1.0 nested `installation_id`, `repository`, `organization`
+/// and `sender` under a `common` object instead; the [`Deserialize`] impl
+/// still accepts that shape and folds those fields into `meta`, a flat field
+/// that has a value winning where a document carries both. This shim is
+/// transitional and will be removed in 0.3.0; the serialized shape does not
+/// change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "EnvelopeWire")]
 pub struct Envelope {
     /// The routing metadata extracted from the headers and the payload probe.
     #[serde(flatten)]
@@ -334,11 +339,57 @@ pub struct Envelope {
     ///
     /// Serialized as standard base64 so an envelope survives a JSON hop to an
     /// internal service without the body being re-encoded.
-    #[serde(
-        serialize_with = "serialize_bytes",
-        deserialize_with = "deserialize_bytes"
-    )]
+    #[serde(serialize_with = "serialize_bytes")]
     pub raw: Bytes,
+}
+
+/// The shape [`Envelope`] deserializes from: the current flat form, plus the
+/// `common` object under which 0.1.0 nested four metadata fields.
+///
+/// Transitional: accepting the 0.1.0 shape keeps envelopes persisted or in
+/// flight across the 0.2.0 deploy from losing the installation ID a GitHub
+/// App needs to act. Remove in 0.3.0 along with [`LegacyCommon`]: drop
+/// `#[serde(from)]` from [`Envelope`] and put
+/// `deserialize_with = "deserialize_bytes"` back on its `raw` field.
+#[derive(Debug, Deserialize)]
+struct EnvelopeWire {
+    #[serde(flatten)]
+    meta: EventMeta,
+    #[serde(default)]
+    common: Option<LegacyCommon>,
+    #[serde(deserialize_with = "deserialize_bytes")]
+    raw: Bytes,
+}
+
+/// The `common` object of a 0.1.0-serialized envelope. See [`EnvelopeWire`].
+#[derive(Debug, Deserialize)]
+struct LegacyCommon {
+    #[serde(default)]
+    installation_id: Option<u64>,
+    #[serde(default)]
+    repository: Option<RepositoryRef>,
+    #[serde(default)]
+    organization: Option<String>,
+    #[serde(default)]
+    sender: Option<String>,
+}
+
+impl From<EnvelopeWire> for Envelope {
+    fn from(wire: EnvelopeWire) -> Self {
+        let mut meta = wire.meta;
+        if let Some(common) = wire.common {
+            // Per field: a flat value wins, and the nested one fills only what
+            // the flat form left empty.
+            meta.installation_id = meta.installation_id.or(common.installation_id);
+            meta.repository = meta.repository.or(common.repository);
+            meta.organization = meta.organization.or(common.organization);
+            meta.sender = meta.sender.or(common.sender);
+        }
+        Self {
+            meta,
+            raw: wire.raw,
+        }
+    }
 }
 
 impl Envelope {
@@ -879,6 +930,44 @@ mod tests {
         assert_eq!(received, envelope);
         assert_eq!(received.raw, Bytes::from_static(BODY));
         assert_eq!(received.meta.target_type, Some(TargetType::Repository));
+    }
+
+    #[test]
+    fn deserializes_an_envelope_serialized_by_v0_1_0_with_its_nested_fields_intact() {
+        // The fixture is v0.1.0's own output over BODY, so the envelope this
+        // version builds from the same body is exactly what must come back.
+        let signature = signature(b"secret", BODY);
+        let expected =
+            Envelope::from_signed(&verifier(), &headers(&signature), Bytes::from_static(BODY))
+                .unwrap();
+
+        let received: Envelope =
+            serde_json::from_str(include_str!("../tests/fixtures/envelope.v0.1.0.json")).unwrap();
+
+        assert_eq!(received, expected);
+        assert_eq!(received.meta.installation_id, Some(42));
+        assert_eq!(received.meta.sender.as_deref(), Some("monalisa"));
+    }
+
+    #[test]
+    fn a_flat_field_wins_over_the_nested_one_and_common_fills_only_what_is_absent() {
+        // No version emits both forms; a hand-made document that does is
+        // resolved per field, so the current form is never overridden.
+        let received: Envelope = serde_json::from_str(
+            r#"{
+                "delivery_id":"delivery",
+                "kind":"issues",
+                "installation_id":7,
+                "common":{"installation_id":42,"sender":"monalisa"},
+                "raw":"e30="
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(received.meta.installation_id, Some(7));
+        assert_eq!(received.meta.sender.as_deref(), Some("monalisa"));
+        assert_eq!(received.meta.repository, None);
+        assert_eq!(received.raw, Bytes::from_static(b"{}"));
     }
 
     #[test]

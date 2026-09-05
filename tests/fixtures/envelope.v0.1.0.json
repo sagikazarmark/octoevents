@@ -1,0 +1,19 @@
+{
+  "delivery_id": "delivery",
+  "kind": "pull_request",
+  "action": "opened",
+  "common": {
+    "installation_id": 42,
+    "repository": {
+      "id": 1,
+      "name": "repo",
+      "full_name": "octo/repo",
+      "owner": "octo"
+    },
+    "organization": "github",
+    "sender": "monalisa"
+  },
+  "target_type": "repository",
+  "target_id": 7,
+  "raw": "ewogICAgICAgICJhY3Rpb24iOiJvcGVuZWQiLAogICAgICAgICJpbnN0YWxsYXRpb24iOnsiaWQiOjQyfSwKICAgICAgICAicmVwb3NpdG9yeSI6eyJpZCI6MSwibmFtZSI6InJlcG8iLCJmdWxsX25hbWUiOiJvY3RvL3JlcG8iLCJvd25lciI6eyJsb2dpbiI6Im9jdG8ifX0sCiAgICAgICAgIm9yZ2FuaXphdGlvbiI6eyJsb2dpbiI6ImdpdGh1YiJ9LAogICAgICAgICJzZW5kZXIiOnsibG9naW4iOiJtb25hbGlzYSJ9CiAgICB9"
+}

@@ -7,3 +7,10 @@ The fixture bodies are copied verbatim from these pinned upstream examples:
 - `unknown.json` duplicates the pinned octocrab ping body and is delivered with a deliberately unknown event header.
 
 `unrepresentable.json` is deliberately synthetic valid JSON used only to test the raw fallback.
+
+`envelope.v0.1.0.json` is not a webhook body: it is an `Envelope` serialized
+by octoevents v0.1.0 (`serde_json::to_string_pretty` over `Envelope::from_signed`
+with the `BODY` of the `envelope` unit tests, delivery ID `delivery`, event
+`pull_request`, target type `repository`, target ID `7`). It pins the shape
+that nested four fields under `common`, which the legacy deserialize shim
+accepts until 0.3.0.
