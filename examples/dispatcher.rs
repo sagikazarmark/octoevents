@@ -13,15 +13,21 @@
 //! - [`Persist`] is a `WebhookHandler` in the dispatcher's raw tier: it sees
 //!   the verified envelope, bytes included, and stores it before any other
 //!   tier runs. A delivery whose envelope could not be stored is not routed.
-//! - [`Auditor`] and [`Reject`] are `MetaHandler`s over the routing metadata
-//!   alone; one runs for every delivery, one only when nothing matched. With
-//!   nothing to decode, both run even for a payload octocrab cannot represent.
+//! - [`Auditor`] is a `MetaHandler` over the metadata alone, in the `always`
+//!   tier: it runs for every delivery and, with nothing to decode, even for
+//!   a payload octocrab cannot represent.
 //! - [`Labeler`] is a `PayloadHandler` over octocrab's pull-request payload;
 //!   its kind comes from that type, so registering it names only the action
 //!   it wants, and other actions never reach it or decode for it.
 //! - The triage closure is an `EventHandler` over octocrab's decoded
 //!   `WebhookEvent`, registered with `on`: the one registration that needs
 //!   the `octocrab` feature.
+//!
+//! [`DeadLetter`] is a `WebhookHandler` that wraps the dispatcher and reads
+//! the outcome `dispatch` reports: an action GitHub added to a kind this app
+//! handles is tolerated, and a delivery of a kind it never registered is
+//! dead-lettered, bytes included, without being turned into an error. The
+//! receiver is built from the wrapper.
 
 // The handlers here print instead of awaiting a database or the GitHub API,
 // which is what a real `async fn handle` would do.
@@ -32,8 +38,8 @@ use std::{convert::Infallible, sync::Mutex};
 use axum::{Router, routing::post_service};
 use octocrab::models::webhook_events::{WebhookEvent, payload::PullRequestWebhookEventPayload};
 use octoevents::{
-    Action, DecodeError, Dispatcher, Envelope, EventKind, EventMeta, MetaHandler, PayloadHandler,
-    Secret, Verifier, WebhookHandler, WebhookReceiverBuilder,
+    Action, DecodeError, Dispatcher, Envelope, EventKind, EventMeta, Match, MetaHandler,
+    PayloadHandler, Secret, Verifier, WebhookHandler, WebhookReceiverBuilder,
 };
 
 /// The application error every handler's error converts into.
@@ -45,11 +51,6 @@ enum AppError {
     Decode(#[from] DecodeError),
     #[error(transparent)]
     Store(#[from] StoreError),
-    #[error("no handler for {kind} {action:?}")]
-    Unhandled {
-        kind: EventKind,
-        action: Option<Action>,
-    },
 }
 
 impl From<Infallible> for AppError {
@@ -154,19 +155,44 @@ impl PayloadHandler<PullRequestWebhookEventPayload> for Labeler {
     }
 }
 
-/// Fails unmatched deliveries so they show red in GitHub for redelivery. It
-/// reads only the metadata, so a payload nothing can decode is still reported
-/// as unhandled rather than as a decode error.
-struct Reject;
+/// Decides what an unmatched delivery means, with the bytes still in hand.
+///
+/// The tiers cannot express this policy: a fallback sees only the metadata
+/// and can only continue or fail. The outcome `dispatch` reports says whether
+/// the route table matched the delivery and, if not, whether it knew the
+/// kind. An action GitHub added to a kind this app handles is tolerated; a
+/// kind it never registered is dead-lettered for an operator to look at and
+/// stays green in GitHub, since redelivery would change nothing. Errors from
+/// the handlers that ran are passed through either way.
+struct DeadLetter {
+    dispatcher: Dispatcher<AppError>,
+    letters: Mutex<Vec<Envelope>>,
+}
 
-impl MetaHandler for Reject {
+impl WebhookHandler for DeadLetter {
     type Error = AppError;
 
-    async fn handle(&self, meta: EventMeta) -> Result<(), Self::Error> {
-        Err(AppError::Unhandled {
-            kind: meta.kind,
-            action: meta.action,
-        })
+    async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
+        // The dispatcher takes the envelope by value; the clone shares the
+        // bytes, so the wrapper still holds them afterwards.
+        let outcome = self.dispatcher.dispatch(envelope.clone()).await;
+        match outcome.matched {
+            Match::Matched | Match::UnmatchedAction => outcome.result,
+            Match::UnmatchedKind => {
+                outcome.result?;
+                println!(
+                    "dead-letter {} {} ({} bytes)",
+                    envelope.meta.delivery_id,
+                    envelope.meta.kind,
+                    envelope.raw.len()
+                );
+                self.letters
+                    .lock()
+                    .expect("dead-letter lock")
+                    .push(envelope);
+                Ok(())
+            }
+        }
     }
 }
 
@@ -202,10 +228,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 label: "needs-review".into(),
             },
         )
-        .fallback(Reject)
         .build();
 
-    let webhook = WebhookReceiverBuilder::new(verifier).build(dispatcher);
+    let webhook = WebhookReceiverBuilder::new(verifier).build(DeadLetter {
+        dispatcher,
+        letters: Mutex::new(Vec::new()),
+    });
 
     let app: Router = Router::new().route("/webhook", post_service(webhook));
     let address = std::env::var("WEBHOOK_ADDRESS").unwrap_or_else(|_| "127.0.0.1:3000".into());

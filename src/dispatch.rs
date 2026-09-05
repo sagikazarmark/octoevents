@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt, future::Future, sync::Arc};
+use std::{collections::HashMap, fmt, sync::Arc};
 
 #[cfg(feature = "octocrab")]
 use octocrab::models::webhook_events::WebhookEvent;
@@ -47,6 +47,20 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// error. The raw and `always` chains never count as a match, and an empty
 /// fallback chain succeeds, so unmatched kinds are green in GitHub until you
 /// decide otherwise.
+///
+/// [`dispatch`](Self::dispatch) reports an [`Outcome`]: whether the delivery
+/// was matched, and if not, whether its kind was known to the route table,
+/// beside the result of the handlers that ran. The outcome is distinct from
+/// success: a matched delivery can fail, and an unmatched one can succeed. A
+/// delivery matches when at least one routed handler is registered for its
+/// kind, or its kind and action; matching is decided by the route table,
+/// never by a handler, and the raw and `always` tiers do not match. As a
+/// [`WebhookHandler`] the dispatcher keeps only the result, so the receiver
+/// sees an unmatched delivery as a success unless a fallback failed it. A
+/// handler that wraps the dispatcher reads the outcome instead: to forward or
+/// dead-letter an unmatched delivery, bytes included, without turning
+/// "unhandled" into an error, or to reject a kind the route table does not
+/// know while tolerating an action GitHub added to one it does.
 ///
 /// The decode rule: raw, meta and payload handlers never decode with
 /// octocrab; the first event handler reached does, once, and every later one
@@ -135,9 +149,9 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// work on the bytes (persist, forward) is registered with `always_raw` and
 /// runs before any typed handler. It can continue or fail, never skip: a
 /// webhook handler that decides whether to route at all wraps the dispatcher
-/// instead. There is no raw fallback: a strict `fallback` reports an
-/// unmatched delivery through its error, and a wrapping handler still holds
-/// the bytes when it does.
+/// instead. There is no raw fallback: a wrapping handler reads the
+/// [`Outcome`] and still holds the bytes, so it can forward an unmatched
+/// delivery without a strict `fallback` turning it into an error.
 ///
 /// Enabling the `octocrab` feature makes octocrab's pre-1.0 version part of
 /// this crate's public API: an octocrab major bump is a breaking change for
@@ -171,12 +185,15 @@ where
     }
 
     /// Runs the raw chain, the `always` chain, the matching routed chains, and
-    /// the fallback chain when nothing matched, in that order.
+    /// the fallback chain when nothing matched, in that order, and reports
+    /// the [`Outcome`].
     ///
-    /// # Errors
-    ///
-    /// Stops and returns the first handler error, or the decode error of the
-    /// first handler whose input could not be decoded.
+    /// The outcome carries the match the route table decided and the result
+    /// of the handlers that ran: the first handler error, or the decode error
+    /// of the first handler whose input could not be decoded. The two are
+    /// independent: a matched delivery can fail, and an unmatched one
+    /// succeeds unless a fallback fails it. [`WebhookHandler::handle`] on the
+    /// dispatcher keeps only the result.
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(
@@ -185,61 +202,42 @@ where
             fields(delivery_id = %envelope.meta.delivery_id, event = %envelope.meta.kind, outcome = tracing::field::Empty)
         )
     )]
-    pub async fn dispatch(&self, envelope: Envelope) -> Result<(), E> {
+    pub async fn dispatch(&self, envelope: Envelope) -> Outcome<E> {
+        let (matched, routed) = self.routes.lookup(&envelope.meta);
+        let result = self.run_tiers(&envelope, matched, routed).await;
+        let outcome = Outcome { matched, result };
+        trace::record("outcome", outcome.label());
+        outcome
+    }
+
+    /// Runs the raw chain, the `always` chain, then either the routed chains
+    /// or the fallback chain, stopping at the first error.
+    async fn run_tiers(
+        &self,
+        envelope: &Envelope,
+        matched: Match,
+        routed: impl Iterator<Item = &[Route<E>]>,
+    ) -> Result<(), E> {
         let mut in_flight = InFlight {
-            envelope: &envelope,
+            envelope,
             #[cfg(feature = "octocrab")]
             event: None,
         };
 
-        in_flight
-            .run_chain(&self.routes.raw)
-            .await
-            .inspect_err(|_| trace::record("outcome", "handler_error"))?;
+        in_flight.run_chain(&self.routes.raw).await?;
+        in_flight.run_chain(&self.routes.always).await?;
 
-        in_flight
-            .run_chain(&self.routes.always)
-            .await
-            .inspect_err(|_| trace::record("outcome", "handler_error"))?;
-
-        // Routes are keyed by kind first so a delivery is looked up entirely by
-        // reference: no EventKind or Action is cloned to build a lookup key.
-        let routes = self.routes.by_kind.get(&envelope.meta.kind);
-        let specific = routes.and_then(|routes| {
-            envelope
-                .meta
-                .action
-                .as_ref()
-                .and_then(|action| routes.by_action.get(action))
-        });
-        let any_action = routes
-            .map(|routes| &routes.any_action)
-            .filter(|chain| !chain.is_empty());
-
-        let mut matched = false;
-        for chain in specific.into_iter().chain(any_action) {
-            matched = true;
-            in_flight
-                .run_chain(chain)
-                .await
-                .inspect_err(|_| trace::record("outcome", "handler_error"))?;
+        match matched {
+            Match::Matched => {
+                for chain in routed {
+                    in_flight.run_chain(chain).await?;
+                }
+                Ok(())
+            }
+            Match::UnmatchedAction | Match::UnmatchedKind => {
+                in_flight.run_chain(&self.routes.fallback).await
+            }
         }
-
-        if matched {
-            trace::record("outcome", "ok");
-            return Ok(());
-        }
-
-        let result = in_flight.run_chain(&self.routes.fallback).await;
-        trace::record(
-            "outcome",
-            if result.is_ok() {
-                "fallback_ok"
-            } else {
-                "fallback_error"
-            },
-        );
-        result
     }
 }
 
@@ -249,9 +247,106 @@ where
 {
     type Error = E;
 
-    fn handle(&self, envelope: Envelope) -> impl Future<Output = Result<(), E>> + MaybeSend {
-        self.dispatch(envelope)
+    /// Dispatches the envelope and keeps only the result: an unmatched
+    /// delivery succeeds unless a fallback fails it. The `octoevents.dispatch`
+    /// span records the outcome on this path too.
+    async fn handle(&self, envelope: Envelope) -> Result<(), E> {
+        self.dispatch(envelope).await.result
     }
+}
+
+/// What one dispatch reports: whether the delivery matched, and whether the
+/// handlers that ran succeeded.
+///
+/// The two are independent. `matched` is decided by the route table alone,
+/// never by a handler, so it is known even when the raw or `always` tier
+/// failed before routing began. `result` is `Ok` when every handler that ran
+/// succeeded, and otherwise the first error, whichever tier it came from. A
+/// matched delivery can fail; an unmatched one succeeds unless a fallback
+/// fails it.
+///
+/// A handler wrapping a [`Dispatcher`] reads both to set policy the tiers
+/// cannot: forward or dead-letter an unmatched delivery, bytes included,
+/// without turning "unhandled" into an error, or reject a kind the route
+/// table does not know while tolerating an action GitHub added to a kind it
+/// does. The receiver never sees this type: [`WebhookHandler::handle`] on the
+/// dispatcher returns `result` alone.
+///
+/// ```
+/// use octoevents::{Dispatcher, Envelope, Match, WebhookHandler};
+/// # use octoevents::DecodeError;
+/// # #[derive(Debug)]
+/// # struct AppError;
+/// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
+///
+/// /// Dead-letters deliveries of kinds the dispatcher never registered.
+/// struct DeadLetter {
+///     dispatcher: Dispatcher<AppError>,
+/// }
+///
+/// impl WebhookHandler for DeadLetter {
+///     type Error = AppError;
+///
+///     async fn handle(&self, envelope: Envelope) -> Result<(), AppError> {
+///         // The clone shares the bytes; the wrapper still holds them.
+///         let outcome = self.dispatcher.dispatch(envelope.clone()).await;
+///         match outcome.matched {
+///             // Routed, or an action GitHub added to a kind this app handles.
+///             Match::Matched | Match::UnmatchedAction => outcome.result,
+///             Match::UnmatchedKind => {
+///                 outcome.result?;
+///                 println!("dead-letter {} ({} bytes)", envelope.meta.delivery_id, envelope.raw.len());
+///                 Ok(())
+///             }
+///         }
+///     }
+/// }
+/// # let _ = DeadLetter { dispatcher: Dispatcher::<AppError>::builder().build() };
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use = "an outcome carries the handlers' result in its `result` field"]
+pub struct Outcome<E> {
+    /// Whether the route table matched the delivery, and if not, whether it
+    /// knew the kind.
+    pub matched: Match,
+    /// `Ok` when every handler that ran succeeded; otherwise the first error.
+    pub result: Result<(), E>,
+}
+
+impl<E> Outcome<E> {
+    /// The value the `octoevents.dispatch` span records as `outcome`.
+    fn label(&self) -> &'static str {
+        match (self.matched, self.result.is_ok()) {
+            (Match::Matched, true) => "ok",
+            (Match::Matched, false) => "handler_error",
+            (Match::UnmatchedAction | Match::UnmatchedKind, true) => "fallback_ok",
+            (Match::UnmatchedAction | Match::UnmatchedKind, false) => "fallback_error",
+        }
+    }
+}
+
+/// Whether a delivery matched the route table.
+///
+/// A delivery matches when at least one routed handler is registered for its
+/// kind, or for its kind and action. The raw, `always` and `fallback` tiers
+/// never count: a delivery handled only by them is unmatched. When nothing
+/// matched, the route table still says whether it knows the kind, so a
+/// strict policy can reject a kind it never registered while tolerating an
+/// action GitHub added to one it did.
+///
+/// The three cases are exhaustive by construction of the route table, which
+/// is keyed by kind and then by action, so a policy matches on them without
+/// a wildcard arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Match {
+    /// At least one routed handler is registered for the delivery's kind, or
+    /// for its kind and action.
+    Matched,
+    /// Routed handlers are registered for the delivery's kind, but none for
+    /// its action (or for a delivery without one).
+    UnmatchedAction,
+    /// No routed handler is registered for the delivery's kind.
+    UnmatchedKind,
 }
 
 /// One envelope being dispatched: the envelope plus, with the `octocrab`
@@ -598,6 +693,35 @@ struct Routes<E> {
 }
 
 impl<E> Routes<E> {
+    /// Looks one delivery up in the route table: the match it decides and the
+    /// routed chains it selects, the action-specific chain before the
+    /// kind-wide one.
+    ///
+    /// This is the whole of matching: the tiers that run afterwards cannot
+    /// change it. Routes are keyed by kind first so the lookup is entirely by
+    /// reference: no `EventKind` or `Action` is cloned to build a key.
+    fn lookup(&self, meta: &EventMeta) -> (Match, impl Iterator<Item = &[Route<E>]>) {
+        let kind_routes = self.by_kind.get(&meta.kind);
+        let specific = kind_routes.and_then(|routes| {
+            meta.action
+                .as_ref()
+                .and_then(|action| routes.by_action.get(action))
+        });
+        // A kind registered only under some actions has an empty kind-wide
+        // chain, which must not count as a match.
+        let any_action = kind_routes
+            .map(|routes| &routes.any_action)
+            .filter(|chain| !chain.is_empty());
+
+        let matched = match (kind_routes, specific.or(any_action)) {
+            (_, Some(_)) => Match::Matched,
+            (Some(_), None) => Match::UnmatchedAction,
+            (None, None) => Match::UnmatchedKind,
+        };
+        let chains = specific.into_iter().chain(any_action).map(Vec::as_slice);
+        (matched, chains)
+    }
+
     /// Prints the route table under the name of the type that owns it, so
     /// the dispatcher and its builder read alike.
     fn fmt_as(&self, name: &str, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -644,7 +768,7 @@ mod tests {
     use octocrab::models::webhook_events::WebhookEvent;
     use tokio::sync::Mutex;
 
-    use super::Dispatcher;
+    use super::{Dispatcher, Match, Outcome};
     #[cfg(feature = "octocrab")]
     use crate::EventMatcher;
     use crate::{
@@ -792,7 +916,11 @@ mod tests {
             .fallback(record(&calls, "fallback"))
             .build();
 
-        dispatcher.dispatch(pull_request_opened()).await.unwrap();
+        dispatcher
+            .dispatch(pull_request_opened())
+            .await
+            .result
+            .unwrap();
 
         assert_eq!(
             calls.lock().await.as_slice(),
@@ -812,7 +940,11 @@ mod tests {
             .on_payload_action([Action::Opened], record_payload(&calls, "action-2"))
             .build();
 
-        dispatcher.dispatch(pull_request_opened()).await.unwrap();
+        dispatcher
+            .dispatch(pull_request_opened())
+            .await
+            .result
+            .unwrap();
 
         assert_eq!(
             calls.lock().await.as_slice(),
@@ -837,7 +969,11 @@ mod tests {
             .fallback(record(&calls, "fallback-2"))
             .build();
 
-        dispatcher.dispatch(pull_request_opened()).await.unwrap();
+        dispatcher
+            .dispatch(pull_request_opened())
+            .await
+            .result
+            .unwrap();
         assert_eq!(
             calls.lock().await.as_slice(),
             [
@@ -846,7 +982,11 @@ mod tests {
         );
 
         calls.lock().await.clear();
-        dispatcher.dispatch(check_run_completed()).await.unwrap();
+        dispatcher
+            .dispatch(check_run_completed())
+            .await
+            .result
+            .unwrap();
         assert_eq!(
             calls.lock().await.as_slice(),
             [
@@ -871,7 +1011,7 @@ mod tests {
 
         // Only `always` applies: the strict fallback still rejects it.
         assert_eq!(
-            dispatcher.dispatch(installation_created()).await,
+            dispatcher.dispatch(installation_created()).await.result,
             Err(AppError::Handler("unmatched"))
         );
         assert_eq!(calls.lock().await.as_slice(), ["audit", "unmatched"]);
@@ -889,7 +1029,7 @@ mod tests {
         // Persisting the envelope says nothing about whether any route claims
         // its kind: the strict fallback still rejects it.
         assert_eq!(
-            dispatcher.dispatch(installation_created()).await,
+            dispatcher.dispatch(installation_created()).await.result,
             Err(AppError::Handler("unmatched"))
         );
         assert_eq!(calls.lock().await.as_slice(), ["persist", "unmatched"]);
@@ -912,7 +1052,7 @@ mod tests {
 
         // The always tier receives only the metadata, so nothing is decoded
         // and the delivery succeeds although octocrab cannot represent it.
-        assert_eq!(dispatcher.dispatch(unrepresentable()).await, Ok(()));
+        assert_eq!(dispatcher.dispatch(unrepresentable()).await.result, Ok(()));
         assert_eq!(calls.lock().await.as_slice(), ["audit"]);
     }
 
@@ -933,7 +1073,7 @@ mod tests {
         // Nothing routes `pull_request`, so the fallback decides: it never
         // decodes, so the answer is "unhandled", not a decode error.
         assert_eq!(
-            dispatcher.dispatch(unrepresentable()).await,
+            dispatcher.dispatch(unrepresentable()).await.result,
             Err(AppError::Handler("unmatched"))
         );
         assert_eq!(calls.lock().await.as_slice(), ["unmatched"]);
@@ -949,13 +1089,17 @@ mod tests {
             .build();
 
         assert_eq!(
-            dispatcher.dispatch(check_run_completed()).await,
+            dispatcher.dispatch(check_run_completed()).await.result,
             Err(AppError::Handler("reject"))
         );
         assert_eq!(calls.lock().await.as_slice(), ["log", "reject"]);
 
         calls.lock().await.clear();
-        dispatcher.dispatch(pull_request_opened()).await.unwrap();
+        dispatcher
+            .dispatch(pull_request_opened())
+            .await
+            .result
+            .unwrap();
         assert_eq!(calls.lock().await.as_slice(), ["pull-request"]);
     }
 
@@ -965,9 +1109,204 @@ mod tests {
             .on_payload(|_: EventMeta, _: AnyPullRequest| async { Ok::<_, AppError>(()) })
             .build();
 
-        assert_eq!(dispatcher.dispatch(unknown()).await, Ok(()));
-        assert_eq!(dispatcher.dispatch(ping()).await, Ok(()));
-        assert_eq!(dispatcher.dispatch(check_run_completed()).await, Ok(()));
+        assert_eq!(dispatcher.dispatch(unknown()).await.result, Ok(()));
+        assert_eq!(dispatcher.dispatch(ping()).await.result, Ok(()));
+        assert_eq!(
+            dispatcher.dispatch(check_run_completed()).await.result,
+            Ok(())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_matched_failure_is_distinguishable_from_an_unmatched_fallback_failure() {
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .on_payload(|_: EventMeta, _: AnyPullRequest| async { Err::<(), _>("routed") })
+            .fallback(|_: EventMeta| async { Err::<(), _>("unmatched") })
+            .build();
+
+        // Both deliveries fail. The result alone cannot say whether a routed
+        // handler or a strict fallback failed them; the match can.
+        assert_eq!(
+            dispatcher.dispatch(pull_request_opened()).await,
+            Outcome {
+                matched: Match::Matched,
+                result: Err(AppError::Handler("routed")),
+            }
+        );
+        assert_eq!(
+            dispatcher.dispatch(check_run_completed()).await,
+            Outcome {
+                matched: Match::UnmatchedKind,
+                result: Err(AppError::Handler("unmatched")),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unmatched_outcome_says_whether_the_route_table_knows_the_kind() {
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .on_payload_action([Action::Opened], |_: EventMeta, _: AnyPullRequest| async {
+                Ok::<_, AppError>(())
+            })
+            .build();
+
+        assert_eq!(
+            dispatcher.dispatch(pull_request_opened()).await,
+            Outcome {
+                matched: Match::Matched,
+                result: Ok(()),
+            }
+        );
+
+        // Routes exist for `pull_request`, none for `closed`: the kind is
+        // known, so a strict policy can tolerate an action it did not
+        // register. The same holds for a delivery of the kind carrying no
+        // action at all.
+        assert_eq!(
+            dispatcher.dispatch(pull_request(Action::Closed)).await,
+            Outcome {
+                matched: Match::UnmatchedAction,
+                result: Ok(()),
+            }
+        );
+        assert_eq!(
+            dispatcher.dispatch(unrepresentable()).await,
+            Outcome {
+                matched: Match::UnmatchedAction,
+                result: Ok(()),
+            }
+        );
+
+        // No route mentions `check_run`, nor a kind this crate does not know.
+        assert_eq!(
+            dispatcher.dispatch(check_run_completed()).await,
+            Outcome {
+                matched: Match::UnmatchedKind,
+                result: Ok(()),
+            }
+        );
+        assert_eq!(
+            dispatcher.dispatch(unknown()).await,
+            Outcome {
+                matched: Match::UnmatchedKind,
+                result: Ok(()),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn the_match_is_decided_by_the_route_table_whichever_tier_fails() {
+        let calls = Calls::default();
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .always(fail(&calls, "audit"))
+            .on_payload(record_payload(&calls, "routed"))
+            .build();
+
+        // The always tier fails before routing begins. The route table still
+        // says which delivery would have been routed and which would not.
+        assert_eq!(
+            dispatcher.dispatch(pull_request_opened()).await,
+            Outcome {
+                matched: Match::Matched,
+                result: Err(AppError::Handler("audit")),
+            }
+        );
+        assert_eq!(
+            dispatcher.dispatch(check_run_completed()).await,
+            Outcome {
+                matched: Match::UnmatchedKind,
+                result: Err(AppError::Handler("audit")),
+            }
+        );
+        assert_eq!(calls.lock().await.as_slice(), ["audit", "audit"]);
+
+        // The same for the raw tier, which runs even earlier.
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .always_raw(fail_envelope(&calls, "persist"))
+            .on_payload(record_payload(&calls, "routed"))
+            .build();
+        assert_eq!(
+            dispatcher.dispatch(pull_request_opened()).await,
+            Outcome {
+                matched: Match::Matched,
+                result: Err(AppError::Handler("persist")),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_keeps_the_result_and_drops_the_match() {
+        use crate::WebhookHandler as _;
+
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .on_payload(|_: EventMeta, _: AnyPullRequest| async { Err::<(), _>("routed") })
+            .build();
+
+        // What the receiver sees: an unmatched delivery succeeds, a matched
+        // one reports its handler's error, and neither says which it was.
+        assert_eq!(dispatcher.handle(check_run_completed()).await, Ok(()));
+        assert_eq!(
+            dispatcher.handle(pull_request_opened()).await,
+            Err(AppError::Handler("routed"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wrapper_forwards_unmatched_deliveries_with_their_bytes() {
+        use crate::WebhookHandler;
+
+        /// Sets the policy the tiers cannot: an action GitHub added to a kind
+        /// the dispatcher handles is tolerated, and a delivery of a kind it
+        /// never registered is dead-lettered, bytes included, instead of
+        /// being turned into an error.
+        struct DeadLetter {
+            dispatcher: Dispatcher<AppError>,
+            letters: Arc<Mutex<Vec<Envelope>>>,
+        }
+
+        impl WebhookHandler for DeadLetter {
+            type Error = AppError;
+
+            async fn handle(&self, envelope: Envelope) -> Result<(), AppError> {
+                // The dispatcher takes the envelope by value; the clone shares
+                // the bytes, so the wrapper still holds them afterwards.
+                let outcome = self.dispatcher.dispatch(envelope.clone()).await;
+                match outcome.matched {
+                    Match::Matched | Match::UnmatchedAction => outcome.result,
+                    Match::UnmatchedKind => {
+                        outcome.result?;
+                        self.letters.lock().await.push(envelope);
+                        Ok(())
+                    }
+                }
+            }
+        }
+
+        let calls = Calls::default();
+        let letters = Arc::new(Mutex::new(Vec::new()));
+        let wrapper = DeadLetter {
+            dispatcher: Dispatcher::<AppError>::builder()
+                .always(record(&calls, "audit"))
+                .on_payload_action([Action::Opened], record_payload(&calls, "triage"))
+                .build(),
+            letters: Arc::clone(&letters),
+        };
+
+        // Matched, and known kind with an unregistered action: nothing is
+        // dead-lettered and both succeed.
+        wrapper.handle(pull_request_opened()).await.unwrap();
+        wrapper.handle(pull_request(Action::Closed)).await.unwrap();
+        assert!(letters.lock().await.is_empty());
+
+        // Unknown kind: dead-lettered as the exact envelope the dispatcher
+        // saw, and still a success towards GitHub.
+        let envelope = check_run_completed();
+        wrapper.handle(envelope.clone()).await.unwrap();
+        assert_eq!(letters.lock().await.as_slice(), [envelope]);
+        assert_eq!(
+            calls.lock().await.as_slice(),
+            ["audit", "triage", "audit", "audit"]
+        );
     }
 
     #[cfg(feature = "octocrab")]
@@ -983,7 +1322,7 @@ mod tests {
             .build();
 
         assert_eq!(
-            dispatcher.dispatch(pull_request_opened()).await,
+            dispatcher.dispatch(pull_request_opened()).await.result,
             Err(AppError::Handler("unmatched"))
         );
         assert_eq!(calls.lock().await.as_slice(), ["unmatched"]);
@@ -1000,13 +1339,18 @@ mod tests {
             .fallback(fail(&calls, "unmatched"))
             .build();
 
-        dispatcher.dispatch(pull_request_opened()).await.unwrap();
+        dispatcher
+            .dispatch(pull_request_opened())
+            .await
+            .result
+            .unwrap();
         assert_eq!(calls.lock().await.as_slice(), ["triage"]);
 
         calls.lock().await.clear();
         dispatcher
             .dispatch(pull_request(Action::Reopened))
             .await
+            .result
             .unwrap();
         assert_eq!(calls.lock().await.as_slice(), ["triage"]);
 
@@ -1015,7 +1359,10 @@ mod tests {
         // widening to every pull-request action.
         calls.lock().await.clear();
         assert_eq!(
-            dispatcher.dispatch(pull_request(Action::Closed)).await,
+            dispatcher
+                .dispatch(pull_request(Action::Closed))
+                .await
+                .result,
             Err(AppError::Handler("unmatched"))
         );
         assert_eq!(calls.lock().await.as_slice(), ["unmatched"]);
@@ -1051,7 +1398,7 @@ mod tests {
             br#"{"action":"future_action"}"#,
         );
         assert_eq!(
-            dispatcher.dispatch(future).await,
+            dispatcher.dispatch(future).await.result,
             Err(AppError::Handler("unmatched"))
         );
         assert_eq!(calls.lock().await.as_slice(), ["unmatched"]);
@@ -1082,7 +1429,7 @@ mod tests {
             Action::Unknown("future_action".into()),
             br#"{"action":"future_action","number":2}"#,
         );
-        assert_eq!(dispatcher.dispatch(future.clone()).await, Ok(()));
+        assert_eq!(dispatcher.dispatch(future.clone()).await.result, Ok(()));
         assert_eq!(calls.lock().await.as_slice(), ["view"]);
 
         // The same handler registered for every action of the kind is asked,
@@ -1092,7 +1439,10 @@ mod tests {
                 Ok::<_, std::convert::Infallible>(())
             })
             .build();
-        assert_eq!(kind_wide.dispatch(future).await, Err(AppError::Decode));
+        assert_eq!(
+            kind_wide.dispatch(future).await.result,
+            Err(AppError::Decode)
+        );
     }
 
     #[cfg(feature = "octocrab")]
@@ -1122,15 +1472,27 @@ mod tests {
             )
             .build();
 
-        dispatcher.dispatch(pull_request_opened()).await.unwrap();
+        dispatcher
+            .dispatch(pull_request_opened())
+            .await
+            .result
+            .unwrap();
         assert_eq!(calls.lock().await.as_slice(), ["actions", "pairs", "kinds"]);
 
         calls.lock().await.clear();
-        dispatcher.dispatch(check_run_completed()).await.unwrap();
+        dispatcher
+            .dispatch(check_run_completed())
+            .await
+            .result
+            .unwrap();
         assert_eq!(calls.lock().await.as_slice(), ["pairs", "or", "kinds"]);
 
         calls.lock().await.clear();
-        dispatcher.dispatch(installation_created()).await.unwrap();
+        dispatcher
+            .dispatch(installation_created())
+            .await
+            .result
+            .unwrap();
         assert_eq!(calls.lock().await.as_slice(), ["or"]);
 
         // The action list is exact: a pull request being synchronized does not
@@ -1141,7 +1503,7 @@ mod tests {
             Action::Synchronize,
             include_bytes!("../tests/fixtures/pull_request.opened.json"),
         );
-        dispatcher.dispatch(synchronized).await.unwrap();
+        dispatcher.dispatch(synchronized).await.result.unwrap();
         assert_eq!(calls.lock().await.as_slice(), ["kinds"]);
     }
 
@@ -1179,7 +1541,11 @@ mod tests {
             })
             .build();
 
-        dispatcher.dispatch(pull_request_opened()).await.unwrap();
+        dispatcher
+            .dispatch(pull_request_opened())
+            .await
+            .result
+            .unwrap();
         assert_eq!(
             seen.lock().await.as_slice(),
             [(
@@ -1190,7 +1556,11 @@ mod tests {
         );
 
         // Another kind never reaches it, and with no fallback still succeeds.
-        dispatcher.dispatch(check_run_completed()).await.unwrap();
+        dispatcher
+            .dispatch(check_run_completed())
+            .await
+            .result
+            .unwrap();
         assert_eq!(seen.lock().await.len(), 1);
     }
 
@@ -1222,7 +1592,11 @@ mod tests {
             })
             .build();
 
-        dispatcher.dispatch(check_run_completed()).await.unwrap();
+        dispatcher
+            .dispatch(check_run_completed())
+            .await
+            .result
+            .unwrap();
 
         assert_eq!(
             seen.lock().await.as_slice(),
@@ -1289,15 +1663,15 @@ mod tests {
             .build();
 
         assert_eq!(
-            dispatcher.dispatch(installation_created()).await,
+            dispatcher.dispatch(installation_created()).await.result,
             Err(ServiceError::Db(DbError))
         );
         assert_eq!(
-            dispatcher.dispatch(check_run_completed()).await,
+            dispatcher.dispatch(check_run_completed()).await.result,
             Err(ServiceError::Api(ApiError))
         );
         assert_eq!(
-            dispatcher.dispatch(pull_request_opened()).await,
+            dispatcher.dispatch(pull_request_opened()).await.result,
             Err(ServiceError::Queue(QueueError))
         );
     }
@@ -1320,7 +1694,7 @@ mod tests {
             .build();
 
         assert_eq!(
-            dispatcher.dispatch(unrepresentable()).await,
+            dispatcher.dispatch(unrepresentable()).await.result,
             Err(AppError::Decode)
         );
         assert_eq!(calls.lock().await.as_slice(), ["always", "payload-before"]);
@@ -1340,7 +1714,7 @@ mod tests {
             .fallback(fail(&calls, "unmatched"))
             .build();
 
-        assert_eq!(dispatcher.dispatch(unrepresentable()).await, Ok(()));
+        assert_eq!(dispatcher.dispatch(unrepresentable()).await.result, Ok(()));
         assert_eq!(calls.lock().await.as_slice(), ["raw", "always", "payload"]);
     }
 
@@ -1357,7 +1731,7 @@ mod tests {
             .build();
 
         assert_eq!(
-            dispatcher.dispatch(unrepresentable()).await,
+            dispatcher.dispatch(unrepresentable()).await.result,
             Err(AppError::Decode)
         );
         assert_eq!(calls.lock().await.as_slice(), ["raw"]);
@@ -1378,7 +1752,7 @@ mod tests {
         // stops at the failure, and neither the always tier, the matching
         // route, nor the fallback sees it.
         assert_eq!(
-            dispatcher.dispatch(pull_request_opened()).await,
+            dispatcher.dispatch(pull_request_opened()).await.result,
             Err(AppError::Handler("persist"))
         );
         assert_eq!(calls.lock().await.as_slice(), ["persist"]);
@@ -1393,7 +1767,7 @@ mod tests {
             .on_payload(record_payload(&calls, "routed"))
             .build();
         assert_eq!(
-            always.dispatch(pull_request_opened()).await,
+            always.dispatch(pull_request_opened()).await.result,
             Err(AppError::Handler("always"))
         );
         assert_eq!(calls.lock().await.as_slice(), ["always"]);
@@ -1404,7 +1778,7 @@ mod tests {
             .fallback(record(&calls, "fallback-after"))
             .build();
         assert_eq!(
-            fallback.dispatch(pull_request_opened()).await,
+            fallback.dispatch(pull_request_opened()).await.result,
             Err(AppError::Handler("fallback"))
         );
         assert_eq!(calls.lock().await.as_slice(), ["fallback"]);
@@ -1426,7 +1800,7 @@ mod tests {
             .on(EventKind::PullRequest, record_event(&calls, "kind"))
             .build();
         assert_eq!(
-            routed.dispatch(pull_request_opened()).await,
+            routed.dispatch(pull_request_opened()).await.result,
             Err(AppError::Handler("action"))
         );
         assert_eq!(calls.lock().await.as_slice(), ["action"]);
@@ -1437,7 +1811,7 @@ mod tests {
             .on(EventKind::PullRequest, record_event(&calls, "kind-after"))
             .build();
         assert_eq!(
-            kind_wide.dispatch(pull_request_opened()).await,
+            kind_wide.dispatch(pull_request_opened()).await.result,
             Err(AppError::Handler("kind"))
         );
         assert_eq!(calls.lock().await.as_slice(), ["kind"]);
@@ -1486,8 +1860,16 @@ mod tests {
             })
             .build();
 
-        dispatcher.dispatch(pull_request_opened()).await.unwrap();
-        dispatcher.dispatch(check_run_completed()).await.unwrap();
+        dispatcher
+            .dispatch(pull_request_opened())
+            .await
+            .result
+            .unwrap();
+        dispatcher
+            .dispatch(check_run_completed())
+            .await
+            .result
+            .unwrap();
 
         assert_eq!(calls.lock().await.as_slice(), ["pull-request", "check-run"]);
     }

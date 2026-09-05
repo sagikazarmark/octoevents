@@ -59,7 +59,11 @@
 //! their payload type declares (`on_payload`, or `on_payload_action` for some
 //! of its actions), and, with the `octocrab` feature, event handlers by
 //! matcher through `on`. It converts each handler's error into one
-//! application error via `From`.
+//! application error via `From`. Its `dispatch` reports an [`Outcome`]:
+//! whether the delivery matched, and if not, whether its kind was known to
+//! the route table, beside the handlers' result. As a `WebhookHandler` it
+//! keeps only the result, so the receiver sees an unmatched delivery as a
+//! success unless a fallback failed it.
 //!
 //! ```
 //! use octoevents::{EventKind, EventMeta, PayloadHandler};
@@ -138,7 +142,7 @@ mod test_support;
 mod trace;
 mod verify;
 
-pub use dispatch::{Dispatcher, DispatcherBuilder};
+pub use dispatch::{Dispatcher, DispatcherBuilder, Match, Outcome};
 pub use envelope::{
     DecodeError, Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef, TargetType,
 };
