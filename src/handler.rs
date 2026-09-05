@@ -4,7 +4,7 @@ use std::{future::Future, marker::PhantomData, sync::Arc};
 use octocrab::models::webhook_events::WebhookEvent;
 use thiserror::Error;
 
-use crate::{Envelope, EventKind, EventMeta, MaybeSend, MaybeSync, Payload};
+use crate::{DecodeError, Envelope, EventMeta, MaybeSend, MaybeSync, Payload};
 
 /// Consumer-owned code that handles one verified [`Envelope`].
 ///
@@ -365,7 +365,8 @@ pub trait PayloadHandler<P: Payload> {
     /// Adapts this handler for the receiver, which accepts only webhook
     /// handlers.
     ///
-    /// The adapter rejects an envelope whose kind is not `P::KIND` with
+    /// The adapter decodes with [`Envelope::decode_payload`], so it rejects an
+    /// envelope whose kind is not `P::KIND` with
     /// [`DecodeError::KindMismatch`] and reports a payload that does not
     /// decode as [`DecodeError::Json`]; both surface as
     /// [`HandleError::Decode`]. A single-purpose receiver therefore needs no
@@ -412,12 +413,6 @@ where
     type Error = HandleError<H::Error>;
 
     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
-        if envelope.meta.kind != P::KIND {
-            return Err(HandleError::Decode(DecodeError::KindMismatch {
-                expected: P::KIND,
-                actual: envelope.meta.kind,
-            }));
-        }
         let payload = envelope
             .decode_payload::<P>()
             .map_err(HandleError::Decode)?;
@@ -426,34 +421,6 @@ where
             .await
             .map_err(HandleError::Handler)
     }
-}
-
-// The payload decode step shared by `PayloadAdapter` (receiver path) and the
-// dispatcher's payload routes. Crate-private: it trusts the caller to have
-// checked the kind, and `Envelope::decode` already covers ad-hoc views.
-impl Envelope {
-    /// Decodes the payload as `P` without checking the kind; callers that
-    /// have not already routed by kind check it first.
-    pub(crate) fn decode_payload<P: Payload>(&self) -> Result<P, DecodeError> {
-        serde_json::from_slice(&self.raw).map_err(DecodeError::Json)
-    }
-}
-
-/// Why an envelope could not be turned into a typed handler's input.
-#[derive(Debug, Error)]
-#[non_exhaustive]
-pub enum DecodeError {
-    /// The envelope is of a kind the handler's payload type does not cover.
-    #[error("expected a {expected} event, received {actual}")]
-    KindMismatch {
-        /// The kind the payload type declares.
-        expected: EventKind,
-        /// The kind of the envelope that arrived.
-        actual: EventKind,
-    },
-    /// The payload did not decode into the expected type.
-    #[error("payload could not be decoded")]
-    Json(#[source] serde_json::Error),
 }
 
 /// The error of an adapted typed handler: either the envelope could not be
@@ -478,9 +445,9 @@ mod tests {
 
     use tokio::sync::Mutex;
 
-    use super::{DecodeError, HandleError, MetaHandler, PayloadHandler, WebhookHandler};
+    use super::{HandleError, MetaHandler, PayloadHandler, WebhookHandler};
     use crate::{
-        Action, EventKind, EventMeta,
+        Action, DecodeError, EventKind, EventMeta,
         test_support::{envelope, unrepresentable},
     };
 

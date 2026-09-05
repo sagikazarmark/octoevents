@@ -137,14 +137,15 @@ mod verify;
 
 #[cfg(feature = "octocrab")]
 pub use dispatch::{Dispatcher, DispatcherBuilder};
-pub use envelope::{Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef, TargetType};
-pub use events::{Action, EventKind};
-pub use handler::{
-    DecodeError, HandleError, MetaAdapter, MetaHandler, PayloadAdapter, PayloadHandler,
-    WebhookHandler,
+pub use envelope::{
+    DecodeError, Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef, TargetType,
 };
+pub use events::{Action, EventKind};
 #[cfg(feature = "octocrab")]
 pub use handler::{EventAdapter, EventHandler};
+pub use handler::{
+    HandleError, MetaAdapter, MetaHandler, PayloadAdapter, PayloadHandler, WebhookHandler,
+};
 #[cfg(feature = "octocrab")]
 pub use matcher::EventMatcher;
 pub use payload::Payload;

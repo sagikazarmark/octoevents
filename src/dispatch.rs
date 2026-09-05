@@ -352,9 +352,10 @@ where
     Route::Payload(Arc::new(move |envelope: Envelope| {
         let handler = Arc::clone(&handler);
         Box::pin(async move {
-            // Routing already guaranteed the kind, so only the shape of the
-            // payload can still disagree.
-            let payload = envelope.decode_payload::<P>().map_err(E::from)?;
+            // Routing already guaranteed the kind, so the unchecked `decode`
+            // rather than `decode_payload`: only the shape of the payload can
+            // still disagree.
+            let payload = envelope.decode::<P>().map_err(E::from)?;
             handler
                 .handle(envelope.meta, payload)
                 .await

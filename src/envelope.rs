@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_json::value::RawValue;
 use thiserror::Error;
 
-use crate::{Action, EventKind, Verifier, VerifyError};
+use crate::{Action, EventKind, Payload, Verifier, VerifyError};
 
 #[cfg(feature = "http")]
 const SIGNATURE_HEADER: &str = "x-hub-signature-256";
@@ -420,17 +420,72 @@ impl Envelope {
         Self::from_signed(verifier, &HeaderView::from(headers), body)
     }
 
-    /// Decodes the exact payload into a caller-defined view.
+    /// Decodes the exact payload into a caller-defined view, checking nothing
+    /// about the kind.
     ///
-    /// For a view bound to one kind, implement [`Payload`](crate::Payload)
-    /// and use a payload handler instead; this method checks nothing about the
-    /// kind.
+    /// `T` is any serde type and nothing ties it to the envelope's kind, so a
+    /// view over fields several kinds share (the sender's `type`, say) decodes
+    /// from an envelope of any kind. For a view bound to one kind, implement
+    /// [`Payload`] and call [`Envelope::decode_payload`], which refuses an
+    /// envelope of another kind before decoding.
     ///
     /// # Errors
     ///
-    /// Returns serde's error when the payload does not fit `T`.
-    pub fn decode<T: serde::de::DeserializeOwned>(&self) -> Result<T, serde_json::Error> {
-        serde_json::from_slice(&self.raw)
+    /// Returns [`DecodeError::Json`] when the payload does not fit `T`.
+    pub fn decode<T: serde::de::DeserializeOwned>(&self) -> Result<T, DecodeError> {
+        serde_json::from_slice(&self.raw).map_err(DecodeError::Json)
+    }
+
+    /// Decodes the payload as `P` after checking that the envelope is of
+    /// `P`'s kind.
+    ///
+    /// This is the decode behind
+    /// [`PayloadHandler::into_webhook_handler`](crate::PayloadHandler::into_webhook_handler),
+    /// for calling by hand from a [`WebhookHandler`](crate::WebhookHandler)
+    /// that matches on [`EventMeta::kind`] itself. The kind check reports a
+    /// wrong payload type at the kind, not as a missing field somewhere in
+    /// the JSON:
+    ///
+    /// ```
+    /// use bytes::Bytes;
+    /// use octoevents::{DecodeError, Envelope, EventKind, EventMeta};
+    ///
+    /// #[derive(serde::Deserialize)]
+    /// struct IssueNumber { issue: Numbered }
+    /// #[derive(serde::Deserialize)]
+    /// struct Numbered { number: u64 }
+    /// octoevents::impl_payload!(IssueNumber => EventKind::Issues);
+    ///
+    /// let envelope = Envelope {
+    ///     meta: EventMeta::new("delivery", EventKind::PullRequest),
+    ///     raw: Bytes::from_static(br#"{"issue":{"number":7}}"#),
+    /// };
+    ///
+    /// // The bytes would fit the view; the kind is what is wrong.
+    /// assert!(matches!(
+    ///     envelope.decode_payload::<IssueNumber>(),
+    ///     Err(DecodeError::KindMismatch {
+    ///         expected: EventKind::Issues,
+    ///         actual: EventKind::PullRequest,
+    ///     })
+    /// ));
+    /// ```
+    ///
+    /// To decode a view that is not bound to a kind, call [`Envelope::decode`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecodeError::KindMismatch`] when [`EventMeta::kind`] is not
+    /// [`P::KIND`](Payload::KIND), and [`DecodeError::Json`] when the payload
+    /// does not fit `P`.
+    pub fn decode_payload<P: Payload>(&self) -> Result<P, DecodeError> {
+        if self.meta.kind != P::KIND {
+            return Err(DecodeError::KindMismatch {
+                expected: P::KIND,
+                actual: self.meta.kind.clone(),
+            });
+        }
+        self.decode()
     }
 }
 
@@ -455,6 +510,30 @@ pub enum ReceiveError {
         /// The configured maximum body size.
         limit: usize,
     },
+}
+
+/// Why an envelope's payload could not be decoded.
+///
+/// The one error type of every decode path: [`Envelope::decode`],
+/// [`Envelope::decode_payload`], and `Envelope::decode_event` (`octocrab`
+/// feature) return it, and the typed handler adapters carry it as
+/// [`HandleError::Decode`](crate::HandleError::Decode). A single
+/// `From<DecodeError>` impl is therefore the only conversion of a decode
+/// failure an application error needs, whichever path decoded.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum DecodeError {
+    /// The envelope is of a kind the payload type does not cover.
+    #[error("expected a {expected} event, received {actual}")]
+    KindMismatch {
+        /// The kind the payload type declares.
+        expected: EventKind,
+        /// The kind of the envelope that arrived.
+        actual: EventKind,
+    },
+    /// The payload did not decode into the expected type.
+    #[error("payload could not be decoded")]
+    Json(#[source] serde_json::Error),
 }
 
 fn required_header<'a>(
@@ -544,8 +623,10 @@ mod tests {
     use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
 
-    use super::{Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef, TargetType};
-    use crate::{Action, EventKind, Secret, Verifier, VerifyError};
+    use super::{
+        DecodeError, Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef, TargetType,
+    };
+    use crate::{Action, EventKind, Secret, Verifier, VerifyError, test_support};
 
     const BODY: &[u8] = br#"{
         "action":"opened",
@@ -822,6 +903,74 @@ mod tests {
 
         let decoded: serde_json::Value = envelope.decode().unwrap();
         assert_eq!(decoded["zen"], "⚡ é café 🐙");
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct IssueNumber {
+        issue: Numbered,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct Numbered {
+        number: u64,
+    }
+
+    crate::impl_payload!(IssueNumber => EventKind::Issues);
+
+    #[test]
+    fn decode_payload_refuses_an_envelope_of_another_kind_at_the_kind() {
+        // The bytes would decode into the view; the kind is what is wrong, and
+        // that is what the error names rather than a missing field.
+        let envelope = test_support::envelope(EventKind::PullRequest, br#"{"issue":{"number":7}}"#);
+
+        let error = envelope.decode_payload::<IssueNumber>().unwrap_err();
+
+        assert!(matches!(
+            error,
+            DecodeError::KindMismatch {
+                expected: EventKind::Issues,
+                actual: EventKind::PullRequest,
+            }
+        ));
+    }
+
+    #[test]
+    fn decode_payload_decodes_an_envelope_of_the_payloads_kind() {
+        let envelope = test_support::envelope(EventKind::Issues, br#"{"issue":{"number":7}}"#);
+
+        let payload = envelope.decode_payload::<IssueNumber>().unwrap();
+
+        assert_eq!(payload.issue.number, 7);
+    }
+
+    #[test]
+    fn decode_payload_reports_a_payload_that_does_not_fit_as_json() {
+        // Right kind, wrong shape: the kind check passed, serde did not.
+        let envelope = test_support::envelope(EventKind::Issues, br#"{"issue":{}}"#);
+
+        let error = envelope.decode_payload::<IssueNumber>().unwrap_err();
+
+        assert!(matches!(error, DecodeError::Json(_)));
+    }
+
+    #[test]
+    fn decode_reports_a_payload_that_does_not_fit_with_the_shared_decode_error() {
+        let envelope = test_support::envelope(EventKind::Issues, br#"{"issue":{}}"#);
+
+        let error = envelope.decode::<IssueNumber>().unwrap_err();
+
+        assert!(matches!(error, DecodeError::Json(_)));
+    }
+
+    #[test]
+    fn decode_does_not_check_the_kind() {
+        // The same view `decode_payload` refuses under this kind decodes here:
+        // `decode` ties nothing to the kind.
+        let envelope = test_support::envelope(EventKind::PullRequest, br#"{"issue":{"number":7}}"#);
+
+        let payload = envelope.decode::<IssueNumber>().unwrap();
+
+        assert_eq!(payload.issue.number, 7);
     }
 
     #[cfg(feature = "http")]

@@ -12,7 +12,8 @@
 //!
 //! - [`Persist`] is a `WebhookHandler`: it sees the raw envelope, stores it,
 //!   and only then hands it to the dispatcher. Wrapping the dispatcher is how
-//!   raw-bytes work runs before any typed handler.
+//!   raw-bytes work runs before any typed handler. It also decodes one view
+//!   by hand, through the same `DecodeError` the dispatcher's decodes report.
 //! - [`Auditor`] and [`Reject`] are `EventHandler`s over octocrab's decoded
 //!   `WebhookEvent`; one runs for every delivery, one only when nothing
 //!   matched.
@@ -36,6 +37,9 @@ use octoevents::{
 };
 
 /// The application error every handler's error converts into.
+///
+/// One `From<DecodeError>` covers every decode path: the dispatcher's event
+/// and payload decodes, and the `Envelope::decode` call in [`Persist`].
 #[derive(Debug, thiserror::Error)]
 enum AppError {
     #[error(transparent)]
@@ -76,12 +80,36 @@ impl Store {
     }
 }
 
-/// Persists the raw envelope, then routes it. The persist-before-handle
-/// advice from the crate docs, expressed as a webhook handler that wraps the
-/// dispatcher.
+/// Persists the raw envelope, then routes it unless a bot caused it. The
+/// persist-before-handle advice from the crate docs, expressed as a webhook
+/// handler that wraps the dispatcher.
 struct Persist {
     store: Arc<Store>,
     dispatcher: Dispatcher<AppError>,
+}
+
+/// A view over the one payload field [`Persist`] needs that `EventMeta` does
+/// not probe: the sender's account type. GitHub includes `sender` in every
+/// kind's payload, so the view is bound to no kind and decoded with
+/// `Envelope::decode`; the `Option` keeps a payload without one from failing
+/// the delivery.
+#[derive(serde::Deserialize)]
+struct SenderView {
+    sender: Option<Sender>,
+}
+
+#[derive(serde::Deserialize)]
+struct Sender {
+    #[serde(rename = "type")]
+    account_type: String,
+}
+
+impl SenderView {
+    fn is_bot(&self) -> bool {
+        self.sender
+            .as_ref()
+            .is_some_and(|sender| sender.account_type == "Bot")
+    }
 }
 
 impl WebhookHandler for Persist {
@@ -94,6 +122,14 @@ impl WebhookHandler for Persist {
             envelope.meta.delivery_id,
             envelope.raw.len()
         );
+        // Deliveries a bot caused (this App's own comments included) are kept
+        // for the record but not routed. The `?` converts the same
+        // `DecodeError` the dispatcher reports, through the same `From`.
+        let sender: SenderView = envelope.decode()?;
+        if sender.is_bot() {
+            println!("skip {}: sent by a bot", envelope.meta.delivery_id);
+            return Ok(());
+        }
         self.dispatcher.handle(envelope).await
     }
 }
