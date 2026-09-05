@@ -401,8 +401,8 @@ pub enum Match {
 ///
 /// A wrapping handler that passes the dispatcher's result through keeps the
 /// tier and registration site by making this its error type; the receiver
-/// accepts it as it does any error. The `WebhookReceiverBuilder::build` docs
-/// show a wrapper that logs it before the receiver answers 500.
+/// accepts it as it does any error, and hands it to the observer registered
+/// with `WebhookReceiverBuilder::on_error` before answering 500.
 ///
 /// The dispatcher produces this and consumers only read it, so it is
 /// `#[non_exhaustive]`: another field (the handler's type name, say) can be

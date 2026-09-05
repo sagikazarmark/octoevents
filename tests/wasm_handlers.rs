@@ -64,6 +64,24 @@ fn the_receiver_accepts_single_threaded_handler_state() {
     );
 }
 
+/// The `on_error` observer is bounded like a handler, so a Worker can record
+/// failures into the same single-threaded state, JavaScript values included.
+#[cfg(feature = "http")]
+#[test]
+fn the_receiver_accepts_a_single_threaded_error_observer() {
+    use octoevents::{Secret, Verifier, WebhookReceiverBuilder};
+
+    struct JsValue;
+
+    let failures = Rc::new(Cell::new(0));
+    let observer_failures = Rc::clone(&failures);
+    let _receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        .on_error(move |_: &EventMeta, _: &JsValue| {
+            observer_failures.set(observer_failures.get() + 1);
+        })
+        .build(|_: Envelope| async { Err::<(), _>(JsValue) });
+}
+
 /// The meta adapter returns the handler's future as is, so the relaxed bound
 /// must survive `into_webhook_handler()` into the receiver.
 #[cfg(feature = "http")]

@@ -89,7 +89,7 @@ pub(crate) fn unrepresentable() -> Envelope {
 
 /// The application error a dispatcher under test converts every handler's
 /// error into.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum AppError {
     Decode,
     Handler(&'static str),

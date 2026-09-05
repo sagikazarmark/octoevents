@@ -135,46 +135,31 @@ work goes in `always_raw`: the raw tier receives the verified envelope, bytes
 included, runs before every other tier, and its failure keeps the delivery
 from being routed.
 
-The receiver answers a failed delivery with a bare 500 and discards the
-handler's error: the response is GitHub's delivery record, not a log, so the
-receiver places no `Display` bound on the error type and never reads it. To
-see why a delivery failed, wrap the handler. With a `Dispatcher` inside, the
-error is a `DispatchError` naming the tier, the delivery, and the line that
-registered the failing handler, and its source is the application error:
-
-```rust
-use std::error::Error;
-
-use octoevents::{Envelope, MaybeSync, WebhookHandler};
-
-/// Logs every failed delivery, source chain included, before the receiver
-/// turns it into a 500.
-struct Observe<H> {
-    inner: H,
-}
-
-impl<H> WebhookHandler for Observe<H>
-where
-    H: WebhookHandler + MaybeSync,
-    H::Error: Error,
-{
-    type Error = H::Error;
-
-    async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
-        self.inner.handle(envelope).await.inspect_err(|error| {
-            eprintln!("{error}");
-            let mut cause = error.source();
-            while let Some(error) = cause {
-                eprintln!("  caused by: {error}");
-                cause = error.source();
-            }
-        })
-    }
-}
-```
+The receiver answers a failed delivery with a bare 500: the response is
+GitHub's delivery record, not a log, so the receiver places no `Display` bound
+on the error type and never reads it. To see why a delivery failed, register
+an observer with `on_error`. It receives the event meta and the handler's
+error before the 500 is answered, with no `Error`, `Display` or `Debug` bound
+on the error type, so a boxed `dyn Error` is as observable as a named enum.
+With a `Dispatcher` inside, the error is a `DispatchError` naming the tier,
+the delivery, and the line that registered the failing handler, and its
+source is the application error:
 
 ```rust,ignore
-let receiver = WebhookReceiverBuilder::new(verifier).build(Observe { inner: dispatcher });
+use std::error::Error as _;
+
+use octoevents::{DispatchError, EventMeta, WebhookReceiverBuilder};
+
+let receiver = WebhookReceiverBuilder::new(verifier)
+    .on_error(|meta: &EventMeta, error: &DispatchError<AppError>| {
+        eprintln!("{error}");
+        let mut cause = error.source();
+        while let Some(error) = cause {
+            eprintln!("  caused by: {error}");
+            cause = error.source();
+        }
+    })
+    .build(dispatcher);
 ```
 
 A failed delivery then logs, before the 500:
@@ -183,6 +168,12 @@ A failed delivery then logs, before the 500:
 delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (issues.opened) failed in the always tier at the handler registered at src/main.rs:12:6
   caused by: database is down
 ```
+
+The observer runs only when a handler ran and failed: a request the receiver
+refused (bad signature, missing header, wrong content type, body over the
+limit) is a status code, and a short-circuited `ping` reaches no handler.
+Annotate the error parameter when the body calls methods on it; the error
+type is fixed by `build`, later in the chain.
 
 ## Quick start
 

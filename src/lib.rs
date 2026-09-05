@@ -119,12 +119,14 @@
 //! it, and a delivery whose envelope could not be stored is not routed. The
 //! `dispatcher` example shows the pattern.
 //!
-//! The receiver answers a failed delivery with a bare 500 and discards the
-//! handler's error: the response is GitHub's delivery record, not a log. To
-//! see why a delivery failed, wrap the handler; `WebhookReceiverBuilder::build`
-//! shows an `Observe<H>` wrapper that logs the error and its source chain,
-//! which for a dispatcher is the [`DispatchError`] naming the tier, the
-//! delivery, and the line that registered the failing handler.
+//! The receiver answers a failed delivery with a bare 500: the response is
+//! GitHub's delivery record, not a log. To see why a delivery failed, register
+//! an observer with `WebhookReceiverBuilder::on_error`; it receives the
+//! [`EventMeta`] and the handler's error, with no bound on the error type, so
+//! it can log or count a boxed `dyn Error` as readily as a named enum. For a
+//! dispatcher the error is the [`DispatchError`] naming the tier, the
+//! delivery, and the line that registered the failing handler, with the
+//! application error as its source.
 //!
 //! # Deliberately left out
 //!
