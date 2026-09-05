@@ -425,6 +425,14 @@ impl Envelope {
     /// probe-derived fields empty; an invalid captured field clears only that
     /// field. In both cases, [`Envelope::raw`] is preserved.
     ///
+    /// The body must be `application/json`, which is a setting on the GitHub
+    /// webhook; anything else is [`ReceiveError::UnsupportedContentType`]. The
+    /// other setting, `application/x-www-form-urlencoded`, wraps the JSON in a
+    /// `payload` form parameter and signs the form body, which would make
+    /// [`Envelope::raw`] the signed input but no longer the payload every
+    /// decode reads. The crate docs record this under
+    /// [Deliberately left out](crate#deliberately-left-out).
+    ///
     /// # Errors
     ///
     /// Returns an authentication error first, followed by content-type and

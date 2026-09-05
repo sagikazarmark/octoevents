@@ -79,6 +79,16 @@ macro_rules! string_enum {
 // Known GitHub webhook event names. Keep existing variants for API compatibility.
 string_enum! {
     /// The event name from `X-GitHub-Event`.
+    ///
+    /// The kind is always taken from that header, never inferred from the
+    /// payload's shape. Kinds share shapes (an `issues` and an `issue_comment`
+    /// payload both carry `issue`, `repository` and `sender`), so a guess from
+    /// the shape can land on the wrong kind and has no answer for a kind it
+    /// was not built with. The header names the kind outright, and a name
+    /// this crate does not know arrives as [`Unknown`](Self::Unknown) with
+    /// the wire value intact, so it can still be routed, logged, or rejected.
+    /// The crate docs record this under
+    /// [Deliberately left out](crate#deliberately-left-out).
     pub enum EventKind {
         BranchProtectionConfiguration => "branch_protection_configuration",
         BranchProtectionRule => "branch_protection_rule",

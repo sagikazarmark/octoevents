@@ -30,8 +30,9 @@ use crate::{DecodeError, Envelope, EventMeta, MaybeSend, MaybeSync, Payload};
 /// }
 /// ```
 ///
-/// Closures implement the trait too. Annotate the parameter type and, where
-/// nothing else fixes it, the error type:
+/// Closures implement the trait too. Annotate the parameter type and state
+/// the error type (`Ok::<_, E>(())`): neither the receiver nor a dispatcher
+/// can infer it from a bare `Ok(())`.
 ///
 /// ```
 /// use octoevents::{Envelope, WebhookHandler};
@@ -139,8 +140,7 @@ where
 /// ```
 ///
 /// A closure `Fn(EventMeta) -> Fut` is a meta handler too; annotate its
-/// parameter type and, where nothing else fixes it, its error type
-/// (`Ok::<_, E>(())`):
+/// parameter type and state its error type (`Ok::<_, E>(())`):
 ///
 /// ```
 /// use octoevents::{EventMeta, MetaHandler};
@@ -286,8 +286,8 @@ where
 /// ```
 ///
 /// A closure `Fn(EventMeta, WebhookEvent) -> Fut` is an event handler too;
-/// annotate its parameter types and, where nothing else fixes it, its error
-/// type (`Ok::<_, E>(())`):
+/// annotate the parameters it uses and state its error type
+/// (`Ok::<_, E>(())`):
 ///
 /// ```
 /// use octocrab::models::webhook_events::WebhookEvent;
@@ -431,9 +431,9 @@ where
 /// }
 /// ```
 ///
-/// A closure `Fn(EventMeta, P) -> Fut` is a payload handler too; annotate
-/// its parameter types and, where nothing else fixes it, its error type
-/// (`Ok::<_, E>(())`):
+/// A closure `Fn(EventMeta, P) -> Fut` is a payload handler too. Annotate
+/// the parameters it uses (the payload type is also what fixes `P`) and
+/// state its error type (`Ok::<_, E>(())`):
 ///
 /// ```
 /// use octoevents::{EventKind, EventMeta, PayloadHandler};

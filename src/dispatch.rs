@@ -40,13 +40,24 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// handler keeps its own error type; the dispatcher converts them into `E`
 /// through `From` at registration.
 ///
-/// Per delivery the dispatcher runs the raw chain, then the `always` chain,
-/// then the chain for the envelope's kind and action, then the kind-wide
-/// chain, and the `fallback` chain only if neither routed chain matched.
-/// Every chain is sequential, in registration order, and stops at the first
-/// error. The raw and `always` chains never count as a match, and an empty
-/// fallback chain succeeds, so unmatched kinds are green in GitHub until you
-/// decide otherwise.
+/// Per delivery the dispatcher runs the tiers in the order [`Tier`] lists
+/// them: the raw chain, then the `always` chain, then the chain for the
+/// envelope's kind and action followed by the kind-wide chain, and the
+/// `fallback` chain only if neither routed chain matched. Every chain is
+/// sequential, in registration order, and stops at the first error. The raw
+/// and `always` chains never count as a match, and an empty fallback chain
+/// succeeds, so unmatched kinds are green in GitHub until you decide
+/// otherwise.
+///
+/// There are no priorities and no propagation control: a handler cannot be
+/// moved ahead of one registered earlier, and cannot stop the chain or
+/// declare a delivery "not mine" so that a later handler takes it. The tiers
+/// plus registration order cover what a webhook receiver needs, and matching
+/// decided by handlers at run time would leave the route table unable to say
+/// what it routes; the crate docs record the designs this was weighed
+/// against under [Deliberately left out](crate#deliberately-left-out). A
+/// handler that decides whether routing happens at all wraps the dispatcher
+/// instead.
 ///
 /// [`dispatch`](Self::dispatch) reports an [`Outcome`]: whether the delivery
 /// was matched, and if not, whether its kind was known to the route table,

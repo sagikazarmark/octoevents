@@ -40,6 +40,13 @@ pub enum VerifyError {
 /// verifier per delivery, and secret material should not be re-copied onto the
 /// heap that often.
 ///
+/// Only `X-Hub-Signature-256` is verified. GitHub sends the SHA-1
+/// `X-Hub-Signature` beside it, and a request carrying only that header is
+/// [`VerifyError::MissingSignature`]: the SHA-256 header is always there to
+/// verify, so falling back to the SHA-1 one would protect no delivery and
+/// would let a sender choose the weaker algorithm. The crate docs record this
+/// under [Deliberately left out](crate#deliberately-left-out).
+///
 /// ```
 /// use octoevents::{Secret, Verifier};
 ///

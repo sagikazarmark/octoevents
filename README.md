@@ -106,21 +106,83 @@ its route matches, so a payload handler registered for some actions decodes
 nothing for a delivery carrying another. Unmatched deliveries succeed unless
 a fallback says otherwise. `dispatch` reports an `Outcome` beside the
 handlers' result: matched, or unmatched with the kind known or unknown to the
-route table. The receiver sees only the result, answers a failure with a bare
-500, and discards the error; a handler wrapping the dispatcher reads the
-outcome to forward or dead-letter an unmatched delivery, bytes included, or
-to reject kinds it never registered while tolerating a new action on a kind
-it handles, and logs the error before the receiver drops it. A handler that
-must see the raw bytes before routing (to persist them, say) goes in
-`always_raw`: it runs before every other tier, and its failure keeps the
-delivery from being routed. The `dispatcher` example shows the whole shape
-behind a receiver, including both wrappers; the `worker` example forwards
-each envelope from the raw tier and routes a payload handler without octocrab
-on Cloudflare Workers.
+route table. The receiver sees only the result; a handler wrapping the
+dispatcher reads the outcome to forward or dead-letter an unmatched delivery,
+bytes included, or to reject kinds it never registered while tolerating a new
+action on a kind it handles. A handler that must see the raw bytes before
+routing (to persist them, say) goes in `always_raw`: it runs before every
+other tier, and its failure keeps the delivery from being routed. The
+`dispatcher` example shows the whole shape behind a receiver, including both
+wrappers; the `worker` example forwards each envelope from the raw tier and
+routes a payload handler without octocrab on Cloudflare Workers.
 
-Closures work for every flavour; annotate their parameter types
-(`|envelope: Envelope|`) and, where nothing else fixes it, the error type
-(`Ok::<_, E>(())`).
+Closures work for every flavour. Annotate the parameters the body uses
+(`|envelope: Envelope|`, `|meta: EventMeta, pr: PullRequestNumber|`):
+registration is bound on the handler trait rather than on `Fn`, so rustc does
+not read their types off the call. Always state the error type
+(`Ok::<_, E>(())`): a bare `Ok(())` fails with E0282 on the receiver path and
+E0283 (ambiguous `From`) on the dispatcher path.
+
+## Delivery semantics
+
+GitHub signs no timestamp, so the crate provides no replay protection: treat
+`EventMeta::delivery_id` as an idempotency key.
+
+GitHub does not retry a failed delivery on its own, and it abandons a request
+after 10 seconds (30 on GitHub Enterprise Server). Persist or forward an
+envelope before returning and process it afterwards. With a dispatcher, that
+work goes in `always_raw`: the raw tier receives the verified envelope, bytes
+included, runs before every other tier, and its failure keeps the delivery
+from being routed.
+
+The receiver answers a failed delivery with a bare 500 and discards the
+handler's error: the response is GitHub's delivery record, not a log, so the
+receiver places no `Display` bound on the error type and never reads it. To
+see why a delivery failed, wrap the handler. With a `Dispatcher` inside, the
+error is a `DispatchError` naming the tier, the delivery, and the line that
+registered the failing handler, and its source is the application error:
+
+```rust
+use std::error::Error;
+
+use octoevents::{Envelope, MaybeSync, WebhookHandler};
+
+/// Logs every failed delivery, source chain included, before the receiver
+/// turns it into a 500.
+struct Observe<H> {
+    inner: H,
+}
+
+impl<H> WebhookHandler for Observe<H>
+where
+    H: WebhookHandler + MaybeSync,
+    H::Error: Error,
+{
+    type Error = H::Error;
+
+    async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
+        self.inner.handle(envelope).await.inspect_err(|error| {
+            eprintln!("{error}");
+            let mut cause = error.source();
+            while let Some(error) = cause {
+                eprintln!("  caused by: {error}");
+                cause = error.source();
+            }
+        })
+    }
+}
+```
+
+```rust,ignore
+let receiver = WebhookReceiverBuilder::new(verifier).build(Observe { inner: dispatcher });
+```
+
+A failed delivery then logs, before the 500:
+
+```text
+delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (issues.opened) failed in the always tier at the handler registered at src/main.rs:12:6
+  caused by: database is down
+```
 
 ## Quick start
 

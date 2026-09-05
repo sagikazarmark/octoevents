@@ -14,6 +14,15 @@ use crate::EventKind;
 /// `octocrab` feature, octocrab's per-kind payload structs implement it
 /// already.
 ///
+/// Views are the design, rather than one struct per kind owned by this crate.
+/// GitHub's payloads differ by action and gain fields over time, so a
+/// library's hand-written struct per kind is perpetually behind; a view names
+/// the fields its handler reads and ignores the rest, so a field GitHub adds
+/// or drops elsewhere in the document changes nothing. A handler that wants
+/// the whole document uses octocrab's struct for the kind, which is a payload
+/// like any other. The crate docs record this under
+/// [Deliberately left out](crate#deliberately-left-out).
+///
 /// ```
 /// use octoevents::{EventKind, Payload};
 ///

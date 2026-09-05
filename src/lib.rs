@@ -95,9 +95,14 @@
 //! # }
 //! ```
 //!
-//! Closures implement every flavour too. Because registration is bound on a
-//! trait, annotate the closure's parameter types (`|envelope: Envelope|`),
-//! and state the error type where nothing else fixes it (`Ok::<_, E>(())`).
+//! Closures implement every flavour too. Annotate the parameters the body
+//! uses (`|envelope: Envelope|`, `|meta: EventMeta, pr: PullRequestNumber|`):
+//! registration is bound on the handler trait rather than on `Fn`, so rustc
+//! does not read their types off the call, though a parameter the body
+//! ignores may stay a bare `_`. Always state the error type
+//! (`Ok::<_, E>(())`): a bare `Ok(())` fails with E0282 on the receiver
+//! path, where nothing constrains it, and with E0283 on the dispatcher path,
+//! where every error type the application error has a `From` for would fit.
 //!
 //! # Delivery semantics
 //!
@@ -120,6 +125,51 @@
 //! shows an `Observe<H>` wrapper that logs the error and its source chain,
 //! which for a dispatcher is the [`DispatchError`] naming the tier, the
 //! delivery, and the line that registered the failing handler.
+//!
+//! # Deliberately left out
+//!
+//! Some requests come up in every webhook library and are declined here on
+//! purpose. The evidence is in the repository's
+//! [`docs/research/`](https://github.com/sagikazarmark/octoevents/tree/main/docs/research),
+//! a survey of GitHub-webhook receivers in other ecosystems and of dispatcher
+//! designs in Rust; each item below is also recorded on the type where the
+//! request would land.
+//!
+//! - **No SHA-1 fallback.** Only `X-Hub-Signature-256` is verified. GitHub
+//!   sends the SHA-1 `X-Hub-Signature` beside it, and go-github falls back to
+//!   that header when the SHA-256 one is absent; here a request carrying only
+//!   the SHA-1 header is refused as unsigned, with
+//!   [`VerifyError::MissingSignature`]. The stronger header is always present
+//!   to verify, so the fallback would only let a sender choose the weaker
+//!   algorithm. See [`Verifier`].
+//! - **No form-urlencoded body.** The webhook must deliver `application/json`;
+//!   anything else is [`ReceiveError::UnsupportedContentType`]. go-github
+//!   also accepts `application/x-www-form-urlencoded`, JSON under a `payload`
+//!   form parameter with the signature over the form body. Here
+//!   [`Envelope::raw`] is both the signed input and the payload, and a form
+//!   body would make it one but not the other. See [`Envelope::from_signed`].
+//! - **Kind from the header, not the payload's shape.** [`EventMeta::kind`] is
+//!   parsed from `X-GitHub-Event`, and a name this crate does not know is
+//!   [`EventKind::Unknown`], never a failure. Inferring the kind from the
+//!   payload's shape (octoapp's `#[serde(untagged)]` event enum) mis-resolves
+//!   when kinds share a shape and has no answer for a kind it was not built
+//!   with; every other library surveyed reads the header. See [`EventKind`].
+//! - **Consumer-defined views, not one blessed struct per kind.** A
+//!   [`Payload`] is any serde type that declares its kind with
+//!   [`impl_payload!`], so a handler names the fields it reads and nothing
+//!   else. go-playground/webhooks ships one hand-written struct per kind, and
+//!   its issue tracker is a record of fields those structs lack and per-action
+//!   variance they cannot follow. octocrab's per-kind structs are available
+//!   as payloads behind the `octocrab` feature for handlers that want the
+//!   whole document. See [`Payload`].
+//! - **No priorities or propagation control.** Handlers run in tier order,
+//!   then registration order, and each can only continue or fail: none can be
+//!   moved ahead of an earlier registration, stop the chain, or pass a
+//!   delivery on as "not mine". Symfony's numeric priorities and
+//!   `stopPropagation`, and dptree's `ControlFlow::Continue`, were surveyed
+//!   and left out: the tiers cover what a webhook receiver needs, and matching
+//!   decided by handlers at run time would make the route table unable to say
+//!   what it routes. See [`Dispatcher`].
 //!
 //! # Feature caveats
 //!
