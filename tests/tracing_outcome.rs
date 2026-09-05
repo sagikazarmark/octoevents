@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use octoevents::{
-    Action, DecodeError, Dispatcher, Envelope, EventKind, EventMeta, Match, Outcome,
+    Action, DecodeError, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, Match, Outcome,
     WebhookHandler as _,
 };
 use tracing_subscriber::fmt::MakeWriter;
@@ -33,6 +33,16 @@ impl From<&'static str> for AppError {
     fn from(message: &'static str) -> Self {
         Self::Handler(message)
     }
+}
+
+/// The match and the handlers' result with the dispatch error unwrapped to
+/// its source: these tests check the span's label against what was returned,
+/// not where the failing handler was registered.
+fn unwrapped_outcome<E>(outcome: Outcome<E>) -> (Match, Result<(), E>) {
+    (
+        outcome.matched,
+        outcome.result.map_err(DispatchError::into_source),
+    )
 }
 
 /// A view any `pull_request` payload satisfies.
@@ -148,11 +158,8 @@ fn the_span_records_one_of_four_outcomes_derived_from_the_returned_outcome() {
         traced(dispatcher.dispatch(envelope(EventKind::PullRequest, Some(Action::Closed))));
     assert_eq!(label, "handler_error");
     assert_eq!(
-        outcome,
-        Outcome {
-            matched: Match::Matched,
-            result: Err(AppError::Handler("routed"))
-        }
+        unwrapped_outcome(outcome),
+        (Match::Matched, Err(AppError::Handler("routed")))
     );
 
     // Unmatched with the kind known and unknown both read as fallback: the
@@ -171,11 +178,8 @@ fn the_span_records_one_of_four_outcomes_derived_from_the_returned_outcome() {
         traced(dispatcher.dispatch(envelope(EventKind::Installation, Some(Action::Created))));
     assert_eq!(label, "fallback_error");
     assert_eq!(
-        outcome,
-        Outcome {
-            matched: Match::UnmatchedKind,
-            result: Err(AppError::Handler("unmatched"))
-        }
+        unwrapped_outcome(outcome),
+        (Match::UnmatchedKind, Err(AppError::Handler("unmatched")))
     );
 }
 
@@ -194,22 +198,16 @@ fn a_failure_before_routing_is_labelled_by_the_match_the_route_table_decided() {
         traced(dispatcher.dispatch(envelope(EventKind::PullRequest, Some(Action::Opened))));
     assert_eq!(label, "handler_error");
     assert_eq!(
-        outcome,
-        Outcome {
-            matched: Match::Matched,
-            result: Err(AppError::Handler("audit"))
-        }
+        unwrapped_outcome(outcome),
+        (Match::Matched, Err(AppError::Handler("audit")))
     );
 
     let (label, outcome) =
         traced(dispatcher.dispatch(envelope(EventKind::CheckRun, Some(Action::Completed))));
     assert_eq!(label, "fallback_error");
     assert_eq!(
-        outcome,
-        Outcome {
-            matched: Match::UnmatchedKind,
-            result: Err(AppError::Handler("audit"))
-        }
+        unwrapped_outcome(outcome),
+        (Match::UnmatchedKind, Err(AppError::Handler("audit")))
     );
 }
 
@@ -220,10 +218,13 @@ fn the_handle_path_records_the_same_outcome() {
     let (label, result) =
         traced(dispatcher.handle(envelope(EventKind::PullRequest, Some(Action::Closed))));
     assert_eq!(label, "handler_error");
-    assert_eq!(result, Err(AppError::Handler("routed")));
+    assert_eq!(
+        result.map_err(DispatchError::into_source),
+        Err(AppError::Handler("routed"))
+    );
 
     let (label, result) =
         traced(dispatcher.handle(envelope(EventKind::CheckRun, Some(Action::Completed))));
     assert_eq!(label, "fallback_ok");
-    assert_eq!(result, Ok(()));
+    assert_eq!(result.map_err(DispatchError::into_source), Ok(()));
 }

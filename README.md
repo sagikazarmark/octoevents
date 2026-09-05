@@ -95,23 +95,28 @@ Dispatcher::<AppError>::builder()
 ```
 
 Each handler keeps its own error type; the dispatcher converts them into
-`AppError` through `From`. Raw, meta and payload handlers never decode with
-octocrab, so `always_raw`, `always`, payload routes, and a strict `fallback`
-all run for a payload octocrab cannot represent; only the first event handler
-reached decodes it, once. A routed handler decodes only when its route
-matches, so a payload handler registered for some actions decodes nothing for
-a delivery carrying another. Unmatched deliveries succeed unless a fallback
-says otherwise. `dispatch` reports an `Outcome` beside the handlers' result:
-matched, or unmatched with the kind known or unknown to the route table. The
-receiver sees only the result; a handler wrapping the dispatcher reads the
+`AppError` through `From`, and reports a failure as a `DispatchError` that
+wraps it with the tier it came from, the delivery's ID, kind and action, and
+the source location that registered the failing handler, so a log line leads
+straight to the line of code. Raw, meta and payload handlers never decode
+with octocrab, so `always_raw`, `always`, payload routes, and a strict
+`fallback` all run for a payload octocrab cannot represent; only the first
+event handler reached decodes it, once. A routed handler decodes only when
+its route matches, so a payload handler registered for some actions decodes
+nothing for a delivery carrying another. Unmatched deliveries succeed unless
+a fallback says otherwise. `dispatch` reports an `Outcome` beside the
+handlers' result: matched, or unmatched with the kind known or unknown to the
+route table. The receiver sees only the result, answers a failure with a bare
+500, and discards the error; a handler wrapping the dispatcher reads the
 outcome to forward or dead-letter an unmatched delivery, bytes included, or
 to reject kinds it never registered while tolerating a new action on a kind
-it handles. A handler that must see the raw bytes before routing (to
-persist them, say) goes in `always_raw`: it runs before every other tier, and
-its failure keeps the delivery from being routed. The `dispatcher` example
-shows the whole shape behind a receiver, including such a wrapper; the
-`worker` example forwards each envelope from the raw tier and routes a
-payload handler without octocrab on Cloudflare Workers.
+it handles, and logs the error before the receiver drops it. A handler that
+must see the raw bytes before routing (to persist them, say) goes in
+`always_raw`: it runs before every other tier, and its failure keeps the
+delivery from being routed. The `dispatcher` example shows the whole shape
+behind a receiver, including both wrappers; the `worker` example forwards
+each envelope from the raw tier and routes a payload handler without octocrab
+on Cloudflare Workers.
 
 Closures work for every flavour; annotate their parameter types
 (`|envelope: Envelope|`) and, where nothing else fixes it, the error type

@@ -26,20 +26,25 @@
 //! [`DeadLetter`] is a `WebhookHandler` that wraps the dispatcher and reads
 //! the outcome `dispatch` reports: an action GitHub added to a kind this app
 //! handles is tolerated, and a delivery of a kind it never registered is
-//! dead-lettered, bytes included, without being turned into an error. The
-//! receiver is built from the wrapper.
+//! dead-lettered, bytes included, without being turned into an error.
+//! [`Observe`] wraps that in turn and logs every failed delivery, source
+//! chain included, since the receiver answers a handler error with a bare
+//! 500 and says nothing else: the dispatcher's `DispatchError` names the
+//! tier, the delivery, and the line that registered the failing handler. The
+//! receiver is built from the outer wrapper.
 
 // The handlers here print instead of awaiting a database or the GitHub API,
 // which is what a real `async fn handle` would do.
 #![allow(clippy::unused_async_trait_impl)]
 
-use std::{convert::Infallible, sync::Mutex};
+use std::{convert::Infallible, error::Error, sync::Mutex};
 
 use axum::{Router, routing::post_service};
 use octocrab::models::webhook_events::{WebhookEvent, payload::PullRequestWebhookEventPayload};
 use octoevents::{
-    Action, DecodeError, Dispatcher, Envelope, EventKind, EventMeta, Match, MetaHandler,
-    PayloadHandler, Secret, Verifier, WebhookHandler, WebhookReceiverBuilder,
+    Action, DecodeError, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, Match,
+    MaybeSync, MetaHandler, PayloadHandler, Secret, Verifier, WebhookHandler,
+    WebhookReceiverBuilder,
 };
 
 /// The application error every handler's error converts into.
@@ -170,7 +175,8 @@ struct DeadLetter {
 }
 
 impl WebhookHandler for DeadLetter {
-    type Error = AppError;
+    // The dispatcher's error passes through, tier and registration site included.
+    type Error = DispatchError<AppError>;
 
     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
         // The dispatcher takes the envelope by value; the clone shares the
@@ -193,6 +199,36 @@ impl WebhookHandler for DeadLetter {
                 Ok(())
             }
         }
+    }
+}
+
+/// Logs every failed delivery before the receiver turns it into a bare 500.
+///
+/// The receiver discards the handler's error by design (the response is
+/// GitHub's delivery record, not a log), so this is where an operator learns
+/// why a delivery failed. For the dispatcher inside, the error names the
+/// tier, the delivery, and the line that registered the failing handler; its
+/// source is the application error.
+struct Observe<H> {
+    inner: H,
+}
+
+impl<H> WebhookHandler for Observe<H>
+where
+    H: WebhookHandler + MaybeSync,
+    H::Error: Error,
+{
+    type Error = H::Error;
+
+    async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
+        self.inner.handle(envelope).await.inspect_err(|error| {
+            eprintln!("{error}");
+            let mut cause = error.source();
+            while let Some(error) = cause {
+                eprintln!("  caused by: {error}");
+                cause = error.source();
+            }
+        })
     }
 }
 
@@ -230,9 +266,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .build();
 
-    let webhook = WebhookReceiverBuilder::new(verifier).build(DeadLetter {
-        dispatcher,
-        letters: Mutex::new(Vec::new()),
+    let webhook = WebhookReceiverBuilder::new(verifier).build(Observe {
+        inner: DeadLetter {
+            dispatcher,
+            letters: Mutex::new(Vec::new()),
+        },
     });
 
     let app: Router = Router::new().route("/webhook", post_service(webhook));

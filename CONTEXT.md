@@ -83,6 +83,26 @@ The dispatcher chain that runs only when no routed handler matched,
 receiving only the metadata. Empty by default, so unmatched deliveries
 succeed.
 
+**Tier**:
+One of the four steps a dispatcher runs a delivery through, in order: raw,
+always, route (the matched routes, action-specific then kind-wide), fallback.
+A *dispatch error* names the tier its failing handler ran in.
+_Avoid_: Stage, phase (kept for decode versus handle inside one handler), layer (middleware vocabulary)
+
+**Registration site**:
+The source location of the call that registered a handler (`always_raw`,
+`always`, `on`, `on_payload`, `on_payload_action`, `fallback`), captured at
+compile time through `#[track_caller]`. What a dispatch error points an
+operator at.
+_Avoid_: Call site (ambiguous with the handler's own calls), origin, registered at (reads as a time in code; fine in prose)
+
+**Dispatch error**:
+What a failed dispatch reports: the application error wrapped with the tier,
+the delivery's ID, kind and action, and the registration site of the failing
+handler. Says where, not why; why is its source, the application error. A
+decode failure is reported at the handler that needed the decode.
+_Avoid_: Handler error (the application error inside it), failure (prose for the event, not the type)
+
 **Outcome**:
 What one dispatch reports: whether the delivery was matched, and if not,
 whether its kind was known to the route table. Distinct from success: a

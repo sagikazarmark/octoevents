@@ -67,6 +67,67 @@ impl WebhookReceiverBuilder {
     /// The handler is any [`WebhookHandler`]: a struct with dependencies, a
     /// closure, a `Dispatcher`, or a typed handler converted with its
     /// `into_webhook_handler()`. It does not need to be `Clone`.
+    ///
+    /// A handler error is answered with a bare 500 and otherwise discarded:
+    /// the response is GitHub's delivery record, not a log, so the receiver
+    /// places no `Display` bound on `H::Error` and never reads it. To see
+    /// why a delivery failed, wrap the handler. With a `Dispatcher` inside,
+    /// the error is a [`DispatchError`](crate::DispatchError) naming the
+    /// tier, the delivery, and the line that registered the failing handler,
+    /// and its source is the application error:
+    ///
+    /// ```
+    /// use std::error::Error;
+    ///
+    /// use octoevents::{
+    ///     Dispatcher, Envelope, EventMeta, MaybeSync, Secret, Verifier, WebhookHandler,
+    ///     WebhookReceiverBuilder,
+    /// };
+    /// # use octoevents::DecodeError;
+    /// # #[derive(Debug, thiserror::Error)]
+    /// # enum AppError {
+    /// #     #[error(transparent)]
+    /// #     Decode(#[from] DecodeError),
+    /// #     #[error("database is down")]
+    /// #     Database,
+    /// # }
+    ///
+    /// /// Logs every failed delivery, source chain included, before the
+    /// /// receiver turns it into a 500.
+    /// struct Observe<H> {
+    ///     inner: H,
+    /// }
+    ///
+    /// impl<H> WebhookHandler for Observe<H>
+    /// where
+    ///     H: WebhookHandler + MaybeSync,
+    ///     H::Error: Error,
+    /// {
+    ///     type Error = H::Error;
+    ///
+    ///     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
+    ///         self.inner.handle(envelope).await.inspect_err(|error| {
+    ///             eprintln!("{error}");
+    ///             let mut cause = error.source();
+    ///             while let Some(error) = cause {
+    ///                 eprintln!("  caused by: {error}");
+    ///                 cause = error.source();
+    ///             }
+    ///         })
+    ///     }
+    /// }
+    ///
+    /// let dispatcher = Dispatcher::<AppError>::builder()
+    ///     .always(|_: EventMeta| async { Err::<(), _>(AppError::Database) })
+    ///     .build();
+    ///
+    /// // A failed delivery logs, before the 500:
+    /// //   delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (issues.opened) failed in the always tier at the handler registered at src/main.rs:12:6
+    /// //     caused by: database is down
+    /// let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("current secret")))
+    ///     .build(Observe { inner: dispatcher });
+    /// # let _ = receiver;
+    /// ```
     #[must_use]
     pub fn build<H>(self, handler: H) -> WebhookReceiver<H>
     where
@@ -892,6 +953,25 @@ mod tests {
     async fn handler_errors_return_bare_internal_server_errors() {
         let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
             .build(|_: Envelope| async { Err::<(), _>("private error") });
+
+        let response = receiver.receive(request(b"{}", "push")).await;
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.body().size_hint().exact(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn a_dispatch_error_is_still_a_bare_internal_server_error() {
+        use crate::{Dispatcher, test_support::AppError};
+
+        // The dispatcher's error names the tier and the registration site;
+        // none of it reaches the response, which stays GitHub's delivery
+        // record. A wrapper that logs the error is the consumer's business.
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .always(|_: EventMeta| async { Err::<(), _>("audit") })
+            .build();
+        let receiver =
+            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(dispatcher);
 
         let response = receiver.receive(request(b"{}", "push")).await;
 

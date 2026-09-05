@@ -59,11 +59,14 @@
 //! their payload type declares (`on_payload`, or `on_payload_action` for some
 //! of its actions), and, with the `octocrab` feature, event handlers by
 //! matcher through `on`. It converts each handler's error into one
-//! application error via `From`. Its `dispatch` reports an [`Outcome`]:
-//! whether the delivery matched, and if not, whether its kind was known to
-//! the route table, beside the handlers' result. As a `WebhookHandler` it
-//! keeps only the result, so the receiver sees an unmatched delivery as a
-//! success unless a fallback failed it.
+//! application error via `From`, and reports a failure as a
+//! [`DispatchError`] wrapping that error with the [`Tier`] it came from, the
+//! delivery's ID, kind and action, and the source location that registered
+//! the failing handler. Its `dispatch` reports an [`Outcome`]: whether the
+//! delivery matched, and if not, whether its kind was known to the route
+//! table, beside the handlers' result. As a `WebhookHandler` it keeps only
+//! the result, so the receiver sees an unmatched delivery as a success unless
+//! a fallback failed it.
 //!
 //! ```
 //! use octoevents::{EventKind, EventMeta, PayloadHandler};
@@ -111,6 +114,13 @@
 //! it, and a delivery whose envelope could not be stored is not routed. The
 //! `dispatcher` example shows the pattern.
 //!
+//! The receiver answers a failed delivery with a bare 500 and discards the
+//! handler's error: the response is GitHub's delivery record, not a log. To
+//! see why a delivery failed, wrap the handler; `WebhookReceiverBuilder::build`
+//! shows an `Observe<H>` wrapper that logs the error and its source chain,
+//! which for a dispatcher is the [`DispatchError`] naming the tier, the
+//! delivery, and the line that registered the failing handler.
+//!
 //! # Feature caveats
 //!
 //! Enabling the `octocrab` feature makes octocrab's pre-1.0 version part of
@@ -142,7 +152,7 @@ mod test_support;
 mod trace;
 mod verify;
 
-pub use dispatch::{Dispatcher, DispatcherBuilder, Match, Outcome};
+pub use dispatch::{DispatchError, Dispatcher, DispatcherBuilder, Match, Outcome, Tier};
 pub use envelope::{
     DecodeError, Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef, TargetType,
 };
