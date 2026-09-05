@@ -53,9 +53,10 @@
 //!   octocrab's decoded `WebhookEvent`, for logic that spans kinds.
 //!
 //! Every other flavour reaches the receiver through its
-//! `into_webhook_handler()`. Event and payload handlers can also be routed
-//! by a `Dispatcher` (`octocrab` feature) that matches on [`EventKind`] and
-//! [`Action`], runs an `always` tier for every delivery, and converts each
+//! `into_webhook_handler()`. A [`Dispatcher`] routes handlers by [`EventKind`]
+//! and [`Action`]: meta handlers in its `always` and `fallback` tiers, payload
+//! handlers by the kind their payload type declares, and, with the `octocrab`
+//! feature, event handlers by matcher through `on`. It converts each
 //! handler's error into one application error via `From`.
 //!
 //! ```
@@ -106,10 +107,11 @@
 //! # Feature caveats
 //!
 //! Enabling the `octocrab` feature makes octocrab's pre-1.0 version part of
-//! this crate's public API: `EventHandler`, `Dispatcher`, and the octocrab
+//! this crate's public API: `EventHandler`, `Dispatcher::on`, and the octocrab
 //! `Payload` impls expose octocrab's types, so an octocrab major bump is a
 //! breaking change for them. The core (envelope, verification, receiver,
-//! `WebhookHandler`, `MetaHandler`, `PayloadHandler`) does not depend on it.
+//! `WebhookHandler`, `MetaHandler`, `PayloadHandler`, and the dispatcher's
+//! other methods) does not depend on it.
 // `doc_cfg` propagates each `#[cfg]` into the rendered docs on its own,
 // including from a gated module to the items inside it, so gated items carry
 // no separate `doc(cfg(...))`.
@@ -117,12 +119,10 @@
 
 #[cfg(feature = "octocrab")]
 mod decode;
-#[cfg(feature = "octocrab")]
 mod dispatch;
 mod envelope;
 mod events;
 mod handler;
-#[cfg(feature = "octocrab")]
 mod matcher;
 mod payload;
 mod respond;
@@ -135,7 +135,6 @@ mod test_support;
 mod trace;
 mod verify;
 
-#[cfg(feature = "octocrab")]
 pub use dispatch::{Dispatcher, DispatcherBuilder};
 pub use envelope::{
     DecodeError, Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef, TargetType,
@@ -146,7 +145,6 @@ pub use handler::{EventAdapter, EventHandler};
 pub use handler::{
     HandleError, MetaAdapter, MetaHandler, PayloadAdapter, PayloadHandler, WebhookHandler,
 };
-#[cfg(feature = "octocrab")]
 pub use matcher::EventMatcher;
 pub use payload::Payload;
 pub use respond::ResponseStatus;

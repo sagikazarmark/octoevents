@@ -61,7 +61,8 @@ _Avoid_: Typed handler (event handlers are typed too)
 **Dispatcher**:
 A handler that routes envelopes to other handlers by kind and action, in
 tiers: the *raw* tier, the *always* tier, the matched routes, then the
-*fallback* chain. Produces an *outcome*.
+*fallback* chain. Produces an *outcome*. Part of the crate's core: only
+registering an event handler needs the `octocrab` feature.
 _Avoid_: Router (implies path/method routing, which stays with the caller)
 
 **Raw**:

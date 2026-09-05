@@ -544,21 +544,28 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "octocrab")]
     #[tokio::test]
     async fn accepts_a_dispatcher_as_its_handler() {
         use crate::{Dispatcher, test_support::AppError};
 
-        let calls = Arc::new(AtomicUsize::new(0));
-        let handler_calls = Arc::clone(&calls);
+        // A consumer view over the ping payload: the dispatcher routes it by
+        // the kind the view declares, with no octocrab in the picture.
+        #[derive(serde::Deserialize)]
+        struct Zen {
+            zen: String,
+        }
+        crate::impl_payload!(Zen => EventKind::Ping);
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let handler_seen = Arc::clone(&seen);
         let dispatcher = Dispatcher::<AppError>::builder()
-            .on(
-                EventKind::Ping,
-                move |_: EventMeta, _: octocrab::models::webhook_events::WebhookEvent| {
-                    handler_calls.fetch_add(1, Ordering::Relaxed);
-                    async { Ok::<_, std::convert::Infallible>(()) }
-                },
-            )
+            .handle_with(move |meta: EventMeta, payload: Zen| {
+                let seen = Arc::clone(&handler_seen);
+                async move {
+                    seen.lock().unwrap().push((meta.kind, payload.zen));
+                    Ok::<_, std::convert::Infallible>(())
+                }
+            })
             .build();
         let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
             .handle_ping(true)
@@ -572,7 +579,10 @@ mod tests {
             .await;
 
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
-        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            [(EventKind::Ping, "Design for failure.".to_owned())]
+        );
     }
 
     #[cfg(feature = "octocrab")]

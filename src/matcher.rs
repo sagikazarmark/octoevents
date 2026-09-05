@@ -45,6 +45,14 @@ impl EventMatcher {
         self
     }
 
+    #[cfg_attr(
+        not(feature = "octocrab"),
+        allow(
+            dead_code,
+            reason = "consumed by `Dispatcher::on`, the one registration that takes a matcher \
+                      and that the `octocrab` feature gates; the matcher itself stays core"
+        )
+    )]
     pub(crate) fn into_slots(self) -> Vec<Slot> {
         self.slots
     }

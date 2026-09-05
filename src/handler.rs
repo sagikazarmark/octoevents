@@ -234,8 +234,8 @@ where
 ///
 /// Enabling the `octocrab` feature makes octocrab's pre-1.0 version part of
 /// this crate's public API: `WebhookEvent` is octocrab's type, so an octocrab
-/// major bump here is a breaking change for this trait and for the
-/// `Dispatcher` built on it.
+/// major bump here is a breaking change for this trait and for
+/// `Dispatcher::on`, the one dispatcher method that accepts it.
 ///
 /// [`WebhookEvent`]: octocrab::models::webhook_events::WebhookEvent
 #[cfg(feature = "octocrab")]

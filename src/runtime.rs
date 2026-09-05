@@ -18,21 +18,11 @@ use std::{future::Future, pin::Pin};
 /// erased behind a `dyn Future`, this alias carries the same platform split so
 /// a `MaybeSend` future can be boxed on either target.
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(
-    dead_code,
-    reason = "consumed only by the erasure paths behind `tower` and `octocrab`; \
-              left unconditional so a new erasure site needs no gate here"
-)]
 pub(crate) type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
 /// A boxed `'static` future that is `Send` on native targets and unconstrained
 /// on `wasm32`.
 #[cfg(target_arch = "wasm32")]
-#[allow(
-    dead_code,
-    reason = "consumed only by the erasure paths behind `tower` and `octocrab`; \
-              left unconditional so a new erasure site needs no gate here"
-)]
 pub(crate) type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
 
 /// `Send` on native targets; no requirement on `wasm32`.

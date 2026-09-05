@@ -7,18 +7,21 @@
 //!   cargo run --example dispatcher --features tower,octocrab
 //! ```
 //!
-//! Three handler flavours appear, each a struct whose fields are its
+//! Four handler flavours appear, each a struct whose fields are its
 //! dependencies and each with its own error type:
 //!
 //! - [`Persist`] is a `WebhookHandler`: it sees the raw envelope, stores it,
 //!   and only then hands it to the dispatcher. Wrapping the dispatcher is how
 //!   raw-bytes work runs before any typed handler. It also decodes one view
 //!   by hand, through the same `DecodeError` the dispatcher's decodes report.
-//! - [`Auditor`] and [`Reject`] are `EventHandler`s over octocrab's decoded
-//!   `WebhookEvent`; one runs for every delivery, one only when nothing
-//!   matched.
+//! - [`Auditor`] and [`Reject`] are `MetaHandler`s over the routing metadata
+//!   alone; one runs for every delivery, one only when nothing matched. With
+//!   nothing to decode, both run even for a payload octocrab cannot represent.
 //! - [`Labeler`] is a `PayloadHandler` over octocrab's pull-request payload;
 //!   its kind comes from that type, so registering it needs no matcher.
+//! - The triage closure is an `EventHandler` over octocrab's decoded
+//!   `WebhookEvent`, registered with `on`: the one registration that needs
+//!   the `octocrab` feature.
 
 // The handlers here print instead of awaiting a database or the GitHub API,
 // which is what a real `async fn handle` would do.
@@ -32,7 +35,7 @@ use std::{
 use axum::{Router, routing::post_service};
 use octocrab::models::webhook_events::{WebhookEvent, payload::PullRequestWebhookEventPayload};
 use octoevents::{
-    Action, DecodeError, Dispatcher, Envelope, EventHandler, EventKind, EventMeta, PayloadHandler,
+    Action, DecodeError, Dispatcher, Envelope, EventKind, EventMeta, MetaHandler, PayloadHandler,
     Secret, Verifier, WebhookHandler, WebhookReceiverBuilder,
 };
 
@@ -134,21 +137,20 @@ impl WebhookHandler for Persist {
     }
 }
 
-/// Runs for every delivery. Its error type says it cannot fail.
+/// Runs for every delivery, reading only what `EventMeta` carries. Its error
+/// type says it cannot fail.
 struct Auditor;
 
-impl EventHandler for Auditor {
+impl MetaHandler for Auditor {
     type Error = Infallible;
 
-    async fn handle(&self, meta: EventMeta, event: WebhookEvent) -> Result<(), Self::Error> {
+    async fn handle(&self, meta: EventMeta) -> Result<(), Self::Error> {
         println!(
             "audit {} {} {:?} from {}",
             meta.delivery_id,
             meta.kind,
             meta.action,
-            event
-                .sender
-                .map_or_else(|| "unknown".into(), |sender| sender.login),
+            meta.sender.as_deref().unwrap_or("unknown"),
         );
         Ok(())
     }
@@ -192,13 +194,15 @@ impl PayloadHandler<PullRequestWebhookEventPayload> for Labeler {
     }
 }
 
-/// Fails unmatched deliveries so they show red in GitHub for redelivery.
+/// Fails unmatched deliveries so they show red in GitHub for redelivery. It
+/// reads only the metadata, so a payload nothing can decode is still reported
+/// as unhandled rather than as a decode error.
 struct Reject;
 
-impl EventHandler for Reject {
+impl MetaHandler for Reject {
     type Error = AppError;
 
-    async fn handle(&self, meta: EventMeta, _event: WebhookEvent) -> Result<(), Self::Error> {
+    async fn handle(&self, meta: EventMeta) -> Result<(), Self::Error> {
         Err(AppError::Unhandled {
             kind: meta.kind,
             action: meta.action,

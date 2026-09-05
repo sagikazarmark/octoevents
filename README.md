@@ -12,13 +12,14 @@
 | Feature | Default | Provides |
 | --- | --- | --- |
 | `http` | yes | `WebhookReceiver` and its builder, `Envelope::from_signed_parts` and `HeaderView` construction from an `http::HeaderMap`, and `ResponseStatus` conversion into `http::StatusCode` |
-| `octocrab` | no | `EventHandler` over octocrab's decoded `WebhookEvent`, `Payload` impls for octocrab's per-kind payload structs, `Envelope::decode_event`, and the `Dispatcher` |
+| `octocrab` | no | `EventHandler` over octocrab's decoded `WebhookEvent`, `Payload` impls for octocrab's per-kind payload structs, `Envelope::decode_event`, and `Dispatcher::on` |
 | `tower` | no | `tower_service::Service` impl for `WebhookReceiver` |
 | `tracing` | no | verify, receive, and dispatch spans without sensitive values |
 
 Enabling `octocrab` makes octocrab's pre-1.0 version part of this crate's
 public API; the core (envelope, verification, receiver, `WebhookHandler`,
-`MetaHandler`, `PayloadHandler`) does not depend on it.
+`MetaHandler`, `PayloadHandler`, and the `Dispatcher` apart from `on`) does
+not depend on it.
 
 ## Handlers
 
@@ -75,25 +76,30 @@ impl PayloadHandler<PullRequestNumber> for Labeler {
 The receiver accepts a `WebhookHandler`; every other flavour converts into one
 with `into_webhook_handler()`.
 
-With the `octocrab` feature, an `EventHandler` receives octocrab's decoded
-`WebhookEvent` for any kind, octocrab's payload structs implement `Payload`,
-and a `Dispatcher` routes event and payload handlers by kind and action:
+A `Dispatcher` routes handlers by kind and action: meta handlers in its
+`always` and `fallback` tiers, payload handlers by the kind their payload type
+declares, and, with the `octocrab` feature, `EventHandler`s over octocrab's
+decoded `WebhookEvent` for any kind through `on`:
 
 ```rust,ignore
 Dispatcher::<AppError>::builder()
     .always(Auditor { .. })                     // every delivery, first; not a match
-    .on([EventKind::PullRequest, EventKind::Issues], Metrics { .. })
-    .on((EventKind::PullRequest, [Action::Opened, Action::Reopened]), Triage { .. })
+    .on([EventKind::PullRequest, EventKind::Issues], Metrics { .. })                 // `octocrab`
+    .on((EventKind::PullRequest, [Action::Opened, Action::Reopened]), Triage { .. }) // `octocrab`
     .handle_with(Labeler { .. })                // kind from the payload type
     .fallback(Reject)                           // only if nothing matched
     .build()
 ```
 
 Each handler keeps its own error type; the dispatcher converts them into
-`AppError` through `From`. Unmatched deliveries succeed unless a fallback says
-otherwise, and a handler that must see the raw bytes before routing (to
-persist them, say) wraps the dispatcher as a `WebhookHandler`. The
-`dispatcher` example shows the whole shape behind a receiver.
+`AppError` through `From`. Meta and payload handlers never decode with
+octocrab, so `always`, payload routes, and a strict `fallback` all run for a
+payload octocrab cannot represent; only the first event handler reached decodes
+it, once. Unmatched deliveries succeed unless a fallback says otherwise, and a
+handler that must see the raw bytes before routing (to persist them, say) wraps
+the dispatcher as a `WebhookHandler`. The `dispatcher` example shows the whole
+shape behind a receiver; the `worker` example routes a payload handler without
+octocrab on Cloudflare Workers.
 
 Closures work for every flavour; annotate their parameter types
 (`|envelope: Envelope|`) and, where nothing else fixes it, the error type

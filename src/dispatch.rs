@@ -1,19 +1,27 @@
 use std::{collections::HashMap, future::Future, sync::Arc};
 
+#[cfg(feature = "octocrab")]
 use octocrab::models::webhook_events::WebhookEvent;
 
 use crate::{
-    Action, DecodeError, Envelope, EventHandler, EventKind, EventMatcher, EventMeta, MaybeSend,
-    MaybeSync, Payload, PayloadHandler, WebhookHandler, matcher::Slot, runtime::BoxFuture, trace,
+    Action, DecodeError, Envelope, EventKind, EventMeta, MaybeSend, MaybeSync, MetaHandler,
+    Payload, PayloadHandler, WebhookHandler, matcher::Slot, runtime::BoxFuture, trace,
 };
+#[cfg(feature = "octocrab")]
+use crate::{EventHandler, EventMatcher};
 
 // Erased handlers. A trait object admits only one non-auto trait, so these
 // cannot be written as `dyn Fn(..) + MaybeSend + MaybeSync` and carry the
 // platform split by hand; see `runtime` for the rationale.
 #[cfg(not(target_arch = "wasm32"))]
+type MetaFn<E> = Arc<dyn Fn(EventMeta) -> BoxFuture<Result<(), E>> + Send + Sync + 'static>;
+#[cfg(target_arch = "wasm32")]
+type MetaFn<E> = Arc<dyn Fn(EventMeta) -> BoxFuture<Result<(), E>> + 'static>;
+
+#[cfg(all(feature = "octocrab", not(target_arch = "wasm32")))]
 type EventFn<E> =
     Arc<dyn Fn(EventMeta, WebhookEvent) -> BoxFuture<Result<(), E>> + Send + Sync + 'static>;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(feature = "octocrab", target_arch = "wasm32"))]
 type EventFn<E> = Arc<dyn Fn(EventMeta, WebhookEvent) -> BoxFuture<Result<(), E>> + 'static>;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -21,13 +29,15 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + Send + S
 #[cfg(target_arch = "wasm32")]
 type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>;
 
-/// A handler that routes verified envelopes to typed handlers by kind and
+/// A handler that routes verified envelopes to other handlers by kind and
 /// action.
 ///
-/// Every registration is typed: `always`, `on`, and `fallback` take an
-/// [`EventHandler`], and `handle_with` takes a [`PayloadHandler`] whose kind
-/// comes from its payload type. Each handler keeps its own error type; the
-/// dispatcher converts them into `E` through `From` at registration.
+/// Each tier accepts one handler flavour, chosen by what the tier can promise
+/// to have: `always` and `fallback` take a [`MetaHandler`], `handle_with`
+/// takes a [`PayloadHandler`] whose kind comes from its payload type, and
+/// `on` takes an `EventHandler` for the kinds and actions a matcher selects.
+/// Each handler keeps its own error type; the dispatcher converts them into
+/// `E` through `From` at registration.
 ///
 /// Per delivery the dispatcher runs the `always` chain, then the chain for
 /// the envelope's kind and action, then the kind-wide chain, and the
@@ -37,14 +47,16 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// succeeds, so unhandled kinds are green in GitHub until you decide
 /// otherwise.
 ///
-/// octocrab's [`WebhookEvent`] is decoded at most once per delivery, when the
-/// first event handler is reached, and shared with the rest; a payload it
-/// cannot represent fails the delivery at that position. Payload handlers
-/// decode their own type from the raw bytes.
+/// The decode rule: meta and payload handlers never decode with octocrab;
+/// the first event handler reached does, once, and every later one shares the
+/// result. The meta tiers decode nothing and payload handlers decode their
+/// own type from the raw bytes, so a payload octocrab cannot represent still
+/// reaches `always` and every payload handler, a strict `fallback` answers it
+/// with its own error rather than a decode error, and the delivery fails only
+/// at the first event handler.
 ///
 /// ```
-/// use octocrab::models::webhook_events::{WebhookEvent, payload::PullRequestWebhookEventPayload};
-/// use octoevents::{Action, DecodeError, Dispatcher, EventKind, EventMeta};
+/// use octoevents::{DecodeError, Dispatcher, EventKind, EventMeta};
 ///
 /// #[derive(Debug)]
 /// enum AppError { Decode(DecodeError), Unhandled(EventKind) }
@@ -55,20 +67,22 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 ///     fn from(never: std::convert::Infallible) -> Self { match never {} }
 /// }
 ///
+/// // A consumer view over the pull-request payload; the kind it declares is
+/// // the kind its handler is routed by.
+/// #[derive(serde::Deserialize)]
+/// struct PullRequestNumber { number: u64 }
+/// octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
+///
 /// let dispatcher = Dispatcher::<AppError>::builder()
-///     .always(|meta: EventMeta, _: WebhookEvent| async move {
-///         println!("{} {}", meta.delivery_id, meta.kind);
+///     .always(|meta: EventMeta| async move {
+///         println!("{} {} {:?}", meta.delivery_id, meta.kind, meta.action);
 ///         Ok::<_, std::convert::Infallible>(())
 ///     })
-///     .on((EventKind::PullRequest, [Action::Opened, Action::Synchronize]), |meta: EventMeta, event: WebhookEvent| async move {
-///         println!("triage {:?} for {:?}", meta.action, event.repository.map(|repository| repository.name));
+///     .handle_with(|meta: EventMeta, pr: PullRequestNumber| async move {
+///         println!("label PR #{} for installation {:?}", pr.number, meta.installation_id);
 ///         Ok::<_, std::convert::Infallible>(())
 ///     })
-///     .handle_with(|_: EventMeta, payload: PullRequestWebhookEventPayload| async move {
-///         println!("label PR #{}", payload.number);
-///         Ok::<_, std::convert::Infallible>(())
-///     })
-///     .fallback(|meta: EventMeta, _: WebhookEvent| async move {
+///     .fallback(|meta: EventMeta| async move {
 ///         Err::<(), _>(AppError::Unhandled(meta.kind))
 ///     })
 ///     .build();
@@ -80,13 +94,38 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// that impl is the one-line `match never {}` above. Handlers written against
 /// `E` itself need nothing further.
 ///
+/// Everything above is part of the crate's core. `on` is the one method that
+/// needs the `octocrab` feature: it routes an event handler over octocrab's
+/// decoded `WebhookEvent`, for logic that spans kinds.
+///
+/// ```
+/// # #[cfg(feature = "octocrab")] {
+/// use octocrab::models::webhook_events::WebhookEvent;
+/// use octoevents::{Action, Dispatcher, EventKind, EventMeta};
+/// # use octoevents::DecodeError;
+/// # struct AppError;
+/// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
+/// # impl From<std::convert::Infallible> for AppError {
+/// #     fn from(never: std::convert::Infallible) -> Self { match never {} }
+/// # }
+///
+/// let dispatcher = Dispatcher::<AppError>::builder()
+///     .on((EventKind::PullRequest, [Action::Opened, Action::Synchronize]), |meta: EventMeta, event: WebhookEvent| async move {
+///         println!("triage {:?} for {:?}", meta.action, event.repository.map(|repository| repository.name));
+///         Ok::<_, std::convert::Infallible>(())
+///     })
+///     .build();
+/// # let _ = dispatcher;
+/// # }
+/// ```
+///
 /// No method accepts a [`WebhookHandler`]: work on the raw bytes (persist,
 /// forward) wraps the dispatcher in a webhook handler instead, so the
 /// envelope is stored before any typed handler runs.
 ///
 /// Enabling the `octocrab` feature makes octocrab's pre-1.0 version part of
-/// this crate's public API, and the dispatcher is built on it: an octocrab
-/// major bump is a breaking change for this type.
+/// this crate's public API: an octocrab major bump is a breaking change for
+/// `on` and the `EventHandler` it accepts, not for the rest of this type.
 pub struct Dispatcher<E> {
     routes: Arc<Routes<E>>,
 }
@@ -127,6 +166,7 @@ where
     pub async fn dispatch(&self, envelope: Envelope) -> Result<(), E> {
         let mut in_flight = InFlight {
             envelope: &envelope,
+            #[cfg(feature = "octocrab")]
             event: None,
         };
 
@@ -187,10 +227,11 @@ where
     }
 }
 
-/// One envelope being dispatched: the envelope plus the lazily decoded event
-/// that every event route shares.
+/// One envelope being dispatched: the envelope plus, with the `octocrab`
+/// feature, the lazily decoded event that every event route shares.
 struct InFlight<'a> {
     envelope: &'a Envelope,
+    #[cfg(feature = "octocrab")]
     event: Option<WebhookEvent>,
 }
 
@@ -211,7 +252,9 @@ impl InFlight<'_> {
         E: From<DecodeError>,
     {
         match route {
+            Route::Meta(handler) => handler(self.envelope.meta.clone()).await,
             Route::Payload(handler) => handler(self.envelope.clone()).await,
+            #[cfg(feature = "octocrab")]
             Route::Event(handler) => {
                 // Decoded on first use and cloned per event route: a clone is
                 // far cheaper than decoding a payload that can run to megabytes.
@@ -248,19 +291,19 @@ impl<E> DispatcherBuilder<E>
 where
     E: From<DecodeError> + 'static,
 {
-    /// Registers an event handler that runs for every delivery, before
-    /// routing.
+    /// Registers a meta handler that runs for every delivery, before routing.
     ///
     /// The place for audit, metrics, and deduplication: its failure fails the
     /// delivery, and it never counts as a match, so a strict fallback still
-    /// rejects kinds nothing else handles.
+    /// rejects kinds nothing else handles. It receives only the [`EventMeta`],
+    /// so it runs even for a payload no typed handler can decode.
     #[must_use]
     pub fn always<H>(mut self, handler: H) -> Self
     where
-        H: EventHandler + MaybeSend + MaybeSync + 'static,
+        H: MetaHandler + MaybeSend + MaybeSync + 'static,
         E: From<H::Error>,
     {
-        self.routes.always.push(event_route(handler));
+        self.routes.always.push(meta_route(handler));
         self
     }
 
@@ -268,6 +311,12 @@ where
     /// selects.
     ///
     /// A handler registered under several slots is shared, not duplicated.
+    /// The first event handler a delivery reaches decodes octocrab's
+    /// `WebhookEvent` once, and every later one shares it; a payload octocrab
+    /// cannot represent fails the delivery at that position.
+    ///
+    /// This is the one registration that needs the `octocrab` feature.
+    #[cfg(feature = "octocrab")]
     #[must_use]
     pub fn on<H>(mut self, matcher: impl Into<EventMatcher>, handler: H) -> Self
     where
@@ -297,18 +346,21 @@ where
         self
     }
 
-    /// Appends an event handler to the chain that runs when no routed chain
+    /// Appends a meta handler to the chain that runs when no routed chain
     /// matched.
     ///
     /// Several may be registered; they run in order and stop at the first
-    /// error. "Log it, then reject it" is two small handlers.
+    /// error. "Log it, then reject it" is two small handlers. Like `always`,
+    /// the chain receives only the [`EventMeta`], so a strict fallback reports
+    /// its own error for an unmatched payload nothing can decode, not a
+    /// decode error.
     #[must_use]
     pub fn fallback<H>(mut self, handler: H) -> Self
     where
-        H: EventHandler + MaybeSend + MaybeSync + 'static,
+        H: MetaHandler + MaybeSend + MaybeSync + 'static,
         E: From<H::Error>,
     {
-        self.routes.fallback.push(event_route(handler));
+        self.routes.fallback.push(meta_route(handler));
         self
     }
 
@@ -330,6 +382,19 @@ where
     }
 }
 
+fn meta_route<E, H>(handler: H) -> Route<E>
+where
+    E: From<H::Error> + 'static,
+    H: MetaHandler + MaybeSend + MaybeSync + 'static,
+{
+    let handler = Arc::new(handler);
+    Route::Meta(Arc::new(move |meta: EventMeta| {
+        let handler = Arc::clone(&handler);
+        Box::pin(async move { handler.handle(meta).await.map_err(E::from) })
+    }))
+}
+
+#[cfg(feature = "octocrab")]
 fn event_route<E, H>(handler: H) -> Route<E>
 where
     E: From<H::Error> + 'static,
@@ -367,7 +432,10 @@ where
 /// A registered handler, erased to its error type but keeping its flavour so
 /// dispatch knows which input to prepare.
 enum Route<E> {
+    /// Takes the metadata alone; nothing to decode.
+    Meta(MetaFn<E>),
     /// Takes the shared decoded event.
+    #[cfg(feature = "octocrab")]
     Event(EventFn<E>),
     /// Takes the envelope and decodes its own payload type.
     Payload(EnvelopeFn<E>),
@@ -376,6 +444,8 @@ enum Route<E> {
 impl<E> Clone for Route<E> {
     fn clone(&self) -> Self {
         match self {
+            Self::Meta(handler) => Self::Meta(Arc::clone(handler)),
+            #[cfg(feature = "octocrab")]
             Self::Event(handler) => Self::Event(Arc::clone(handler)),
             Self::Payload(handler) => Self::Payload(Arc::clone(handler)),
         }
@@ -408,23 +478,79 @@ impl<E> Default for KindRoutes<E> {
 mod tests {
     use std::{future::Future, pin::Pin, sync::Arc};
 
+    #[cfg(feature = "octocrab")]
     use octocrab::models::webhook_events::WebhookEvent;
     use tokio::sync::Mutex;
 
     use super::Dispatcher;
+    #[cfg(feature = "octocrab")]
+    use crate::{Action, DecodeError, EventMatcher, test_support::envelope_with_action};
     use crate::{
-        Action, DecodeError, EventKind, EventMatcher, EventMeta,
+        EventKind, EventMeta,
         test_support::{
-            AppError, check_run_completed, envelope_with_action, installation_created, ping,
-            pull_request_opened, unknown, unrepresentable,
+            AppError, check_run_completed, installation_created, ping, pull_request_opened,
+            unknown, unrepresentable,
         },
     };
 
     type Calls = Arc<Mutex<Vec<&'static str>>>;
     type Recorded<E> = Pin<Box<dyn Future<Output = Result<(), E>> + Send>>;
 
-    /// An event handler that appends `value` to the shared log.
+    /// A consumer view that accepts any `pull_request` payload, so a payload
+    /// route for that kind can be registered with or without octocrab.
+    #[derive(serde::Deserialize)]
+    struct AnyPullRequest {}
+    crate::impl_payload!(AnyPullRequest => EventKind::PullRequest);
+
+    /// A meta handler that appends `value` to the shared log.
     fn record(
+        calls: &Calls,
+        value: &'static str,
+    ) -> impl Fn(EventMeta) -> Recorded<AppError> + Send + Sync + 'static {
+        let calls = Arc::clone(calls);
+        move |_| {
+            let calls = Arc::clone(&calls);
+            Box::pin(async move {
+                calls.lock().await.push(value);
+                Ok(())
+            })
+        }
+    }
+
+    /// A meta handler that appends `value` to the shared log and then fails.
+    fn fail(
+        calls: &Calls,
+        value: &'static str,
+    ) -> impl Fn(EventMeta) -> Recorded<&'static str> + Send + Sync + 'static {
+        let calls = Arc::clone(calls);
+        move |_| {
+            let calls = Arc::clone(&calls);
+            Box::pin(async move {
+                calls.lock().await.push(value);
+                Err(value)
+            })
+        }
+    }
+
+    /// A payload handler over [`AnyPullRequest`] that appends `value` to the
+    /// shared log.
+    fn record_payload(
+        calls: &Calls,
+        value: &'static str,
+    ) -> impl Fn(EventMeta, AnyPullRequest) -> Recorded<AppError> + Send + Sync + 'static {
+        let calls = Arc::clone(calls);
+        move |_, _| {
+            let calls = Arc::clone(&calls);
+            Box::pin(async move {
+                calls.lock().await.push(value);
+                Ok(())
+            })
+        }
+    }
+
+    /// An event handler that appends `value` to the shared log.
+    #[cfg(feature = "octocrab")]
+    fn record_event(
         calls: &Calls,
         value: &'static str,
     ) -> impl Fn(EventMeta, WebhookEvent) -> Recorded<AppError> + Send + Sync + 'static {
@@ -439,7 +565,8 @@ mod tests {
     }
 
     /// An event handler that appends `value` to the shared log and then fails.
-    fn fail(
+    #[cfg(feature = "octocrab")]
+    fn fail_event(
         calls: &Calls,
         value: &'static str,
     ) -> impl Fn(EventMeta, WebhookEvent) -> Recorded<&'static str> + Send + Sync + 'static {
@@ -453,21 +580,22 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "octocrab")]
     #[tokio::test]
     async fn tiers_run_always_then_action_then_kind_in_registration_order() {
         let calls = Calls::default();
         let dispatcher = Dispatcher::<AppError>::builder()
-            .on(EventKind::PullRequest, record(&calls, "kind-1"))
+            .on(EventKind::PullRequest, record_event(&calls, "kind-1"))
             .always(record(&calls, "always-1"))
             .on(
                 (EventKind::PullRequest, Action::Opened),
-                record(&calls, "action-1"),
+                record_event(&calls, "action-1"),
             )
-            .on(EventKind::PullRequest, record(&calls, "kind-2"))
+            .on(EventKind::PullRequest, record_event(&calls, "kind-2"))
             .always(record(&calls, "always-2"))
             .on(
                 (EventKind::PullRequest, Action::Opened),
-                record(&calls, "action-2"),
+                record_event(&calls, "action-2"),
             )
             .fallback(record(&calls, "fallback"))
             .build();
@@ -487,7 +615,7 @@ mod tests {
         let calls = Calls::default();
         let dispatcher = Dispatcher::<AppError>::builder()
             .always(record(&calls, "audit"))
-            .on(EventKind::PullRequest, record(&calls, "pull-request"))
+            .handle_with(record_payload(&calls, "pull-request"))
             .fallback(fail(&calls, "unmatched"))
             .build();
 
@@ -500,10 +628,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn always_runs_for_a_payload_octocrab_cannot_represent() {
+        let calls = Calls::default();
+        let handler_calls = Arc::clone(&calls);
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .always(move |meta: EventMeta| {
+                let calls = Arc::clone(&handler_calls);
+                async move {
+                    calls.lock().await.push("audit");
+                    assert_eq!(meta.kind, EventKind::PullRequest);
+                    Ok::<_, std::convert::Infallible>(())
+                }
+            })
+            .build();
+
+        // The always tier receives only the metadata, so nothing is decoded
+        // and the delivery succeeds although octocrab cannot represent it.
+        assert_eq!(dispatcher.dispatch(unrepresentable()).await, Ok(()));
+        assert_eq!(calls.lock().await.as_slice(), ["audit"]);
+    }
+
+    #[tokio::test]
+    async fn a_strict_fallback_reports_its_own_error_for_an_unmatched_unrepresentable_payload() {
+        #[derive(serde::Deserialize)]
+        struct AnyCheckRun {}
+        crate::impl_payload!(AnyCheckRun => EventKind::CheckRun);
+
+        let calls = Calls::default();
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .handle_with(|_: EventMeta, _: AnyCheckRun| async {
+                Ok::<_, std::convert::Infallible>(())
+            })
+            .fallback(fail(&calls, "unmatched"))
+            .build();
+
+        // Nothing routes `pull_request`, so the fallback decides: it never
+        // decodes, so the answer is "unhandled", not a decode error.
+        assert_eq!(
+            dispatcher.dispatch(unrepresentable()).await,
+            Err(AppError::Handler("unmatched"))
+        );
+        assert_eq!(calls.lock().await.as_slice(), ["unmatched"]);
+    }
+
+    #[tokio::test]
     async fn the_fallback_chain_runs_in_order_only_when_nothing_matched() {
         let calls = Calls::default();
         let dispatcher = Dispatcher::<AppError>::builder()
-            .on(EventKind::PullRequest, record(&calls, "pull-request"))
+            .handle_with(record_payload(&calls, "pull-request"))
             .fallback(record(&calls, "log"))
             .fallback(fail(&calls, "reject"))
             .build();
@@ -522,10 +694,7 @@ mod tests {
     #[tokio::test]
     async fn unmatched_deliveries_succeed_when_the_fallback_chain_is_empty() {
         let dispatcher = Dispatcher::<AppError>::builder()
-            .on(
-                EventKind::PullRequest,
-                |_: EventMeta, _: WebhookEvent| async { Ok::<_, AppError>(()) },
-            )
+            .handle_with(|_: EventMeta, _: AnyPullRequest| async { Ok::<_, AppError>(()) })
             .build();
 
         assert_eq!(dispatcher.dispatch(unknown()).await, Ok(()));
@@ -533,13 +702,14 @@ mod tests {
         assert_eq!(dispatcher.dispatch(check_run_completed()).await, Ok(()));
     }
 
+    #[cfg(feature = "octocrab")]
     #[tokio::test]
     async fn a_registered_kind_with_no_matching_action_still_falls_back() {
         let calls = Calls::default();
         let dispatcher = Dispatcher::<AppError>::builder()
             .on(
                 (EventKind::PullRequest, Action::Closed),
-                record(&calls, "closed"),
+                record_event(&calls, "closed"),
             )
             .fallback(fail(&calls, "unmatched"))
             .build();
@@ -551,29 +721,30 @@ mod tests {
         assert_eq!(calls.lock().await.as_slice(), ["unmatched"]);
     }
 
+    #[cfg(feature = "octocrab")]
     #[tokio::test]
     async fn every_matcher_form_expands_to_its_routes() {
         let calls = Calls::default();
         let dispatcher = Dispatcher::<AppError>::builder()
             .on(
                 [EventKind::PullRequest, EventKind::CheckRun],
-                record(&calls, "kinds"),
+                record_event(&calls, "kinds"),
             )
             .on(
                 (EventKind::PullRequest, [Action::Opened, Action::Closed]),
-                record(&calls, "actions"),
+                record_event(&calls, "actions"),
             )
             .on(
                 [
                     (EventKind::PullRequest, Action::Opened),
                     (EventKind::CheckRun, Action::Completed),
                 ],
-                record(&calls, "pairs"),
+                record_event(&calls, "pairs"),
             )
             .on(
                 EventMatcher::from(EventKind::Installation)
                     .or((EventKind::CheckRun, Action::Completed)),
-                record(&calls, "or"),
+                record_event(&calls, "or"),
             )
             .build();
 
@@ -600,6 +771,7 @@ mod tests {
         assert_eq!(calls.lock().await.as_slice(), ["kinds"]);
     }
 
+    #[cfg(feature = "octocrab")]
     #[tokio::test]
     async fn handle_with_routes_a_payload_handler_by_its_payload_type() {
         use octocrab::models::webhook_events::payload::{
@@ -684,6 +856,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "octocrab")]
     #[tokio::test]
     async fn each_handlers_error_converts_into_the_dispatcher_error() {
         use octocrab::models::webhook_events::payload::PullRequestWebhookEventPayload;
@@ -726,7 +899,7 @@ mod tests {
 
         // One dispatcher, three handlers, three error types.
         let dispatcher = Dispatcher::<ServiceError>::builder()
-            .always(|meta: EventMeta, _: WebhookEvent| async move {
+            .always(|meta: EventMeta| async move {
                 if meta.kind == EventKind::Installation {
                     Err(DbError)
                 } else {
@@ -755,99 +928,59 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "octocrab")]
     #[tokio::test]
     async fn an_event_decode_failure_stops_the_delivery_at_the_first_event_handler() {
-        // Payload handlers over a consumer view sit either side of the event
-        // handler, so the log shows exactly where the chain stopped.
-        #[derive(serde::Deserialize)]
-        struct Anything {}
-        crate::impl_payload!(Anything => EventKind::PullRequest);
-
+        // The always tier and payload handlers over a consumer view sit either
+        // side of the event handler, so the log shows exactly where the chain
+        // stopped: octocrab decodes once, when the first event handler is
+        // reached, and nothing before it needed octocrab.
         let calls = Calls::default();
-        let payload_record = |value: &'static str| {
-            let calls = Arc::clone(&calls);
-            move |_: EventMeta, _: Anything| {
-                let calls = Arc::clone(&calls);
-                async move {
-                    calls.lock().await.push(value);
-                    Ok::<_, std::convert::Infallible>(())
-                }
-            }
-        };
-
         let dispatcher = Dispatcher::<AppError>::builder()
-            .handle_with(payload_record("payload-before"))
-            .on(EventKind::PullRequest, record(&calls, "event"))
-            .handle_with(payload_record("payload-after"))
-            .on(EventKind::PullRequest, record(&calls, "event-after"))
+            .always(record(&calls, "always"))
+            .handle_with(record_payload(&calls, "payload-before"))
+            .on(EventKind::PullRequest, record_event(&calls, "event"))
+            .handle_with(record_payload(&calls, "payload-after"))
+            .on(EventKind::PullRequest, record_event(&calls, "event-after"))
+            .fallback(fail(&calls, "unmatched"))
             .build();
 
         assert_eq!(
             dispatcher.dispatch(unrepresentable()).await,
             Err(AppError::Decode)
         );
-        assert_eq!(calls.lock().await.as_slice(), ["payload-before"]);
+        assert_eq!(calls.lock().await.as_slice(), ["always", "payload-before"]);
     }
 
     #[tokio::test]
-    async fn a_delivery_with_only_payload_handlers_never_decodes_the_event() {
+    async fn a_delivery_with_only_meta_and_payload_handlers_never_decodes_the_event() {
         // The same unrepresentable payload succeeds when no event handler
-        // needs octocrab's decoding, including in the `always` tier's absence.
-        #[derive(serde::Deserialize)]
-        struct Anything {}
-        crate::impl_payload!(Anything => EventKind::PullRequest);
-
+        // needs octocrab's decoding: the meta tiers and a consumer view over
+        // the bytes have nothing octocrab must represent.
+        let calls = Calls::default();
         let dispatcher = Dispatcher::<AppError>::builder()
-            .handle_with(|_: EventMeta, _: Anything| async {
-                Ok::<_, std::convert::Infallible>(())
-            })
+            .always(record(&calls, "always"))
+            .handle_with(record_payload(&calls, "payload"))
+            .fallback(fail(&calls, "unmatched"))
             .build();
 
         assert_eq!(dispatcher.dispatch(unrepresentable()).await, Ok(()));
+        assert_eq!(calls.lock().await.as_slice(), ["always", "payload"]);
     }
 
     #[tokio::test]
-    async fn every_chain_fails_fast() {
+    async fn the_always_and_fallback_chains_fail_fast() {
         let calls = Calls::default();
         let always = Dispatcher::<AppError>::builder()
             .always(fail(&calls, "always"))
             .always(record(&calls, "always-after"))
-            .on(EventKind::PullRequest, record(&calls, "routed"))
+            .handle_with(record_payload(&calls, "routed"))
             .build();
         assert_eq!(
             always.dispatch(pull_request_opened()).await,
             Err(AppError::Handler("always"))
         );
         assert_eq!(calls.lock().await.as_slice(), ["always"]);
-
-        calls.lock().await.clear();
-        let routed = Dispatcher::<AppError>::builder()
-            .on(
-                (EventKind::PullRequest, Action::Opened),
-                fail(&calls, "action"),
-            )
-            .on(
-                (EventKind::PullRequest, Action::Opened),
-                record(&calls, "action-after"),
-            )
-            .on(EventKind::PullRequest, record(&calls, "kind"))
-            .build();
-        assert_eq!(
-            routed.dispatch(pull_request_opened()).await,
-            Err(AppError::Handler("action"))
-        );
-        assert_eq!(calls.lock().await.as_slice(), ["action"]);
-
-        calls.lock().await.clear();
-        let kind_wide = Dispatcher::<AppError>::builder()
-            .on(EventKind::PullRequest, fail(&calls, "kind"))
-            .on(EventKind::PullRequest, record(&calls, "kind-after"))
-            .build();
-        assert_eq!(
-            kind_wide.dispatch(pull_request_opened()).await,
-            Err(AppError::Handler("kind"))
-        );
-        assert_eq!(calls.lock().await.as_slice(), ["kind"]);
 
         calls.lock().await.clear();
         let fallback = Dispatcher::<AppError>::builder()
@@ -859,5 +992,38 @@ mod tests {
             Err(AppError::Handler("fallback"))
         );
         assert_eq!(calls.lock().await.as_slice(), ["fallback"]);
+    }
+
+    #[cfg(feature = "octocrab")]
+    #[tokio::test]
+    async fn the_routed_chains_fail_fast() {
+        let calls = Calls::default();
+        let routed = Dispatcher::<AppError>::builder()
+            .on(
+                (EventKind::PullRequest, Action::Opened),
+                fail_event(&calls, "action"),
+            )
+            .on(
+                (EventKind::PullRequest, Action::Opened),
+                record_event(&calls, "action-after"),
+            )
+            .on(EventKind::PullRequest, record_event(&calls, "kind"))
+            .build();
+        assert_eq!(
+            routed.dispatch(pull_request_opened()).await,
+            Err(AppError::Handler("action"))
+        );
+        assert_eq!(calls.lock().await.as_slice(), ["action"]);
+
+        calls.lock().await.clear();
+        let kind_wide = Dispatcher::<AppError>::builder()
+            .on(EventKind::PullRequest, fail_event(&calls, "kind"))
+            .on(EventKind::PullRequest, record_event(&calls, "kind-after"))
+            .build();
+        assert_eq!(
+            kind_wide.dispatch(pull_request_opened()).await,
+            Err(AppError::Handler("kind"))
+        );
+        assert_eq!(calls.lock().await.as_slice(), ["kind"]);
     }
 }
