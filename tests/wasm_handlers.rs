@@ -11,7 +11,7 @@
 
 use std::{cell::Cell, rc::Rc};
 
-use octoevents::{Envelope, WebhookHandler};
+use octoevents::{Envelope, EventMeta, MetaHandler, WebhookHandler};
 
 /// A Worker-shaped handler: holds a non-`Send`, non-`Sync` value.
 struct Counter {
@@ -22,6 +22,20 @@ impl WebhookHandler for Counter {
     type Error = std::convert::Infallible;
 
     async fn handle(&self, _envelope: Envelope) -> Result<(), Self::Error> {
+        self.calls.set(self.calls.get() + 1);
+        Ok(())
+    }
+}
+
+/// The same state behind a meta handler, which never sees the bytes.
+struct MetaCounter {
+    calls: Rc<Cell<u32>>,
+}
+
+impl MetaHandler for MetaCounter {
+    type Error = std::convert::Infallible;
+
+    async fn handle(&self, _meta: EventMeta) -> Result<(), Self::Error> {
         self.calls.set(self.calls.get() + 1);
         Ok(())
     }
@@ -47,6 +61,34 @@ fn the_receiver_accepts_single_threaded_handler_state() {
                 Ok::<_, ()>(())
             }
         },
+    );
+}
+
+/// The meta adapter returns the handler's future as is, so the relaxed bound
+/// must survive `into_webhook_handler()` into the receiver.
+#[cfg(feature = "http")]
+#[test]
+fn the_receiver_accepts_a_single_threaded_meta_handler() {
+    use octoevents::{Secret, Verifier, WebhookReceiverBuilder};
+
+    let calls = Rc::new(Cell::new(0));
+    let _receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
+        MetaCounter {
+            calls: Rc::clone(&calls),
+        }
+        .into_webhook_handler(),
+    );
+
+    let closure_calls = Rc::clone(&calls);
+    let _receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
+        (move |_: EventMeta| {
+            let calls = Rc::clone(&closure_calls);
+            async move {
+                calls.set(calls.get() + 1);
+                Ok::<_, ()>(())
+            }
+        })
+        .into_webhook_handler(),
     );
 }
 

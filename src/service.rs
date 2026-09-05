@@ -308,8 +308,8 @@ mod tests {
 
     use super::{WebhookReceiverBuilder, empty_response};
     use crate::{
-        Envelope, EventKind, EventMeta, PayloadHandler, ResponseStatus, Secret, Verifier,
-        WebhookHandler,
+        Action, Envelope, EventKind, EventMeta, MetaHandler, PayloadHandler, ResponseStatus,
+        Secret, Verifier, WebhookHandler,
     };
 
     /// A production-shaped handler: dependencies as fields, borrowed through
@@ -497,6 +497,51 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_meta_handler_receives_the_metadata_without_decoding_the_payload() {
+        type Seen = Arc<std::sync::Mutex<Vec<(String, EventKind, Option<Action>)>>>;
+
+        struct MetaRecorder {
+            seen: Seen,
+        }
+
+        impl MetaHandler for MetaRecorder {
+            type Error = std::convert::Infallible;
+
+            #[allow(clippy::unused_async_trait_impl)]
+            async fn handle(&self, meta: EventMeta) -> Result<(), Self::Error> {
+                self.seen
+                    .lock()
+                    .unwrap()
+                    .push((meta.delivery_id, meta.kind, meta.action));
+                Ok(())
+            }
+        }
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
+            MetaRecorder {
+                seen: Arc::clone(&seen),
+            }
+            .into_webhook_handler(),
+        );
+
+        // A pull request octocrab cannot represent: a meta handler has nothing
+        // to decode, so the delivery still succeeds.
+        let response = receiver
+            .receive(request(
+                include_bytes!("../tests/fixtures/unrepresentable.json"),
+                "pull_request",
+            ))
+            .await;
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            [("delivery".to_owned(), EventKind::PullRequest, None)]
+        );
     }
 
     #[cfg(feature = "octocrab")]

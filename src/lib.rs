@@ -37,22 +37,26 @@
 //! # Handlers
 //!
 //! Handlers are structs whose fields are their dependencies, with a plain
-//! `async fn handle(&self, ..)` and their own error type. Three flavours
+//! `async fn handle(&self, ..)` and their own error type. Four flavours
 //! differ by what they receive:
 //!
 //! - A [`WebhookHandler`] receives the verified [`Envelope`]: metadata plus
 //!   the raw payload bytes. This is what the receiver accepts.
-//! - A [`PayloadHandler`] receives the [`EventMeta`] and one kind's decoded
+//! - A [`MetaHandler`] receives only the [`EventMeta`]: no bytes and no
+//!   decode, so it runs for any verified delivery. For audit, metrics, and
+//!   deduplication.
+//! - A [`PayloadHandler`] receives the `EventMeta` and one kind's decoded
 //!   [`Payload`]; its kind is declared by the payload type. Implement
 //!   `Payload` for your own serde view with [`impl_payload!`], or use
 //!   octocrab's per-kind payload structs with the `octocrab` feature.
 //! - An `EventHandler` (`octocrab` feature) receives the `EventMeta` and
 //!   octocrab's decoded `WebhookEvent`, for logic that spans kinds.
 //!
-//! Typed handlers reach the receiver through their `into_webhook_handler()`,
-//! or through a `Dispatcher` (`octocrab` feature) that routes by
-//! [`EventKind`] and [`Action`], runs an `always` tier for every delivery, and
-//! converts each handler's error into one application error via `From`.
+//! Every other flavour reaches the receiver through its
+//! `into_webhook_handler()`. Event and payload handlers can also be routed
+//! by a `Dispatcher` (`octocrab` feature) that matches on [`EventKind`] and
+//! [`Action`], runs an `always` tier for every delivery, and converts each
+//! handler's error into one application error via `From`.
 //!
 //! ```
 //! use octoevents::{EventKind, EventMeta, PayloadHandler};
@@ -105,7 +109,7 @@
 //! this crate's public API: `EventHandler`, `Dispatcher`, and the octocrab
 //! `Payload` impls expose octocrab's types, so an octocrab major bump is a
 //! breaking change for them. The core (envelope, verification, receiver,
-//! `WebhookHandler`, `PayloadHandler`) does not depend on it.
+//! `WebhookHandler`, `MetaHandler`, `PayloadHandler`) does not depend on it.
 // `doc_cfg` propagates each `#[cfg]` into the rendered docs on its own,
 // including from a gated module to the items inside it, so gated items carry
 // no separate `doc(cfg(...))`.
@@ -135,7 +139,10 @@ mod verify;
 pub use dispatch::{Dispatcher, DispatcherBuilder};
 pub use envelope::{Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef, TargetType};
 pub use events::{Action, EventKind};
-pub use handler::{DecodeError, HandleError, PayloadAdapter, PayloadHandler, WebhookHandler};
+pub use handler::{
+    DecodeError, HandleError, MetaAdapter, MetaHandler, PayloadAdapter, PayloadHandler,
+    WebhookHandler,
+};
 #[cfg(feature = "octocrab")]
 pub use handler::{EventAdapter, EventHandler};
 #[cfg(feature = "octocrab")]

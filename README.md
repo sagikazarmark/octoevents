@@ -18,16 +18,16 @@
 
 Enabling `octocrab` makes octocrab's pre-1.0 version part of this crate's
 public API; the core (envelope, verification, receiver, `WebhookHandler`,
-`PayloadHandler`) does not depend on it.
+`MetaHandler`, `PayloadHandler`) does not depend on it.
 
 ## Handlers
 
 A handler is a struct whose fields are its dependencies, with a plain
-`async fn handle(&self, ..)` and its own error type. Three flavours differ by
+`async fn handle(&self, ..)` and its own error type. Four flavours differ by
 what they receive:
 
 ```rust
-use octoevents::{Envelope, EventKind, EventMeta, PayloadHandler, WebhookHandler};
+use octoevents::{Envelope, EventKind, EventMeta, MetaHandler, PayloadHandler, WebhookHandler};
 
 // The verified envelope: routing metadata plus the exact payload bytes.
 struct Persist { /* database pool */ }
@@ -37,6 +37,19 @@ impl WebhookHandler for Persist {
 
     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
         println!("{} {} ({} bytes)", envelope.meta.delivery_id, envelope.meta.kind, envelope.raw.len());
+        Ok(())
+    }
+}
+
+// The metadata alone: no bytes, no decode, so it runs for every verified
+// delivery, including one whose payload nothing can decode.
+struct Dedup { /* seen delivery IDs */ }
+
+impl MetaHandler for Dedup {
+    type Error = std::io::Error;
+
+    async fn handle(&self, meta: EventMeta) -> Result<(), Self::Error> {
+        println!("{} {} from {:?}", meta.delivery_id, meta.kind, meta.sender);
         Ok(())
     }
 }
@@ -59,9 +72,12 @@ impl PayloadHandler<PullRequestNumber> for Labeler {
 }
 ```
 
+The receiver accepts a `WebhookHandler`; every other flavour converts into one
+with `into_webhook_handler()`.
+
 With the `octocrab` feature, an `EventHandler` receives octocrab's decoded
 `WebhookEvent` for any kind, octocrab's payload structs implement `Payload`,
-and a `Dispatcher` routes to all of them:
+and a `Dispatcher` routes event and payload handlers by kind and action:
 
 ```rust,ignore
 Dispatcher::<AppError>::builder()
