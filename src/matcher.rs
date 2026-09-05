@@ -73,7 +73,7 @@ impl Slot {
     }
 
     /// A slot for one action of `kind`.
-    fn action(kind: EventKind, action: Action) -> Self {
+    pub(crate) fn action(kind: EventKind, action: Action) -> Self {
         Self {
             kind,
             action: Some(action),

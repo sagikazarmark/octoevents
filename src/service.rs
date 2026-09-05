@@ -624,7 +624,7 @@ mod tests {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let handler_seen = Arc::clone(&seen);
         let dispatcher = Dispatcher::<AppError>::builder()
-            .handle_with(move |meta: EventMeta, payload: Zen| {
+            .on_payload(move |meta: EventMeta, payload: Zen| {
                 let seen = Arc::clone(&handler_seen);
                 async move {
                     seen.lock().unwrap().push((meta.kind, payload.zen));

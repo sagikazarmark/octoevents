@@ -121,7 +121,7 @@ async fn fetch(
 
     let dispatcher = Dispatcher::<AppError>::builder()
         .always_raw(Forward { object_url })
-        .handle_with(InstallationLog)
+        .on_payload(InstallationLog)
         .build();
 
     let receiver =

@@ -190,7 +190,7 @@ fn the_dispatcher_accepts_single_threaded_handler_state_of_every_flavour() {
                 calls: Rc::clone(&calls),
             },
         )
-        .handle_with(Labeler {
+        .on_payload(Labeler {
             calls: Rc::clone(&calls),
         })
         .fallback(MetaCounter {

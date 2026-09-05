@@ -450,13 +450,14 @@ where
 /// }
 /// ```
 ///
-/// Register one on a `Dispatcher` with `handle_with`, or hand it to the
-/// receiver directly through [`PayloadHandler::into_webhook_handler`].
+/// Register one on a `Dispatcher` with `on_payload` for every action of its
+/// kind or `on_payload_action` for some, or hand it to the receiver directly
+/// through [`PayloadHandler::into_webhook_handler`].
 ///
 /// The trait is generic over the payload, so one struct can implement it for
 /// several payload types. Registration then needs a turbofish, because the
 /// struct alone no longer says which payload is meant:
-/// `dispatcher.handle_with::<PullRequestNumber, _>(labeler)` and
+/// `dispatcher.on_payload::<PullRequestNumber, _>(labeler)` and
 /// `PayloadHandler::<PullRequestNumber>::into_webhook_handler(labeler)`. A
 /// closure fixes the payload by its parameter type and needs neither.
 ///

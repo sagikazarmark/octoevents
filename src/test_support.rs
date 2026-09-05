@@ -35,9 +35,15 @@ pub(crate) fn envelope_with_action(
 }
 
 pub(crate) fn pull_request_opened() -> Envelope {
+    pull_request(Action::Opened)
+}
+
+/// The `pull_request.opened` fixture delivered under `action`, so a route
+/// table can be probed with actions the corpus does not cover.
+pub(crate) fn pull_request(action: Action) -> Envelope {
     envelope_with_action(
         EventKind::PullRequest,
-        Action::Opened,
+        action,
         include_bytes!("../tests/fixtures/pull_request.opened.json"),
     )
 }

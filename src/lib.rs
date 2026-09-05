@@ -56,8 +56,9 @@
 //! `into_webhook_handler()`. A [`Dispatcher`] routes handlers by [`EventKind`]
 //! and [`Action`]: webhook handlers in its raw tier (`always_raw`), meta
 //! handlers in its `always` and `fallback` tiers, payload handlers by the kind
-//! their payload type declares, and, with the `octocrab` feature, event
-//! handlers by matcher through `on`. It converts each handler's error into one
+//! their payload type declares (`on_payload`, or `on_payload_action` for some
+//! of its actions), and, with the `octocrab` feature, event handlers by
+//! matcher through `on`. It converts each handler's error into one
 //! application error via `From`.
 //!
 //! ```

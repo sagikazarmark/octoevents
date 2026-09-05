@@ -17,7 +17,8 @@
 //!   alone; one runs for every delivery, one only when nothing matched. With
 //!   nothing to decode, both run even for a payload octocrab cannot represent.
 //! - [`Labeler`] is a `PayloadHandler` over octocrab's pull-request payload;
-//!   its kind comes from that type, so registering it needs no matcher.
+//!   its kind comes from that type, so registering it names only the action
+//!   it wants, and other actions never reach it or decode for it.
 //! - The triage closure is an `EventHandler` over octocrab's decoded
 //!   `WebhookEvent`, registered with `on`: the one registration that needs
 //!   the `octocrab` feature.
@@ -119,7 +120,8 @@ impl MetaHandler for Auditor {
     }
 }
 
-/// Labels pull requests. Receives the decoded payload and no raw bytes.
+/// Labels a pull request. Receives the decoded payload and no raw bytes; which
+/// actions reach it is decided where it is registered, not here.
 struct Labeler {
     label: String, // stands in for a GitHub API client
 }
@@ -132,11 +134,6 @@ impl PayloadHandler<PullRequestWebhookEventPayload> for Labeler {
         meta: EventMeta,
         payload: PullRequestWebhookEventPayload,
     ) -> Result<(), Self::Error> {
-        // Filter on the action inside the handler, with the payload's typed field.
-        use octocrab::models::webhook_events::payload::PullRequestWebhookEventAction::Opened;
-        if payload.action != Opened {
-            return Ok(());
-        }
         // A GitHub App acts on the API as the installation that delivered the
         // event, which `EventMeta` carries. A repository webhook (what
         // `gh webhook forward` creates) has none, so there is nothing to act as.
@@ -199,9 +196,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok::<_, Infallible>(())
             },
         )
-        .handle_with(Labeler {
-            label: "needs-review".into(),
-        })
+        .on_payload_action(
+            [Action::Opened],
+            Labeler {
+                label: "needs-review".into(),
+            },
+        )
         .fallback(Reject)
         .build();
 
