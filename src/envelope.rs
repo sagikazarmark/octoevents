@@ -91,8 +91,7 @@ impl EventMeta {
 /// A compact repository reference extracted without parsing a full payload model.
 ///
 /// `#[non_exhaustive]` for the same reason as [`EventMeta`]. Build one in tests
-/// from [`RepositoryRef::default`] and assign the fields you need; the crate itself
-/// never produces a defaulted value.
+/// with [`RepositoryRef::new`], which takes every field the crate probes.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct RepositoryRef {
@@ -106,6 +105,33 @@ pub struct RepositoryRef {
     pub owner: String,
 }
 
+impl RepositoryRef {
+    /// Creates a reference from the fields GitHub sends in every payload's
+    /// `repository` object.
+    ///
+    /// ```
+    /// use octoevents::{EventKind, EventMeta, RepositoryRef};
+    ///
+    /// let mut meta = EventMeta::new("72d3162e-cc78-11e3-81ab-4c9367dc0958", EventKind::Push);
+    /// meta.repository = Some(RepositoryRef::new(1296269, "Hello-World", "octocat/Hello-World", "octocat"));
+    /// # let _ = meta;
+    /// ```
+    #[must_use]
+    pub fn new(
+        id: u64,
+        name: impl Into<String>,
+        full_name: impl Into<String>,
+        owner: impl Into<String>,
+    ) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            full_name: full_name.into(),
+            owner: owner.into(),
+        }
+    }
+}
+
 /// The resource on which the webhook is installed.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -116,8 +142,8 @@ pub enum TargetType {
     Repository,
     /// An organization webhook target.
     Organization,
-    /// A target type introduced after this crate version.
-    Other(String),
+    /// A wire value unknown to this version of the crate.
+    Unknown(String),
 }
 
 impl Serialize for TargetType {
@@ -147,7 +173,7 @@ impl TargetType {
             Self::Integration => "integration",
             Self::Repository => "repository",
             Self::Organization => "organization",
-            Self::Other(value) => value,
+            Self::Unknown(value) => value,
         }
     }
 }
@@ -160,7 +186,7 @@ impl FromStr for TargetType {
             "integration" => Self::Integration,
             "repository" => Self::Repository,
             "organization" => Self::Organization,
-            value => Self::Other(value.to_owned()),
+            value => Self::Unknown(value.to_owned()),
         })
     }
 }
@@ -463,7 +489,7 @@ impl Envelope {
     ///
     /// Returns the same errors as [`Envelope::from_signed`].
     #[cfg(feature = "http")]
-    pub fn from_signed_parts(
+    pub fn from_signed_headers(
         verifier: &Verifier,
         headers: &http::HeaderMap,
         body: Bytes,
@@ -670,6 +696,8 @@ struct LoginOnly {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr as _;
+
     use bytes::Bytes;
     use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
@@ -730,12 +758,7 @@ mod tests {
         assert_eq!(meta.installation_id, Some(42));
         assert_eq!(
             meta.repository,
-            Some(RepositoryRef {
-                id: 1,
-                name: "repo".into(),
-                full_name: "octo/repo".into(),
-                owner: "octo".into(),
-            })
+            Some(RepositoryRef::new(1, "repo", "octo/repo", "octo"))
         );
         assert_eq!(meta.organization.as_deref(), Some("github"));
         assert_eq!(meta.sender.as_deref(), Some("monalisa"));
@@ -778,6 +801,34 @@ mod tests {
         assert_eq!(envelope.meta.sender, None);
         assert_eq!(envelope.meta.target_type, None);
         assert_eq!(envelope.meta.target_id, None);
+    }
+
+    #[test]
+    fn a_repository_ref_is_built_from_its_constructor() {
+        let repository = RepositoryRef::new(1, "repo", "octo/repo", "octo");
+
+        assert_eq!(repository.id, 1);
+        assert_eq!(repository.name, "repo");
+        assert_eq!(repository.full_name, "octo/repo");
+        assert_eq!(repository.owner, "octo");
+    }
+
+    #[test]
+    fn an_unknown_target_type_keeps_its_wire_value() {
+        // Matches `EventKind::Unknown` and `Action::Unknown`: a value this
+        // version does not know is carried verbatim, not dropped.
+        let target_type = TargetType::from_str("enterprise").unwrap();
+
+        assert_eq!(target_type, TargetType::Unknown("enterprise".to_owned()));
+        assert_eq!(target_type.as_str(), "enterprise");
+        assert_eq!(
+            serde_json::to_string(&target_type).unwrap(),
+            r#""enterprise""#
+        );
+        assert_eq!(
+            serde_json::from_str::<TargetType>(r#""enterprise""#).unwrap(),
+            target_type
+        );
     }
 
     #[test]
@@ -1081,7 +1132,7 @@ mod tests {
         );
 
         let envelope =
-            Envelope::from_signed_parts(&verifier(), &map, Bytes::from_static(BODY)).unwrap();
+            Envelope::from_signed_headers(&verifier(), &map, Bytes::from_static(BODY)).unwrap();
 
         assert_eq!(envelope.meta.delivery_id, "delivery");
         assert_eq!(envelope.meta.kind, EventKind::PullRequest);
@@ -1104,7 +1155,7 @@ mod tests {
         map.insert("content-type", "application/json".parse().unwrap());
 
         assert_eq!(
-            Envelope::from_signed_parts(&verifier(), &map, Bytes::new()),
+            Envelope::from_signed_headers(&verifier(), &map, Bytes::new()),
             Err(ReceiveError::Verify(VerifyError::MalformedSignature))
         );
     }

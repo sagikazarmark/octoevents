@@ -1,4 +1,4 @@
-use std::{future::Future, marker::PhantomData, sync::Arc};
+use std::{fmt, future::Future, marker::PhantomData, sync::Arc};
 
 #[cfg(feature = "octocrab")]
 use octocrab::models::webhook_events::WebhookEvent;
@@ -47,6 +47,40 @@ use crate::{DecodeError, Envelope, EventMeta, MaybeSend, MaybeSync, Payload};
 /// `wasm32`, which is what [`MaybeSend`] spells. The bound is stated on the
 /// trait because `async fn` in a trait cannot name an auto-trait bound;
 /// implementors still write `async fn`.
+///
+/// `&H` and `Box<H>` are not webhook handlers when `H` is: std implements
+/// `Fn` for both, so those impls would overlap the closure blanket. The
+/// receiver holds its handler behind its own `Arc`, so it is `Clone` for any
+/// `H` without one.
+///
+/// Passing something that is not a handler names the flavour and its shape
+/// rather than the `Fn` bound behind it. For a struct with no impl, rustc
+/// reports (abridged):
+///
+/// ```text
+/// error[E0277]: `Persist` is not a webhook handler
+///   |
+///   |     assert_handler(Persist);
+///   |                    ^^^^^^^ expected an `impl WebhookHandler` or a closure `|envelope: Envelope| async { .. }`
+///   |
+///   = note: a webhook handler receives the verified `Envelope`: implement `WebhookHandler` with `async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error>`
+///   = note: a meta, event or payload handler reaches the receiver through its `into_webhook_handler()`
+/// ```
+///
+/// ```compile_fail,E0277
+/// use octoevents::WebhookHandler;
+///
+/// fn assert_handler<H: WebhookHandler>(_: H) {}
+///
+/// struct Persist;
+/// assert_handler(Persist);
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a webhook handler",
+    label = "expected an `impl WebhookHandler` or a closure `|envelope: Envelope| async {{ .. }}`",
+    note = "a webhook handler receives the verified `Envelope`: implement `WebhookHandler` with `async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error>`",
+    note = "a meta, event or payload handler reaches the receiver through its `into_webhook_handler()`"
+)]
 pub trait WebhookHandler {
     /// The error this handler reports for a failed delivery.
     type Error;
@@ -58,10 +92,15 @@ pub trait WebhookHandler {
     ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend;
 }
 
-// Each closure blanket (here and on the two typed traits below) returns the
-// closure's future directly. Wrapping it in an `async fn` would capture
+// Each closure blanket (here and on the three other flavours below) returns
+// the closure's future directly. Wrapping it in an `async fn` would capture
 // `&self` and the arguments across the await and demand `F: Sync` and
 // `Send` arguments of the closure for no benefit.
+//
+// `do_not_recommend` keeps rustc from explaining a missing impl as "the trait
+// `Fn(Envelope)` is not implemented": the trait's own `on_unimplemented`
+// message names the flavour instead.
+#[diagnostic::do_not_recommend]
 impl<F, Fut, E> WebhookHandler for F
 where
     F: Fn(Envelope) -> Fut,
@@ -118,6 +157,23 @@ where
 /// `Box<H>` are not: std implements `Fn` for both, so those impls would
 /// overlap the closure blanket. Hand one to the receiver through
 /// [`MetaHandler::into_webhook_handler`].
+///
+/// A value that is not a meta handler is reported as such, with the shape
+/// expected:
+///
+/// ```compile_fail,E0277
+/// use octoevents::MetaHandler;
+///
+/// fn assert_handler<H: MetaHandler>(_: H) {}
+///
+/// struct Dedup;
+/// assert_handler(Dedup);
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a meta handler",
+    label = "expected an `impl MetaHandler` or a closure `|meta: EventMeta| async {{ .. }}`",
+    note = "a meta handler receives only the `EventMeta`: implement `MetaHandler` with `async fn handle(&self, meta: EventMeta) -> Result<(), Self::Error>`"
+)]
 pub trait MetaHandler {
     /// The error this handler reports for a failed delivery.
     type Error;
@@ -141,6 +197,7 @@ pub trait MetaHandler {
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl<F, Fut, E> MetaHandler for F
 where
     F: Fn(EventMeta) -> Fut,
@@ -173,6 +230,17 @@ where
 /// built by [`MetaHandler::into_webhook_handler`].
 pub struct MetaAdapter<H> {
     handler: H,
+}
+
+// Every adapter's `Debug` elides the handler rather than bounding on it, as
+// `WebhookReceiver` does: closures are never `Debug`, and the flavour is what
+// is worth printing.
+impl<H> fmt::Debug for MetaAdapter<H> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MetaAdapter")
+            .finish_non_exhaustive()
+    }
 }
 
 impl<H> WebhookHandler for MetaAdapter<H>
@@ -237,8 +305,30 @@ where
 /// major bump here is a breaking change for this trait and for
 /// `Dispatcher::on`, the one dispatcher method that accepts it.
 ///
+/// `&H` and `Box<H>` are not event handlers when `H` is: std implements `Fn`
+/// for both, so those impls would overlap the closure blanket. The dispatcher
+/// wraps every registered handler in its own `Arc`, so sharing needs nothing
+/// from the caller.
+///
+/// A value that is not an event handler is reported as such, with the shape
+/// expected:
+///
+/// ```compile_fail,E0277
+/// use octoevents::EventHandler;
+///
+/// fn assert_handler<H: EventHandler>(_: H) {}
+///
+/// struct Auditor;
+/// assert_handler(Auditor);
+/// ```
+///
 /// [`WebhookEvent`]: octocrab::models::webhook_events::WebhookEvent
 #[cfg(feature = "octocrab")]
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not an event handler",
+    label = "expected an `impl EventHandler` or a closure `|meta: EventMeta, event: WebhookEvent| async {{ .. }}`",
+    note = "an event handler receives the `EventMeta` and octocrab's decoded `WebhookEvent`: implement `EventHandler` with `async fn handle(&self, meta: EventMeta, event: WebhookEvent) -> Result<(), Self::Error>`"
+)]
 pub trait EventHandler {
     /// The error this handler reports for a failed delivery.
     type Error;
@@ -266,6 +356,7 @@ pub trait EventHandler {
 }
 
 #[cfg(feature = "octocrab")]
+#[diagnostic::do_not_recommend]
 impl<F, Fut, E> EventHandler for F
 where
     F: Fn(EventMeta, WebhookEvent) -> Fut,
@@ -284,6 +375,15 @@ where
 #[cfg(feature = "octocrab")]
 pub struct EventAdapter<H> {
     handler: H,
+}
+
+#[cfg(feature = "octocrab")]
+impl<H> fmt::Debug for EventAdapter<H> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("EventAdapter")
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(feature = "octocrab")]
@@ -351,6 +451,39 @@ where
 ///
 /// Register one on a `Dispatcher` with `handle_with`, or hand it to the
 /// receiver directly through [`PayloadHandler::into_webhook_handler`].
+///
+/// The trait is generic over the payload, so one struct can implement it for
+/// several payload types. Registration then needs a turbofish, because the
+/// struct alone no longer says which payload is meant:
+/// `dispatcher.handle_with::<PullRequestNumber, _>(labeler)` and
+/// `PayloadHandler::<PullRequestNumber>::into_webhook_handler(labeler)`. A
+/// closure fixes the payload by its parameter type and needs neither.
+///
+/// `&H` and `Box<H>` are not payload handlers when `H` is: std implements
+/// `Fn` for both, so those impls would overlap the closure blanket. The
+/// dispatcher wraps every registered handler in its own `Arc`, so sharing
+/// needs nothing from the caller.
+///
+/// A value that is not a payload handler is reported as such, naming the
+/// payload and the shape expected:
+///
+/// ```compile_fail,E0277
+/// use octoevents::{EventKind, PayloadHandler};
+///
+/// #[derive(serde::Deserialize)]
+/// struct PullRequestNumber { number: u64 }
+/// octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
+///
+/// fn assert_handler<H: PayloadHandler<PullRequestNumber>>(_: H) {}
+///
+/// struct Labeler;
+/// assert_handler(Labeler);
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a payload handler for `{P}`",
+    label = "expected an `impl PayloadHandler<{P}>` or a closure `|meta: EventMeta, payload: {P}| async {{ .. }}`",
+    note = "a payload handler receives the `EventMeta` and one kind's decoded payload: implement `PayloadHandler<{P}>` with `async fn handle(&self, meta: EventMeta, payload: {P}) -> Result<(), Self::Error>`"
+)]
 pub trait PayloadHandler<P: Payload> {
     /// The error this handler reports for a failed delivery.
     type Error;
@@ -384,6 +517,7 @@ pub trait PayloadHandler<P: Payload> {
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl<P, F, Fut, E> PayloadHandler<P> for F
 where
     P: Payload,
@@ -403,6 +537,19 @@ where
 pub struct PayloadAdapter<P, H> {
     handler: H,
     payload: PhantomData<fn() -> P>,
+}
+
+impl<P, H> fmt::Debug for PayloadAdapter<P, H>
+where
+    P: Payload,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The kind is the one thing that tells two payload adapters apart.
+        formatter
+            .debug_struct("PayloadAdapter")
+            .field("kind", &P::KIND)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<P, H> WebhookHandler for PayloadAdapter<P, H>
@@ -427,9 +574,24 @@ where
 /// decoded into the handler's input, or the handler itself failed.
 ///
 /// The handler's own error type is carried as is; it is not required to
-/// implement any conversion.
+/// implement any conversion. The enum is exhaustive: an adapter can fail in
+/// exactly these two ways, so generic code matches both arms and needs no
+/// wildcard.
+///
+/// ```
+/// use octoevents::HandleError;
+///
+/// fn phase<E>(error: &HandleError<E>) -> &'static str {
+///     match error {
+///         HandleError::Decode(_) => "decode",
+///         HandleError::Handler(_) => "handler",
+///     }
+/// }
+/// ```
+///
+/// When the handler's error type absorbs a [`DecodeError`],
+/// [`HandleError::into_error`] collapses both cases into it.
 #[derive(Debug, Error)]
-#[non_exhaustive]
 pub enum HandleError<E> {
     /// The envelope could not be decoded, so the handler did not run.
     #[error("envelope could not be decoded into the handler's input")]
@@ -437,6 +599,39 @@ pub enum HandleError<E> {
     /// The handler ran and failed.
     #[error("handler failed")]
     Handler(#[source] E),
+}
+
+impl<E> HandleError<E>
+where
+    E: From<DecodeError>,
+{
+    /// Collapses the error into the handler's own error type.
+    ///
+    /// A decode failure is converted through `From`; a handler failure is
+    /// returned as is. This is the one-call path from an adapter's error to
+    /// an application error, and it rescues a handler whose error is
+    /// `Box<dyn Error + Send + Sync>`: `HandleError` over that type is not
+    /// itself an [`Error`](std::error::Error), but the boxed error absorbs a
+    /// [`DecodeError`], so the collapsed value is.
+    ///
+    /// ```
+    /// use octoevents::{DecodeError, HandleError};
+    ///
+    /// #[derive(Debug)]
+    /// enum AppError { Decode(DecodeError), Database }
+    /// impl From<DecodeError> for AppError {
+    ///     fn from(error: DecodeError) -> Self { Self::Decode(error) }
+    /// }
+    ///
+    /// let failed: HandleError<AppError> = HandleError::Handler(AppError::Database);
+    /// assert!(matches!(failed.into_error(), AppError::Database));
+    /// ```
+    pub fn into_error(self) -> E {
+        match self {
+            Self::Decode(error) => E::from(error),
+            Self::Handler(error) => error,
+        }
+    }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -575,5 +770,80 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, HandleError::Handler(Private(action)) if action == "opened"));
+    }
+
+    #[test]
+    fn adapters_are_debug_without_constraining_the_handler() {
+        // Closures are never `Debug`, so the adapters elide the handler and
+        // print what distinguishes them: the flavour and, for a payload
+        // adapter, the kind its payload type declares.
+        let meta = (|_: EventMeta| async { Ok::<_, ()>(()) }).into_webhook_handler();
+        let payload = (|_: EventMeta, _: Opened| async { Ok::<_, ()>(()) }).into_webhook_handler();
+
+        assert_eq!(format!("{meta:?}"), "MetaAdapter { .. }");
+        assert_eq!(
+            format!("{payload:?}"),
+            "PayloadAdapter { kind: Issues, .. }"
+        );
+    }
+
+    #[cfg(feature = "octocrab")]
+    #[test]
+    fn the_event_adapter_is_debug_without_constraining_the_handler() {
+        use octocrab::models::webhook_events::WebhookEvent;
+
+        use super::EventHandler as _;
+
+        let event =
+            (|_: EventMeta, _: WebhookEvent| async { Ok::<_, ()>(()) }).into_webhook_handler();
+
+        assert_eq!(format!("{event:?}"), "EventAdapter { .. }");
+    }
+
+    #[test]
+    fn into_error_collapses_both_variants_into_the_handler_error() {
+        #[derive(Debug, PartialEq)]
+        enum AppError {
+            Decode(EventKind),
+            Failed(&'static str),
+        }
+
+        impl From<DecodeError> for AppError {
+            fn from(error: DecodeError) -> Self {
+                match error {
+                    DecodeError::KindMismatch { actual, .. } => Self::Decode(actual),
+                    other => panic!("unexpected {other:?}"),
+                }
+            }
+        }
+
+        let decode: HandleError<AppError> = HandleError::Decode(DecodeError::KindMismatch {
+            expected: EventKind::Issues,
+            actual: EventKind::PullRequest,
+        });
+        let failed: HandleError<AppError> = HandleError::Handler(AppError::Failed("boom"));
+
+        assert_eq!(
+            decode.into_error(),
+            AppError::Decode(EventKind::PullRequest)
+        );
+        assert_eq!(failed.into_error(), AppError::Failed("boom"));
+    }
+
+    #[test]
+    fn into_error_rescues_a_boxed_dyn_error_handler() {
+        // `HandleError<Box<dyn Error + Send + Sync>>` is not itself an
+        // `Error` (thiserror's `#[source]` needs `E: Error + 'static`), but
+        // the boxed error absorbs a `DecodeError`, so the collapsed value is.
+        type Boxed = Box<dyn std::error::Error + Send + Sync>;
+
+        let decode: HandleError<Boxed> = HandleError::Decode(DecodeError::KindMismatch {
+            expected: EventKind::Issues,
+            actual: EventKind::PullRequest,
+        });
+        let failed: HandleError<Boxed> = HandleError::Handler("boom".into());
+
+        assert!(decode.into_error().downcast_ref::<DecodeError>().is_some());
+        assert_eq!(failed.into_error().to_string(), "boom");
     }
 }

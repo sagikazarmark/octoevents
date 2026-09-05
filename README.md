@@ -11,7 +11,7 @@
 
 | Feature | Default | Provides |
 | --- | --- | --- |
-| `http` | yes | `WebhookReceiver` and its builder, `Envelope::from_signed_parts` and `HeaderView` construction from an `http::HeaderMap`, and `ResponseStatus` conversion into `http::StatusCode` |
+| `http` | yes | `WebhookReceiver` and its builder, `Envelope::from_signed_headers` and `HeaderView` construction from an `http::HeaderMap`, and `ResponseStatus` conversion into `http::StatusCode` |
 | `octocrab` | no | `EventHandler` over octocrab's decoded `WebhookEvent`, `Payload` impls for octocrab's per-kind payload structs, `Envelope::decode_event`, and `Dispatcher::on` |
 | `tower` | no | `tower_service::Service` impl for `WebhookReceiver` |
 | `tracing` | no | verify, receive, and dispatch spans without sensitive values |

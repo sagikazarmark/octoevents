@@ -127,6 +127,38 @@ impl<H> Clone for WebhookReceiver<H> {
     }
 }
 
+/// Construction. The unit parameter is a placeholder: [`builder`] fixes no
+/// handler type, and `()` is not one, so no receiver over it can exist.
+///
+/// [`builder`]: WebhookReceiver::builder
+// `builder` lives on `WebhookReceiver<()>` rather than on `WebhookReceiver<H>`
+// so that `WebhookReceiver::builder(verifier)` compiles without a turbofish:
+// the builder is not generic, so nothing in the expression could fix `H`, and
+// rustc would demand an annotation for a parameter the call does not use.
+impl WebhookReceiver<()> {
+    /// Starts building a receiver around the given verifier; the handler
+    /// type is fixed later by [`WebhookReceiverBuilder::build`].
+    ///
+    /// Equivalent to [`WebhookReceiverBuilder::new`], offered for parity
+    /// with `Dispatcher::builder()`.
+    ///
+    /// ```
+    /// use octoevents::{Envelope, Secret, Verifier, WebhookReceiver};
+    ///
+    /// let receiver = WebhookReceiver::builder(Verifier::new(Secret::new("current secret")))
+    ///     .handle_ping(true)
+    ///     .build(|envelope: Envelope| async move {
+    ///         println!("{}", envelope.meta.delivery_id);
+    ///         Ok::<_, std::convert::Infallible>(())
+    ///     });
+    /// # let _ = receiver;
+    /// ```
+    #[must_use]
+    pub fn builder(verifier: Verifier) -> WebhookReceiverBuilder {
+        WebhookReceiverBuilder::new(verifier)
+    }
+}
+
 impl<H> WebhookReceiver<H>
 where
     H: WebhookHandler + MaybeSend + MaybeSync + 'static,
@@ -306,7 +338,7 @@ mod tests {
     #[cfg(feature = "tower")]
     use tower::ServiceExt as _;
 
-    use super::{WebhookReceiverBuilder, empty_response};
+    use super::{WebhookReceiver, WebhookReceiverBuilder, empty_response};
     use crate::{
         Action, Envelope, EventKind, EventMeta, MetaHandler, PayloadHandler, ResponseStatus,
         Secret, Verifier, WebhookHandler,
@@ -832,6 +864,20 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(response.body().size_hint().exact(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn the_receiver_builder_is_reachable_from_the_receiver_without_a_turbofish() {
+        // Parity with `Dispatcher::builder()`: the handler type is fixed by
+        // `build`, so the path needs no annotation.
+        let receiver = WebhookReceiver::builder(Verifier::new(Secret::new("secret")))
+            .body_limit(64)
+            .build(|_: Envelope| async { Ok::<_, std::convert::Infallible>(()) });
+
+        let response = receiver.receive(request(b"{}", "push")).await;
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(format!("{receiver:?}").contains("body_limit: 64"));
     }
 
     #[test]

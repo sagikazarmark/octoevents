@@ -27,7 +27,26 @@ use crate::EventKind;
 /// assert_eq!(PullRequestNumber::KIND, EventKind::PullRequest);
 /// ```
 ///
+/// A serde type that has not declared its kind is reported as not a payload,
+/// with the macro call that makes it one:
+///
+/// ```compile_fail,E0277
+/// use octoevents::Payload;
+///
+/// fn assert_payload<P: Payload>() {}
+///
+/// #[derive(serde::Deserialize)]
+/// struct PullRequestNumber { number: u64 }
+/// assert_payload::<PullRequestNumber>();
+/// ```
+///
 /// [`impl_payload!`]: crate::impl_payload
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a payload",
+    label = "expected a `serde::Deserialize` type that declares the event kind it decodes",
+    note = "declare the kind with `octoevents::impl_payload!({Self} => EventKind::..)`",
+    note = "with the `octocrab` feature, octocrab's per-kind `*WebhookEventPayload` structs are payloads; its `WebhookEvent` is not: an event handler receives that"
+)]
 pub trait Payload: DeserializeOwned {
     /// The event kind whose deliveries decode into this type.
     const KIND: EventKind;

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, future::Future, sync::Arc};
+use std::{collections::HashMap, fmt, future::Future, sync::Arc};
 
 #[cfg(feature = "octocrab")]
 use octocrab::models::webhook_events::WebhookEvent;
@@ -135,6 +135,12 @@ impl<E> Clone for Dispatcher<E> {
         Self {
             routes: Arc::clone(&self.routes),
         }
+    }
+}
+
+impl<E> fmt::Debug for Dispatcher<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.routes.fmt_as("Dispatcher", formatter)
     }
 }
 
@@ -275,6 +281,12 @@ pub struct DispatcherBuilder<E> {
     routes: Routes<E>,
 }
 
+impl<E> fmt::Debug for DispatcherBuilder<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.routes.fmt_as("DispatcherBuilder", formatter)
+    }
+}
+
 impl<E> Default for DispatcherBuilder<E> {
     fn default() -> Self {
         Self {
@@ -335,6 +347,11 @@ where
     /// No matcher is needed, and none is accepted: the kind is `P::KIND`, so a
     /// pull-request handler cannot end up under `issues`. Filter on the
     /// action inside the handler, using the payload's typed `action` field.
+    ///
+    /// `P` is inferred from a closure's parameter type or from a struct that
+    /// implements [`PayloadHandler`] for one payload. A struct that
+    /// implements it for several needs the payload named:
+    /// `handle_with::<PullRequestNumber, _>(labeler)`.
     #[must_use]
     pub fn handle_with<P, H>(mut self, handler: H) -> Self
     where
@@ -452,11 +469,39 @@ impl<E> Clone for Route<E> {
     }
 }
 
+// The erased handler is never `Debug`; its flavour is what dispatch acts on,
+// so that is what prints, with the handler elided as `Meta(..)`. No bound on
+// `E`: the dispatcher is `Debug` for any error type, as it is `Clone` for any.
+impl<E> fmt::Debug for Route<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let flavour = match self {
+            Self::Meta(_) => "Meta",
+            #[cfg(feature = "octocrab")]
+            Self::Event(_) => "Event",
+            Self::Payload(_) => "Payload",
+        };
+        formatter.debug_tuple(flavour).finish_non_exhaustive()
+    }
+}
+
 /// Every chain a dispatcher can run.
 struct Routes<E> {
     always: Vec<Route<E>>,
     by_kind: HashMap<EventKind, KindRoutes<E>>,
     fallback: Vec<Route<E>>,
+}
+
+impl<E> Routes<E> {
+    /// Prints the route table under the name of the type that owns it, so
+    /// the dispatcher and its builder read alike.
+    fn fmt_as(&self, name: &str, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct(name)
+            .field("always", &self.always)
+            .field("by_kind", &self.by_kind)
+            .field("fallback", &self.fallback)
+            .finish()
+    }
 }
 
 /// Every handler chain registered for one event kind.
@@ -474,6 +519,16 @@ impl<E> Default for KindRoutes<E> {
     }
 }
 
+impl<E> fmt::Debug for KindRoutes<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("KindRoutes")
+            .field("any_action", &self.any_action)
+            .field("by_action", &self.by_action)
+            .finish()
+    }
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use std::{future::Future, pin::Pin, sync::Arc};
@@ -484,9 +539,9 @@ mod tests {
 
     use super::Dispatcher;
     #[cfg(feature = "octocrab")]
-    use crate::{Action, DecodeError, EventMatcher, test_support::envelope_with_action};
+    use crate::{Action, EventMatcher, test_support::envelope_with_action};
     use crate::{
-        EventKind, EventMeta,
+        DecodeError, EventKind, EventMeta,
         test_support::{
             AppError, check_run_completed, installation_created, ping, pull_request_opened,
             unknown, unrepresentable,
@@ -1025,5 +1080,107 @@ mod tests {
             Err(AppError::Handler("kind"))
         );
         assert_eq!(calls.lock().await.as_slice(), ["kind"]);
+    }
+
+    #[tokio::test]
+    async fn a_struct_handling_two_payloads_is_registered_with_a_turbofish() {
+        use crate::PayloadHandler;
+
+        #[derive(serde::Deserialize)]
+        struct AnyCheckRun {}
+        crate::impl_payload!(AnyCheckRun => EventKind::CheckRun);
+
+        struct Labeler {
+            calls: Calls,
+        }
+
+        impl PayloadHandler<AnyPullRequest> for Labeler {
+            type Error = AppError;
+
+            async fn handle(&self, _: EventMeta, _: AnyPullRequest) -> Result<(), AppError> {
+                self.calls.lock().await.push("pull-request");
+                Ok(())
+            }
+        }
+
+        impl PayloadHandler<AnyCheckRun> for Labeler {
+            type Error = AppError;
+
+            async fn handle(&self, _: EventMeta, _: AnyCheckRun) -> Result<(), AppError> {
+                self.calls.lock().await.push("check-run");
+                Ok(())
+            }
+        }
+
+        let calls = Calls::default();
+        // The struct alone no longer says which payload is meant, so each
+        // registration names it. The dispatcher `Arc`s each registration;
+        // the caller shares nothing by hand.
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .handle_with::<AnyPullRequest, _>(Labeler {
+                calls: Arc::clone(&calls),
+            })
+            .handle_with::<AnyCheckRun, _>(Labeler {
+                calls: Arc::clone(&calls),
+            })
+            .build();
+
+        dispatcher.dispatch(pull_request_opened()).await.unwrap();
+        dispatcher.dispatch(check_run_completed()).await.unwrap();
+
+        assert_eq!(calls.lock().await.as_slice(), ["pull-request", "check-run"]);
+    }
+
+    #[test]
+    fn debug_prints_the_route_table_with_handlers_elided() {
+        // Neither the error type nor any handler is `Debug`; the table of
+        // kinds, actions and handler flavours is what prints.
+        struct NotDebug;
+        impl From<DecodeError> for NotDebug {
+            fn from(_: DecodeError) -> Self {
+                Self
+            }
+        }
+
+        let builder = Dispatcher::<NotDebug>::builder()
+            .always(|_: EventMeta| async { Ok::<_, NotDebug>(()) })
+            .handle_with(|_: EventMeta, _: AnyPullRequest| async { Ok::<_, NotDebug>(()) })
+            .fallback(|_: EventMeta| async { Ok::<_, NotDebug>(()) });
+
+        let debug = format!("{builder:?}");
+        assert!(debug.starts_with("DispatcherBuilder {"), "{debug}");
+        assert!(debug.contains("always: [Meta(..)]"), "{debug}");
+        assert!(
+            debug.contains("PullRequest: KindRoutes { any_action: [Payload(..)], by_action: {} }"),
+            "{debug}"
+        );
+        assert!(debug.contains("fallback: [Meta(..)]"), "{debug}");
+
+        let debug = format!("{:?}", builder.build());
+        assert!(debug.starts_with("Dispatcher {"), "{debug}");
+        assert!(debug.contains("always: [Meta(..)]"), "{debug}");
+    }
+
+    #[cfg(feature = "octocrab")]
+    #[test]
+    fn debug_shows_event_routes_by_action() {
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .on(
+                (EventKind::PullRequest, Action::Opened),
+                |_: EventMeta, _: WebhookEvent| async { Ok::<_, AppError>(()) },
+            )
+            .on(
+                (EventKind::PullRequest, Action::Opened),
+                |_: EventMeta, _: WebhookEvent| async { Ok::<_, AppError>(()) },
+            )
+            .build();
+
+        let debug = format!("{dispatcher:?}");
+        assert!(
+            debug.contains(
+                "PullRequest: KindRoutes { any_action: [], by_action: {Opened: [Event(..), Event(..)]} }"
+            ),
+            "{debug}"
+        );
     }
 }
