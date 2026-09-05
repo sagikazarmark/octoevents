@@ -8,7 +8,8 @@ use crate::{DecodeError, Envelope, EventMeta, MaybeSend, MaybeSync, Payload};
 
 /// Consumer-owned code that handles one verified [`Envelope`].
 ///
-/// This is the handler flavour the receiver accepts. Implement it on a struct
+/// This is the handler flavour the receiver accepts, and the one the
+/// dispatcher's raw tier (`always_raw`) accepts. Implement it on a struct
 /// whose fields are its dependencies and write a plain `async fn handle`; the
 /// future borrows `&self`, so nothing is cloned per delivery:
 ///

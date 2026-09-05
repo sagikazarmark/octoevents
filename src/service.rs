@@ -577,6 +577,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_raw_tier_receives_the_exact_bytes_the_receiver_verified() {
+        use crate::{Dispatcher, test_support::AppError};
+
+        // Irregular whitespace and a trailing newline: any re-encoding between
+        // verification and the raw tier would normalize them away.
+        const BODY: &[u8] = b"{ \"action\" :\t\"opened\",\n  \"number\": 7 }\n";
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let handler_seen = Arc::clone(&seen);
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .always_raw(move |envelope: Envelope| {
+                let seen = Arc::clone(&handler_seen);
+                async move {
+                    seen.lock()
+                        .unwrap()
+                        .push((envelope.meta.kind, envelope.raw));
+                    Ok::<_, std::convert::Infallible>(())
+                }
+            })
+            .build();
+        let receiver =
+            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(dispatcher);
+
+        let response = receiver.receive(request(BODY, "pull_request")).await;
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            [(EventKind::PullRequest, Bytes::from_static(BODY))]
+        );
+    }
+
+    #[tokio::test]
     async fn accepts_a_dispatcher_as_its_handler() {
         use crate::{Dispatcher, test_support::AppError};
 

@@ -54,10 +54,11 @@
 //!
 //! Every other flavour reaches the receiver through its
 //! `into_webhook_handler()`. A [`Dispatcher`] routes handlers by [`EventKind`]
-//! and [`Action`]: meta handlers in its `always` and `fallback` tiers, payload
-//! handlers by the kind their payload type declares, and, with the `octocrab`
-//! feature, event handlers by matcher through `on`. It converts each
-//! handler's error into one application error via `From`.
+//! and [`Action`]: webhook handlers in its raw tier (`always_raw`), meta
+//! handlers in its `always` and `fallback` tiers, payload handlers by the kind
+//! their payload type declares, and, with the `octocrab` feature, event
+//! handlers by matcher through `on`. It converts each handler's error into one
+//! application error via `From`.
 //!
 //! ```
 //! use octoevents::{EventKind, EventMeta, PayloadHandler};
@@ -99,10 +100,11 @@
 //! GitHub does not automatically retry failed webhook deliveries. Keep
 //! handlers below GitHub's timeout (10 seconds on github.com and 30 seconds
 //! on GitHub Enterprise Server) by persisting or forwarding an event before
-//! returning. With a dispatcher, do that in a [`WebhookHandler`] that stores
-//! the envelope and then calls the dispatcher's `handle`: no dispatcher
-//! method accepts a webhook handler, so raw-bytes work always runs before any
-//! typed handler. The `dispatcher` example shows the pattern.
+//! returning. With a dispatcher, register that work with `always_raw`: the
+//! raw tier receives the verified envelope, bytes included, and runs before
+//! every other tier, so the envelope is stored before any typed handler sees
+//! it, and a delivery whose envelope could not be stored is not routed. The
+//! `dispatcher` example shows the pattern.
 //!
 //! # Feature caveats
 //!

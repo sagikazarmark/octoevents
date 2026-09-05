@@ -76,14 +76,16 @@ impl PayloadHandler<PullRequestNumber> for Labeler {
 The receiver accepts a `WebhookHandler`; every other flavour converts into one
 with `into_webhook_handler()`.
 
-A `Dispatcher` routes handlers by kind and action: meta handlers in its
-`always` and `fallback` tiers, payload handlers by the kind their payload type
-declares, and, with the `octocrab` feature, `EventHandler`s over octocrab's
-decoded `WebhookEvent` for any kind through `on`:
+A `Dispatcher` routes handlers by kind and action: webhook handlers in its raw
+tier, meta handlers in its `always` and `fallback` tiers, payload handlers by
+the kind their payload type declares, and, with the `octocrab` feature,
+`EventHandler`s over octocrab's decoded `WebhookEvent` for any kind through
+`on`:
 
 ```rust,ignore
 Dispatcher::<AppError>::builder()
-    .always(Auditor { .. })                     // every delivery, first; not a match
+    .always_raw(Persist { .. })                 // every delivery, first, bytes included; not a match
+    .always(Auditor { .. })                     // every delivery, after the raw tier; not a match
     .on([EventKind::PullRequest, EventKind::Issues], Metrics { .. })                 // `octocrab`
     .on((EventKind::PullRequest, [Action::Opened, Action::Reopened]), Triage { .. }) // `octocrab`
     .handle_with(Labeler { .. })                // kind from the payload type
@@ -92,14 +94,16 @@ Dispatcher::<AppError>::builder()
 ```
 
 Each handler keeps its own error type; the dispatcher converts them into
-`AppError` through `From`. Meta and payload handlers never decode with
-octocrab, so `always`, payload routes, and a strict `fallback` all run for a
-payload octocrab cannot represent; only the first event handler reached decodes
-it, once. Unmatched deliveries succeed unless a fallback says otherwise, and a
-handler that must see the raw bytes before routing (to persist them, say) wraps
-the dispatcher as a `WebhookHandler`. The `dispatcher` example shows the whole
-shape behind a receiver; the `worker` example routes a payload handler without
-octocrab on Cloudflare Workers.
+`AppError` through `From`. Raw, meta and payload handlers never decode with
+octocrab, so `always_raw`, `always`, payload routes, and a strict `fallback`
+all run for a payload octocrab cannot represent; only the first event handler
+reached decodes it, once. Unmatched deliveries succeed unless a fallback says
+otherwise. A handler that must see the raw bytes before routing (to persist
+them, say) goes in `always_raw`: it runs before every other tier, and its
+failure keeps the delivery from being routed. The `dispatcher` example shows
+the whole shape behind a receiver; the `worker` example forwards each envelope
+from the raw tier and routes a payload handler without octocrab on Cloudflare
+Workers.
 
 Closures work for every flavour; annotate their parameter types
 (`|envelope: Envelope|`) and, where nothing else fixes it, the error type

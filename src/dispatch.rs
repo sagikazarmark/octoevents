@@ -33,30 +33,32 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// action.
 ///
 /// Each tier accepts one handler flavour, chosen by what the tier can promise
-/// to have: `always` and `fallback` take a [`MetaHandler`], `handle_with`
-/// takes a [`PayloadHandler`] whose kind comes from its payload type, and
-/// `on` takes an `EventHandler` for the kinds and actions a matcher selects.
-/// Each handler keeps its own error type; the dispatcher converts them into
-/// `E` through `From` at registration.
+/// to have: `always_raw` takes a [`WebhookHandler`], `always` and `fallback`
+/// take a [`MetaHandler`], `handle_with` takes a [`PayloadHandler`] whose
+/// kind comes from its payload type, and `on` takes an `EventHandler` for the
+/// kinds and actions a matcher selects. Each handler keeps its own error
+/// type; the dispatcher converts them into `E` through `From` at
+/// registration.
 ///
-/// Per delivery the dispatcher runs the `always` chain, then the chain for
-/// the envelope's kind and action, then the kind-wide chain, and the
-/// `fallback` chain only if neither routed chain matched. Every chain is
-/// sequential, in registration order, and stops at the first error. The
-/// `always` chain never counts as a match, and an empty fallback chain
-/// succeeds, so unhandled kinds are green in GitHub until you decide
-/// otherwise.
+/// Per delivery the dispatcher runs the raw chain, then the `always` chain,
+/// then the chain for the envelope's kind and action, then the kind-wide
+/// chain, and the `fallback` chain only if neither routed chain matched.
+/// Every chain is sequential, in registration order, and stops at the first
+/// error. The raw and `always` chains never count as a match, and an empty
+/// fallback chain succeeds, so unmatched kinds are green in GitHub until you
+/// decide otherwise.
 ///
-/// The decode rule: meta and payload handlers never decode with octocrab;
-/// the first event handler reached does, once, and every later one shares the
-/// result. The meta tiers decode nothing and payload handlers decode their
-/// own type from the raw bytes, so a payload octocrab cannot represent still
-/// reaches `always` and every payload handler, a strict `fallback` answers it
-/// with its own error rather than a decode error, and the delivery fails only
-/// at the first event handler.
+/// The decode rule: raw, meta and payload handlers never decode with
+/// octocrab; the first event handler reached does, once, and every later one
+/// shares the result. The raw tier receives the bytes as they were verified,
+/// the meta tiers decode nothing, and payload handlers decode their own type
+/// from the raw bytes, so a payload octocrab cannot represent still reaches
+/// `always_raw`, `always` and every payload handler, a strict `fallback`
+/// answers it with its own error rather than a decode error, and the delivery
+/// fails only at the first event handler.
 ///
 /// ```
-/// use octoevents::{DecodeError, Dispatcher, EventKind, EventMeta};
+/// use octoevents::{DecodeError, Dispatcher, Envelope, EventKind, EventMeta};
 ///
 /// #[derive(Debug)]
 /// enum AppError { Decode(DecodeError), Unhandled(EventKind) }
@@ -74,6 +76,10 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
 ///
 /// let dispatcher = Dispatcher::<AppError>::builder()
+///     .always_raw(|envelope: Envelope| async move {
+///         println!("store {} ({} bytes)", envelope.meta.delivery_id, envelope.raw.len());
+///         Ok::<_, std::convert::Infallible>(())
+///     })
 ///     .always(|meta: EventMeta| async move {
 ///         println!("{} {} {:?}", meta.delivery_id, meta.kind, meta.action);
 ///         Ok::<_, std::convert::Infallible>(())
@@ -119,9 +125,13 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// # }
 /// ```
 ///
-/// No method accepts a [`WebhookHandler`]: work on the raw bytes (persist,
-/// forward) wraps the dispatcher in a webhook handler instead, so the
-/// envelope is stored before any typed handler runs.
+/// The raw tier is the one place a [`WebhookHandler`] enters the dispatcher:
+/// work on the bytes (persist, forward) is registered with `always_raw` and
+/// runs before any typed handler. It can continue or fail, never skip: a
+/// webhook handler that decides whether to route at all wraps the dispatcher
+/// instead. There is no raw fallback: a strict `fallback` reports an
+/// unmatched delivery through its error, and a wrapping handler still holds
+/// the bytes when it does.
 ///
 /// Enabling the `octocrab` feature makes octocrab's pre-1.0 version part of
 /// this crate's public API: an octocrab major bump is a breaking change for
@@ -154,8 +164,8 @@ where
         DispatcherBuilder::default()
     }
 
-    /// Runs the `always` chain, the matching routed chains, and the fallback
-    /// chain when nothing matched, in that order.
+    /// Runs the raw chain, the `always` chain, the matching routed chains, and
+    /// the fallback chain when nothing matched, in that order.
     ///
     /// # Errors
     ///
@@ -175,6 +185,11 @@ where
             #[cfg(feature = "octocrab")]
             event: None,
         };
+
+        in_flight
+            .run_chain(&self.routes.raw)
+            .await
+            .inspect_err(|_| trace::record("outcome", "handler_error"))?;
 
         in_flight
             .run_chain(&self.routes.always)
@@ -258,8 +273,8 @@ impl InFlight<'_> {
         E: From<DecodeError>,
     {
         match route {
+            Route::Raw(handler) | Route::Payload(handler) => handler(self.envelope.clone()).await,
             Route::Meta(handler) => handler(self.envelope.meta.clone()).await,
-            Route::Payload(handler) => handler(self.envelope.clone()).await,
             #[cfg(feature = "octocrab")]
             Route::Event(handler) => {
                 // Decoded on first use and cloned per event route: a clone is
@@ -291,6 +306,7 @@ impl<E> Default for DispatcherBuilder<E> {
     fn default() -> Self {
         Self {
             routes: Routes {
+                raw: Vec::new(),
                 always: Vec::new(),
                 by_kind: HashMap::new(),
                 fallback: Vec::new(),
@@ -303,7 +319,26 @@ impl<E> DispatcherBuilder<E>
 where
     E: From<DecodeError> + 'static,
 {
-    /// Registers a meta handler that runs for every delivery, before routing.
+    /// Registers a webhook handler that runs for every delivery, before every
+    /// other tier.
+    ///
+    /// The raw tier receives the verified [`Envelope`], bytes included: the
+    /// place to persist or forward the envelope before anything is routed.
+    /// Its failure fails the delivery, and it never counts as a match, so a
+    /// strict fallback still rejects kinds nothing else handles. Nothing is
+    /// decoded on its behalf.
+    #[must_use]
+    pub fn always_raw<H>(mut self, handler: H) -> Self
+    where
+        H: WebhookHandler + MaybeSend + MaybeSync + 'static,
+        E: From<H::Error>,
+    {
+        self.routes.raw.push(raw_route(handler));
+        self
+    }
+
+    /// Registers a meta handler that runs for every delivery, after the raw
+    /// tier and before routing.
     ///
     /// The place for audit, metrics, and deduplication: its failure fails the
     /// delivery, and it never counts as a match, so a strict fallback still
@@ -399,6 +434,18 @@ where
     }
 }
 
+fn raw_route<E, H>(handler: H) -> Route<E>
+where
+    E: From<H::Error> + 'static,
+    H: WebhookHandler + MaybeSend + MaybeSync + 'static,
+{
+    let handler = Arc::new(handler);
+    Route::Raw(Arc::new(move |envelope: Envelope| {
+        let handler = Arc::clone(&handler);
+        Box::pin(async move { handler.handle(envelope).await.map_err(E::from) })
+    }))
+}
+
 fn meta_route<E, H>(handler: H) -> Route<E>
 where
     E: From<H::Error> + 'static,
@@ -449,6 +496,8 @@ where
 /// A registered handler, erased to its error type but keeping its flavour so
 /// dispatch knows which input to prepare.
 enum Route<E> {
+    /// Takes the whole envelope, bytes included; nothing to decode.
+    Raw(EnvelopeFn<E>),
     /// Takes the metadata alone; nothing to decode.
     Meta(MetaFn<E>),
     /// Takes the shared decoded event.
@@ -461,6 +510,7 @@ enum Route<E> {
 impl<E> Clone for Route<E> {
     fn clone(&self) -> Self {
         match self {
+            Self::Raw(handler) => Self::Raw(Arc::clone(handler)),
             Self::Meta(handler) => Self::Meta(Arc::clone(handler)),
             #[cfg(feature = "octocrab")]
             Self::Event(handler) => Self::Event(Arc::clone(handler)),
@@ -475,6 +525,7 @@ impl<E> Clone for Route<E> {
 impl<E> fmt::Debug for Route<E> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let flavour = match self {
+            Self::Raw(_) => "Raw",
             Self::Meta(_) => "Meta",
             #[cfg(feature = "octocrab")]
             Self::Event(_) => "Event",
@@ -486,6 +537,7 @@ impl<E> fmt::Debug for Route<E> {
 
 /// Every chain a dispatcher can run.
 struct Routes<E> {
+    raw: Vec<Route<E>>,
     always: Vec<Route<E>>,
     by_kind: HashMap<EventKind, KindRoutes<E>>,
     fallback: Vec<Route<E>>,
@@ -497,6 +549,7 @@ impl<E> Routes<E> {
     fn fmt_as(&self, name: &str, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct(name)
+            .field("raw", &self.raw)
             .field("always", &self.always)
             .field("by_kind", &self.by_kind)
             .field("fallback", &self.fallback)
@@ -541,7 +594,7 @@ mod tests {
     #[cfg(feature = "octocrab")]
     use crate::{Action, EventMatcher, test_support::envelope_with_action};
     use crate::{
-        DecodeError, EventKind, EventMeta,
+        DecodeError, Envelope, EventKind, EventMeta,
         test_support::{
             AppError, check_run_completed, installation_created, ping, pull_request_opened,
             unknown, unrepresentable,
@@ -577,6 +630,36 @@ mod tests {
         calls: &Calls,
         value: &'static str,
     ) -> impl Fn(EventMeta) -> Recorded<&'static str> + Send + Sync + 'static {
+        let calls = Arc::clone(calls);
+        move |_| {
+            let calls = Arc::clone(&calls);
+            Box::pin(async move {
+                calls.lock().await.push(value);
+                Err(value)
+            })
+        }
+    }
+
+    /// A webhook handler that appends `value` to the shared log.
+    fn record_envelope(
+        calls: &Calls,
+        value: &'static str,
+    ) -> impl Fn(Envelope) -> Recorded<AppError> + Send + Sync + 'static {
+        let calls = Arc::clone(calls);
+        move |_| {
+            let calls = Arc::clone(&calls);
+            Box::pin(async move {
+                calls.lock().await.push(value);
+                Ok(())
+            })
+        }
+    }
+
+    /// A webhook handler that appends `value` to the shared log and then fails.
+    fn fail_envelope(
+        calls: &Calls,
+        value: &'static str,
+    ) -> impl Fn(Envelope) -> Recorded<&'static str> + Send + Sync + 'static {
         let calls = Arc::clone(calls);
         move |_| {
             let calls = Arc::clone(&calls);
@@ -666,6 +749,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tiers_run_raw_then_always_then_routes_then_fallback_in_registration_order() {
+        // Registration order is interleaved across tiers on purpose: the tier
+        // decides when a handler runs, and only order within a tier follows
+        // registration.
+        let calls = Calls::default();
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .always(record(&calls, "always-1"))
+            .handle_with(record_payload(&calls, "route-1"))
+            .always_raw(record_envelope(&calls, "raw-1"))
+            .fallback(record(&calls, "fallback-1"))
+            .handle_with(record_payload(&calls, "route-2"))
+            .always(record(&calls, "always-2"))
+            .always_raw(record_envelope(&calls, "raw-2"))
+            .fallback(record(&calls, "fallback-2"))
+            .build();
+
+        dispatcher.dispatch(pull_request_opened()).await.unwrap();
+        assert_eq!(
+            calls.lock().await.as_slice(),
+            [
+                "raw-1", "raw-2", "always-1", "always-2", "route-1", "route-2"
+            ]
+        );
+
+        calls.lock().await.clear();
+        dispatcher.dispatch(check_run_completed()).await.unwrap();
+        assert_eq!(
+            calls.lock().await.as_slice(),
+            [
+                "raw-1",
+                "raw-2",
+                "always-1",
+                "always-2",
+                "fallback-1",
+                "fallback-2"
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn always_runs_for_every_delivery_without_counting_as_a_match() {
         let calls = Calls::default();
         let dispatcher = Dispatcher::<AppError>::builder()
@@ -680,6 +803,24 @@ mod tests {
             Err(AppError::Handler("unmatched"))
         );
         assert_eq!(calls.lock().await.as_slice(), ["audit", "unmatched"]);
+    }
+
+    #[tokio::test]
+    async fn the_raw_tier_runs_for_every_delivery_without_counting_as_a_match() {
+        let calls = Calls::default();
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .always_raw(record_envelope(&calls, "persist"))
+            .handle_with(record_payload(&calls, "pull-request"))
+            .fallback(fail(&calls, "unmatched"))
+            .build();
+
+        // Persisting the envelope says nothing about whether any route claims
+        // its kind: the strict fallback still rejects it.
+        assert_eq!(
+            dispatcher.dispatch(installation_created()).await,
+            Err(AppError::Handler("unmatched"))
+        );
+        assert_eq!(calls.lock().await.as_slice(), ["persist", "unmatched"]);
     }
 
     #[tokio::test]
@@ -1008,19 +1149,61 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_delivery_with_only_meta_and_payload_handlers_never_decodes_the_event() {
+    async fn a_delivery_with_only_raw_meta_and_payload_handlers_never_decodes_the_event() {
         // The same unrepresentable payload succeeds when no event handler
-        // needs octocrab's decoding: the meta tiers and a consumer view over
-        // the bytes have nothing octocrab must represent.
+        // needs octocrab's decoding: the raw tier sees bytes, the meta tiers
+        // see metadata, and a consumer view over the bytes has nothing
+        // octocrab must represent.
         let calls = Calls::default();
         let dispatcher = Dispatcher::<AppError>::builder()
+            .always_raw(record_envelope(&calls, "raw"))
             .always(record(&calls, "always"))
             .handle_with(record_payload(&calls, "payload"))
             .fallback(fail(&calls, "unmatched"))
             .build();
 
         assert_eq!(dispatcher.dispatch(unrepresentable()).await, Ok(()));
-        assert_eq!(calls.lock().await.as_slice(), ["always", "payload"]);
+        assert_eq!(calls.lock().await.as_slice(), ["raw", "always", "payload"]);
+    }
+
+    #[cfg(feature = "octocrab")]
+    #[tokio::test]
+    async fn the_raw_tier_runs_before_an_event_handler_fails_to_decode() {
+        // Persist-before-route holds for a payload octocrab cannot represent:
+        // the raw tier stores it, and the decode failure that fails the
+        // delivery is reported at the event handler, never earlier.
+        let calls = Calls::default();
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .always_raw(record_envelope(&calls, "raw"))
+            .on(EventKind::PullRequest, record_event(&calls, "event"))
+            .build();
+
+        assert_eq!(
+            dispatcher.dispatch(unrepresentable()).await,
+            Err(AppError::Decode)
+        );
+        assert_eq!(calls.lock().await.as_slice(), ["raw"]);
+    }
+
+    #[tokio::test]
+    async fn a_failure_in_the_raw_tier_fails_the_delivery_before_any_later_tier() {
+        let calls = Calls::default();
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .always_raw(fail_envelope(&calls, "persist"))
+            .always_raw(record_envelope(&calls, "persist-after"))
+            .always(record(&calls, "audit"))
+            .handle_with(record_payload(&calls, "routed"))
+            .fallback(record(&calls, "fallback"))
+            .build();
+
+        // A delivery that could not be persisted is not routed: the raw chain
+        // stops at the failure, and neither the always tier, the matching
+        // route, nor the fallback sees it.
+        assert_eq!(
+            dispatcher.dispatch(pull_request_opened()).await,
+            Err(AppError::Handler("persist"))
+        );
+        assert_eq!(calls.lock().await.as_slice(), ["persist"]);
     }
 
     #[tokio::test]
@@ -1143,12 +1326,14 @@ mod tests {
         }
 
         let builder = Dispatcher::<NotDebug>::builder()
+            .always_raw(|_: Envelope| async { Ok::<_, NotDebug>(()) })
             .always(|_: EventMeta| async { Ok::<_, NotDebug>(()) })
             .handle_with(|_: EventMeta, _: AnyPullRequest| async { Ok::<_, NotDebug>(()) })
             .fallback(|_: EventMeta| async { Ok::<_, NotDebug>(()) });
 
         let debug = format!("{builder:?}");
         assert!(debug.starts_with("DispatcherBuilder {"), "{debug}");
+        assert!(debug.contains("raw: [Raw(..)]"), "{debug}");
         assert!(debug.contains("always: [Meta(..)]"), "{debug}");
         assert!(
             debug.contains("PullRequest: KindRoutes { any_action: [Payload(..)], by_action: {} }"),
@@ -1158,6 +1343,7 @@ mod tests {
 
         let debug = format!("{:?}", builder.build());
         assert!(debug.starts_with("Dispatcher {"), "{debug}");
+        assert!(debug.contains("raw: [Raw(..)]"), "{debug}");
         assert!(debug.contains("always: [Meta(..)]"), "{debug}");
     }
 

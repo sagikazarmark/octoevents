@@ -165,6 +165,9 @@ fn the_dispatcher_accepts_single_threaded_handler_state_of_every_flavour() {
     let calls = Rc::new(Cell::new(0));
     let closure_calls = Rc::clone(&calls);
     let dispatcher = Dispatcher::<AppError>::builder()
+        .always_raw(Counter {
+            calls: Rc::clone(&calls),
+        })
         .always(MetaCounter {
             calls: Rc::clone(&calls),
         })

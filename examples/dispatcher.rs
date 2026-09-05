@@ -10,10 +10,9 @@
 //! Four handler flavours appear, each a struct whose fields are its
 //! dependencies and each with its own error type:
 //!
-//! - [`Persist`] is a `WebhookHandler`: it sees the raw envelope, stores it,
-//!   and only then hands it to the dispatcher. Wrapping the dispatcher is how
-//!   raw-bytes work runs before any typed handler. It also decodes one view
-//!   by hand, through the same `DecodeError` the dispatcher's decodes report.
+//! - [`Persist`] is a `WebhookHandler` in the dispatcher's raw tier: it sees
+//!   the verified envelope, bytes included, and stores it before any other
+//!   tier runs. A delivery whose envelope could not be stored is not routed.
 //! - [`Auditor`] and [`Reject`] are `MetaHandler`s over the routing metadata
 //!   alone; one runs for every delivery, one only when nothing matched. With
 //!   nothing to decode, both run even for a payload octocrab cannot represent.
@@ -27,10 +26,7 @@
 // which is what a real `async fn handle` would do.
 #![allow(clippy::unused_async_trait_impl)]
 
-use std::{
-    convert::Infallible,
-    sync::{Arc, Mutex},
-};
+use std::{convert::Infallible, sync::Mutex};
 
 use axum::{Router, routing::post_service};
 use octocrab::models::webhook_events::{WebhookEvent, payload::PullRequestWebhookEventPayload};
@@ -41,8 +37,7 @@ use octoevents::{
 
 /// The application error every handler's error converts into.
 ///
-/// One `From<DecodeError>` covers every decode path: the dispatcher's event
-/// and payload decodes, and the `Envelope::decode` call in [`Persist`].
+/// One `From<DecodeError>` covers the dispatcher's event and payload decodes.
 #[derive(Debug, thiserror::Error)]
 enum AppError {
     #[error(transparent)]
@@ -83,40 +78,16 @@ impl Store {
     }
 }
 
-/// Persists the raw envelope, then routes it unless a bot caused it. The
-/// persist-before-handle advice from the crate docs, expressed as a webhook
-/// handler that wraps the dispatcher.
+/// Persists the raw envelope. The persist-before-route advice from the crate
+/// docs, expressed as a webhook handler in the raw tier: it runs first for
+/// every delivery, and its failure (here, a redelivery of a stored delivery
+/// ID) keeps the delivery from being routed.
 struct Persist {
-    store: Arc<Store>,
-    dispatcher: Dispatcher<AppError>,
-}
-
-/// A view over the one payload field [`Persist`] needs that `EventMeta` does
-/// not probe: the sender's account type. GitHub includes `sender` in every
-/// kind's payload, so the view is bound to no kind and decoded with
-/// `Envelope::decode`; the `Option` keeps a payload without one from failing
-/// the delivery.
-#[derive(serde::Deserialize)]
-struct SenderView {
-    sender: Option<Sender>,
-}
-
-#[derive(serde::Deserialize)]
-struct Sender {
-    #[serde(rename = "type")]
-    account_type: String,
-}
-
-impl SenderView {
-    fn is_bot(&self) -> bool {
-        self.sender
-            .as_ref()
-            .is_some_and(|sender| sender.account_type == "Bot")
-    }
+    store: Store,
 }
 
 impl WebhookHandler for Persist {
-    type Error = AppError;
+    type Error = StoreError;
 
     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
         self.store.insert(&envelope.meta.delivery_id)?;
@@ -125,15 +96,7 @@ impl WebhookHandler for Persist {
             envelope.meta.delivery_id,
             envelope.raw.len()
         );
-        // Deliveries a bot caused (this App's own comments included) are kept
-        // for the record but not routed. The `?` converts the same
-        // `DecodeError` the dispatcher reports, through the same `From`.
-        let sender: SenderView = envelope.decode()?;
-        if sender.is_bot() {
-            println!("skip {}: sent by a bot", envelope.meta.delivery_id);
-            return Ok(());
-        }
-        self.dispatcher.handle(envelope).await
+        Ok(())
     }
 }
 
@@ -216,6 +179,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let verifier = Verifier::new(Secret::new(secret));
 
     let dispatcher = Dispatcher::<AppError>::builder()
+        .always_raw(Persist {
+            store: Store::default(),
+        })
         .always(Auditor)
         .on(
             (
@@ -239,10 +205,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .fallback(Reject)
         .build();
 
-    let webhook = WebhookReceiverBuilder::new(verifier).build(Persist {
-        store: Arc::new(Store::default()),
-        dispatcher,
-    });
+    let webhook = WebhookReceiverBuilder::new(verifier).build(dispatcher);
 
     let app: Router = Router::new().route("/webhook", post_service(webhook));
     let address = std::env::var("WEBHOOK_ADDRESS").unwrap_or_else(|_| "127.0.0.1:3000".into());

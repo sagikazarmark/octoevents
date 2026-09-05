@@ -6,7 +6,7 @@ The fixture bodies are copied verbatim from these pinned upstream examples:
 - octokit/webhooks commit [`7dd7fa56498a827a08b71919fae89428f5e8e283`](https://github.com/octokit/webhooks/blob/7dd7fa56498a827a08b71919fae89428f5e8e283/payload-examples/api.github.com/check_run/completed.payload.json): `check_run.completed.json`.
 - `unknown.json` duplicates the pinned octocrab ping body and is delivered with a deliberately unknown event header.
 
-`unrepresentable.json` is deliberately synthetic valid JSON used only to test the raw fallback.
+`unrepresentable.json` is deliberately synthetic valid JSON that octocrab cannot decode, used to test that the raw and meta tiers, payload handlers over consumer views, and a strict fallback run without it.
 
 `envelope.v0.1.0.json` is not a webhook body: it is an `Envelope` serialized
 by octoevents v0.1.0 (`serde_json::to_string_pretty` over `Envelope::from_signed`

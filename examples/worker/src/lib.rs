@@ -1,9 +1,9 @@
 //! A Cloudflare Worker that forwards every verified envelope to a Restate
-//! virtual object, then routes it through a dispatcher.
+//! virtual object from the dispatcher's raw tier, then routes it.
 //!
 //! Built with `default-features = false`: no octocrab, so the dispatcher
-//! routes meta and payload handlers only, and the payload handler decodes a
-//! consumer-defined view of the `installation` payload.
+//! routes raw, meta and payload handlers only, and the payload handler decodes
+//! a consumer-defined view of the `installation` payload.
 
 // The handlers here log instead of awaiting a database or the GitHub API,
 // which is what a real `async fn handle` would do.
@@ -35,11 +35,11 @@ impl From<Infallible> for AppError {
     }
 }
 
-/// Forwards the raw envelope to the Restate ingress, then routes it. Wrapping
-/// the dispatcher is how raw-bytes work runs before any typed handler.
+/// Forwards the raw envelope to the Restate ingress. Registered in the
+/// dispatcher's raw tier, it runs before any typed handler, and a delivery the
+/// ingress refused is not routed.
 struct Forward {
     object_url: String,
-    dispatcher: Dispatcher<AppError>,
 }
 
 impl WebhookHandler for Forward {
@@ -67,7 +67,7 @@ impl WebhookHandler for Forward {
             return Err(worker::Error::RustError(format!("ingress returned {status}")).into());
         }
 
-        self.dispatcher.handle(envelope).await
+        Ok(())
     }
 }
 
@@ -120,13 +120,12 @@ async fn fetch(
     let object_url = env.var("RESTATE_OBJECT_URL")?.to_string();
 
     let dispatcher = Dispatcher::<AppError>::builder()
+        .always_raw(Forward { object_url })
         .handle_with(InstallationLog)
         .build();
 
-    let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new(secret))).build(Forward {
-        object_url,
-        dispatcher,
-    });
+    let receiver =
+        WebhookReceiverBuilder::new(Verifier::new(Secret::new(secret))).build(dispatcher);
 
     Ok(receiver.receive(request).await)
 }
