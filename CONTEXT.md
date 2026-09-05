@@ -26,17 +26,26 @@ _Avoid_: Service (names the optional Tower impl, not the concept), endpoint, lis
 
 **Handler**:
 Consumer-owned code that handles one verified delivery. Handlers *handle*;
-the receiver *receives*. Three flavours are distinguished by what they
-receive: a *webhook handler* receives the envelope, an *event handler*
-receives the metadata plus octocrab's decoded event, a *payload handler*
-receives the metadata plus one kind's decoded payload. "Handler" alone means
-any of them.
+the receiver *receives*. Four flavours are distinguished by what they
+receive: a *webhook handler* receives the envelope, a *meta handler* receives
+only the metadata, an *event handler* receives the metadata plus octocrab's
+decoded event, a *payload handler* receives the metadata plus one kind's
+decoded payload. "Handler" alone means any of them. Event and payload
+handlers are the *typed* handlers: the ones that need a decode.
 _Avoid_: Callback, subscriber
 
 **Webhook handler**:
 A handler that receives the verified envelope, raw bytes included. The only
-flavour the receiver accepts; typed handlers reach it through an explicit
+flavour the receiver accepts, and the only flavour the raw tier accepts;
+other flavours reach the receiver through an explicit
 `into_webhook_handler()` conversion.
+_Avoid_: Raw handler (raw names the tier and the bytes, not the flavour)
+
+**Meta handler**:
+A handler that receives only the `EventMeta`: no bytes, no decode, so it can
+run for a payload nothing can decode. What the always and fallback tiers
+accept.
+_Avoid_: Metadata handler, header handler (meta also holds probed payload fields)
 
 **Event handler**:
 A handler that receives the `EventMeta` and octocrab's decoded `WebhookEvent`
@@ -51,18 +60,39 @@ _Avoid_: Typed handler (event handlers are typed too)
 
 **Dispatcher**:
 A handler that routes envelopes to other handlers by kind and action, in
-tiers: the *always* tier, the matched routes, then the *fallback* chain.
+tiers: the *raw* tier, the *always* tier, the matched routes, then the
+*fallback* chain. Produces an *outcome*.
 _Avoid_: Router (implies path/method routing, which stays with the caller)
 
+**Raw**:
+The dispatcher tier that runs first for every delivery and receives the
+envelope, bytes included. Where persist-before-route lives. Its failure fails
+the delivery; it never counts as a match.
+_Avoid_: Pre-tier, before hook
+
 **Always**:
-The dispatcher tier that runs for every delivery before routing. Its failure
-fails the delivery; it never counts as a match, so a strict fallback still
-rejects kinds nothing else handles.
+The dispatcher tier that runs for every delivery after the raw tier and
+before routing, receiving only the metadata. Its failure fails the delivery;
+it never counts as a match, so a strict fallback still rejects kinds nothing
+else handles.
 _Avoid_: Global handler, middleware
 
 **Fallback**:
-The dispatcher chain that runs only when no routed handler matched. Empty by
-default, so unmatched deliveries succeed.
+The dispatcher chain that runs only when no routed handler matched,
+receiving only the metadata. Empty by default, so unmatched deliveries
+succeed.
+
+**Outcome**:
+What one dispatch reports: whether the delivery was matched, and if not,
+whether its kind was known to the route table. Distinct from success: a
+matched delivery can fail, an unmatched one can succeed.
+_Avoid_: Status (reserved for HTTP), result (the Rust type)
+
+**Match**:
+A delivery matches when at least one routed handler is registered for its
+kind, or its kind and action. Matching is decided by the route table, never
+by a handler; the raw and always tiers do not match.
+_Avoid_: Hit, handled (a matched delivery may still fail)
 
 **EventMatcher**:
 The kinds and actions one dispatcher registration selects: a kind, several
