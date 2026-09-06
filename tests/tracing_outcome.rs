@@ -1,21 +1,25 @@
-//! The `octoevents.dispatch` span records one `outcome` value per dispatch,
-//! derived from the [`Outcome`] the dispatcher returns.
+//! The `octoevents.dispatch` span records what happened to one delivery: an
+//! `outcome` label derived from the [`Outcome`] the dispatcher returns, the
+//! tier and registration site of the handler that failed it, and the
+//! `EventMeta` fields it ran with (`delivery_id`, `event`, `action`,
+//! `installation_id`).
 //!
-//! The four values are a contract dashboards filter on: `ok` and
-//! `handler_error` for a matched delivery, `fallback_ok` and `fallback_error`
-//! for an unmatched one, whichever tier failed it. The same span wraps
-//! `WebhookHandler::handle`, so the receiver's path records the value too.
+//! The four labels are a contract dashboards filter on: `ok` and
+//! `handler_error` for a matched delivery, `unmatched_ok` and
+//! `unmatched_error` for an unmatched one, whichever tier failed it. The same
+//! span wraps `WebhookHandler::handle`, so the receiver's path records the
+//! value too, and the fields it shares with the `octoevents.receive` span are
+//! recorded in the same form on both.
 
 #![cfg(all(feature = "tracing", not(target_arch = "wasm32")))]
 
-use std::sync::{Arc, Mutex};
+mod common;
 
 use bytes::Bytes;
 use octoevents::{
     Action, DecodeError, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, Match, Outcome,
     WebhookHandler as _,
 };
-use tracing_subscriber::fmt::MakeWriter;
 
 #[derive(Debug, PartialEq)]
 enum AppError {
@@ -50,34 +54,6 @@ fn unwrapped_outcome<E>(outcome: Outcome<E>) -> (Match, Result<(), E>) {
 struct AnyPullRequest {}
 octoevents::impl_payload!(AnyPullRequest => EventKind::PullRequest);
 
-#[derive(Clone, Default)]
-struct Capture(Arc<Mutex<Vec<u8>>>);
-
-impl Capture {
-    fn contents(&self) -> String {
-        String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
-    }
-}
-
-impl std::io::Write for Capture {
-    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buffer);
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> MakeWriter<'a> for Capture {
-    type Writer = Self;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        self.clone()
-    }
-}
-
 fn envelope(kind: EventKind, action: Option<Action>) -> Envelope {
     let mut meta = EventMeta::new("delivery", kind);
     meta.action = action;
@@ -87,38 +63,59 @@ fn envelope(kind: EventKind, action: Option<Action>) -> Envelope {
     }
 }
 
-/// Runs `dispatch` under a fresh subscriber and returns what the
-/// `octoevents.dispatch` span recorded as `outcome` alongside the outcome
-/// the call returned.
-fn traced<F, T>(dispatch: F) -> (String, T)
+/// The fields one span carried at one of its events, as the `fmt` subscriber
+/// rendered them: `name="text"` for a string, `name=42` for a number.
+///
+/// Keeping the rendered form lets a test assert the value type as well as
+/// the value: a quoted string and a bare number are different fields to a
+/// dashboard, even when they read alike.
+#[derive(Debug)]
+struct SpanFields(String);
+
+impl SpanFields {
+    /// The rendered value of `name`, quotes included for a string, or `None`
+    /// when the span had not recorded it.
+    fn rendered(&self, name: &str) -> Option<&str> {
+        self.0.split_whitespace().find_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            (key == name).then_some(value)
+        })
+    }
+
+    /// The text of a string field with its quotes removed.
+    fn text(&self, name: &str) -> Option<&str> {
+        self.rendered(name).map(|value| value.trim_matches('"'))
+    }
+}
+
+/// The fields the named span carried at its `new` or `close` event.
+///
+/// An event line reads `<ancestors>:<span>{<fields>}: <target>: <event> ...`,
+/// each ancestor with its own fields, so the span the line is about is the
+/// last one in the scope prefix: a line on which the named span is only an
+/// ancestor shows what it had recorded so far, not what the event saw.
+fn span_fields(log: &str, span: &str, event: &str) -> SpanFields {
+    let fields = log
+        .lines()
+        .filter(|line| line.contains(&format!(": {event}")))
+        .find_map(|line| {
+            let (scope, _) = line.rsplit_once("}: ")?;
+            let (path, fields) = scope.rsplit_once('{')?;
+            let closing = path.rsplit([' ', ':']).next()?;
+            (closing == span).then(|| fields.to_owned())
+        })
+        .unwrap_or_else(|| panic!("no {span} span {event} event: {log}"));
+    SpanFields(fields)
+}
+
+/// Runs `dispatch` under a fresh subscriber and returns the fields the
+/// `octoevents.dispatch` span closed with alongside what the call returned.
+fn traced<F, T>(dispatch: F) -> (SpanFields, T)
 where
     F: Future<Output = T>,
 {
-    let capture = Capture::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(capture.clone())
-        .with_ansi(false)
-        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
-        .with_max_level(tracing::Level::TRACE)
-        .finish();
-
-    // A current-thread runtime keeps the whole call on the thread that holds
-    // the subscriber default, which `with_default` does not carry across awaits.
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap();
-    let returned = tracing::subscriber::with_default(subscriber, || runtime.block_on(dispatch));
-
-    let logged = capture.contents();
-    let close = logged
-        .lines()
-        .find(|line| line.contains("octoevents.dispatch") && line.contains("close"))
-        .unwrap_or_else(|| panic!("no dispatch span closed: {logged}"));
-    let (_, rest) = close
-        .split_once("outcome=\"")
-        .unwrap_or_else(|| panic!("no outcome recorded: {close}"));
-    let (value, _) = rest.split_once('"').unwrap();
-    (value.to_owned(), returned)
+    let (log, returned) = common::traced(dispatch);
+    (span_fields(&log, "octoevents.dispatch", "close"), returned)
 }
 
 fn dispatcher() -> Dispatcher<AppError> {
@@ -143,9 +140,9 @@ fn dispatcher() -> Dispatcher<AppError> {
 fn the_span_records_one_of_four_outcomes_derived_from_the_returned_outcome() {
     let dispatcher = dispatcher();
 
-    let (label, outcome) =
+    let (fields, outcome) =
         traced(dispatcher.dispatch(envelope(EventKind::PullRequest, Some(Action::Opened))));
-    assert_eq!(label, "ok");
+    assert_eq!(fields.text("outcome"), Some("ok"));
     assert_eq!(
         outcome,
         Outcome {
@@ -154,57 +151,68 @@ fn the_span_records_one_of_four_outcomes_derived_from_the_returned_outcome() {
         }
     );
 
-    let (label, outcome) =
+    let (fields, outcome) =
         traced(dispatcher.dispatch(envelope(EventKind::PullRequest, Some(Action::Closed))));
-    assert_eq!(label, "handler_error");
+    assert_eq!(fields.text("outcome"), Some("handler_error"));
     assert_eq!(
         unwrapped_outcome(outcome),
         (Match::Matched, Err(AppError::Handler("routed")))
     );
 
-    // Unmatched with the kind known and unknown both read as fallback: the
+    // Unmatched with the kind known and unknown both read as unmatched: the
     // label says whether the delivery was matched, not how the miss came about.
-    let (label, outcome) =
+    let (fields, outcome) =
         traced(dispatcher.dispatch(envelope(EventKind::PullRequest, Some(Action::Reopened))));
-    assert_eq!(label, "fallback_ok");
+    assert_eq!(fields.text("outcome"), Some("unmatched_ok"));
     assert_eq!(outcome.matched, Match::UnmatchedAction);
 
-    let (label, outcome) =
+    let (fields, outcome) =
         traced(dispatcher.dispatch(envelope(EventKind::CheckRun, Some(Action::Completed))));
-    assert_eq!(label, "fallback_ok");
+    assert_eq!(fields.text("outcome"), Some("unmatched_ok"));
     assert_eq!(outcome.matched, Match::UnmatchedKind);
 
-    let (label, outcome) =
+    let (fields, outcome) =
         traced(dispatcher.dispatch(envelope(EventKind::Installation, Some(Action::Created))));
-    assert_eq!(label, "fallback_error");
+    assert_eq!(fields.text("outcome"), Some("unmatched_error"));
     assert_eq!(
         unwrapped_outcome(outcome),
         (Match::UnmatchedKind, Err(AppError::Handler("unmatched")))
     );
 }
 
+/// An `always` handler that fails every delivery.
+async fn fail_audit(_: EventMeta) -> Result<(), &'static str> {
+    Err("audit")
+}
+
 #[test]
 fn a_failure_before_routing_is_labelled_by_the_match_the_route_table_decided() {
-    let dispatcher = Dispatcher::<AppError>::builder()
-        .always(|_: EventMeta| async { Err::<(), _>("audit") })
-        .on_payload(|_: EventMeta, _: AnyPullRequest| async { Ok::<_, AppError>(()) })
-        .build();
+    // No fallback is registered: the label must not claim one ran. The
+    // location is that of the registration method's name, so the failing
+    // handler is registered on the line after `line!()`.
+    let builder = Dispatcher::<AppError>::builder()
+        .on_payload(|_: EventMeta, _: AnyPullRequest| async { Ok::<_, AppError>(()) });
+    let registration_line = line!() + 1;
+    let dispatcher = builder.always(fail_audit).build();
 
     // The always tier fails both deliveries before any route or fallback
     // runs. The label follows the match, not the tier that failed: the
-    // unmatched one reads as `fallback_error` although no fallback ran, as
-    // `fallback_ok` already reads that way for an empty fallback chain.
-    let (label, outcome) =
+    // unmatched one reads as `unmatched_error`, which is true whichever tier
+    // failed it; the tier itself is a field of its own.
+    let (fields, outcome) =
         traced(dispatcher.dispatch(envelope(EventKind::PullRequest, Some(Action::Opened))));
-    assert_eq!(label, "handler_error");
+    assert_eq!(fields.text("outcome"), Some("handler_error"));
+    assert_eq!(fields.text("tier"), Some("always"));
     assert_eq!(
         unwrapped_outcome(outcome),
         (Match::Matched, Err(AppError::Handler("audit")))
     );
 
-    let (label, outcome) =
+    let (fields, outcome) =
         traced(dispatcher.dispatch(envelope(EventKind::CheckRun, Some(Action::Completed))));
-    assert_eq!(label, "fallback_error");
+    assert_eq!(fields.text("outcome"), Some("unmatched_error"));
+    assert_eq!(fields.text("tier"), Some("always"));
+    assert_registered_on(&fields, registration_line);
     assert_eq!(
         unwrapped_outcome(outcome),
         (Match::UnmatchedKind, Err(AppError::Handler("audit")))
@@ -215,16 +223,142 @@ fn a_failure_before_routing_is_labelled_by_the_match_the_route_table_decided() {
 fn the_handle_path_records_the_same_outcome() {
     let dispatcher = dispatcher();
 
-    let (label, result) =
+    let (fields, result) =
         traced(dispatcher.handle(envelope(EventKind::PullRequest, Some(Action::Closed))));
-    assert_eq!(label, "handler_error");
+    assert_eq!(fields.text("outcome"), Some("handler_error"));
     assert_eq!(
         result.map_err(DispatchError::into_source),
         Err(AppError::Handler("routed"))
     );
 
-    let (label, result) =
+    let (fields, result) =
         traced(dispatcher.handle(envelope(EventKind::CheckRun, Some(Action::Completed))));
-    assert_eq!(label, "fallback_ok");
+    assert_eq!(fields.text("outcome"), Some("unmatched_ok"));
     assert_eq!(result.map_err(DispatchError::into_source), Ok(()));
+}
+
+/// A fallback that fails `check_run` deliveries and passes every other kind.
+async fn fail_check_run(meta: EventMeta) -> Result<(), &'static str> {
+    if meta.kind == EventKind::CheckRun {
+        Err("unmatched")
+    } else {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_failure_records_the_tier_and_the_registration_site_of_the_failing_handler() {
+    // The location is that of the registration method's name, so the failing
+    // handler is registered on the line after `line!()`.
+    let builder = Dispatcher::<AppError>::builder();
+    let registration_line = line!() + 1;
+    let dispatcher = builder.fallback(fail_check_run).build();
+
+    let (fields, outcome) =
+        traced(dispatcher.dispatch(envelope(EventKind::CheckRun, Some(Action::Completed))));
+    assert_eq!(fields.text("outcome"), Some("unmatched_error"));
+    assert_eq!(fields.text("tier"), Some("fallback"));
+    assert_registered_on(&fields, registration_line);
+    let error = outcome.result.unwrap_err();
+    assert_eq!(
+        fields.text("registration_site"),
+        Some(error.registration_site.to_string().as_str()),
+        "the span and the error name the same registration site"
+    );
+
+    // A delivery that succeeds has no failing handler to name.
+    let (fields, _) =
+        traced(dispatcher.dispatch(envelope(EventKind::PullRequest, Some(Action::Opened))));
+    assert_eq!(fields.text("outcome"), Some("unmatched_ok"));
+    assert_eq!(fields.rendered("tier"), None);
+    assert_eq!(fields.rendered("registration_site"), None);
+}
+
+/// Asserts the span's `registration_site` points at `line` of this file.
+fn assert_registered_on(fields: &SpanFields, line: u32) {
+    let site = fields
+        .text("registration_site")
+        .expect("registration site recorded");
+    assert!(
+        site.starts_with(&format!("{}:{line}:", file!())),
+        "registration site {site} is not on line {line} of this file"
+    );
+}
+
+#[test]
+fn the_span_opens_with_the_delivery_id_and_event_and_the_action_and_installation_id_it_has() {
+    let dispatcher = dispatcher();
+
+    // The fields are read from the span's `new` event, so they were there
+    // before any handler ran, not recorded on the way out.
+    let mut with_both = envelope(EventKind::PullRequest, Some(Action::Opened));
+    with_both.meta.installation_id = Some(42);
+    let (log, _) = common::traced(dispatcher.dispatch(with_both));
+    let fields = span_fields(&log, "octoevents.dispatch", "new");
+    assert_eq!(fields.rendered("delivery_id"), Some("\"delivery\""));
+    assert_eq!(fields.rendered("event"), Some("\"pull_request\""));
+    assert_eq!(fields.rendered("action"), Some("\"opened\""));
+    assert_eq!(fields.rendered("installation_id"), Some("42"));
+
+    // A `ping` has neither: the fields are absent rather than empty or `None`,
+    // at open and at close alike.
+    let (log, _) = common::traced(dispatcher.dispatch(envelope(EventKind::Ping, None)));
+    for event in ["new", "close"] {
+        let fields = span_fields(&log, "octoevents.dispatch", event);
+        assert_eq!(fields.text("event"), Some("ping"));
+        assert_eq!(fields.rendered("action"), None, "{event}: {fields:?}");
+        assert_eq!(
+            fields.rendered("installation_id"),
+            None,
+            "{event}: {fields:?}"
+        );
+    }
+}
+
+/// A field recorded on more than one span is the same field to a dashboard
+/// only if every span records it in the same form: the receive span learns
+/// the delivery ID and event from the headers, the dispatch span from the
+/// envelope, and both must render `delivery_id="..."`, not one quoted and one
+/// bare. `outcome` is a label on every span, with the HTTP status a field of
+/// its own on the receive span.
+#[cfg(feature = "http")]
+#[test]
+fn the_receive_and_dispatch_spans_record_their_shared_fields_in_the_same_form() {
+    use octoevents::{Secret, Verifier, WebhookReceiverBuilder};
+
+    const SECRET: &str = "It's a Secret to Everybody";
+    const BODY: &[u8] = br#"{"action":"opened","installation":{"id":42}}"#;
+
+    let request = http::Request::builder()
+        .header("content-type", "application/json")
+        .header("x-github-delivery", "delivery")
+        .header("x-github-event", "pull_request")
+        .header(
+            "x-hub-signature-256",
+            common::signature(SECRET.as_bytes(), BODY),
+        )
+        .body(http_body_util::Full::new(Bytes::from_static(BODY)))
+        .unwrap();
+
+    let receiver =
+        WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET))).build(dispatcher());
+    let (log, response) = common::traced(receiver.receive(request));
+    assert_eq!(response.status(), 204);
+
+    let receive = span_fields(&log, "octoevents.receive", "close");
+    let dispatch = span_fields(&log, "octoevents.dispatch", "close");
+
+    for shared in ["delivery_id", "event"] {
+        assert_eq!(
+            receive.rendered(shared),
+            dispatch.rendered(shared),
+            "{shared} differs between the receive and dispatch spans:\n{receive:?}\n{dispatch:?}"
+        );
+    }
+    assert_eq!(receive.rendered("delivery_id"), Some("\"delivery\""));
+    assert_eq!(receive.rendered("event"), Some("\"pull_request\""));
+
+    assert_eq!(receive.rendered("outcome"), Some("\"ok\""));
+    assert_eq!(dispatch.rendered("outcome"), Some("\"ok\""));
+    assert_eq!(receive.rendered("status"), Some("204"));
 }

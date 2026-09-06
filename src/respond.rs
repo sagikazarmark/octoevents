@@ -29,6 +29,22 @@ impl ResponseStatus {
         }
     }
 
+    /// The value the `octoevents.receive` span records as `outcome`.
+    ///
+    /// A label rather than the code, so `outcome` is a string on every span
+    /// the crate opens; the code is the span's `status` field. The receive
+    /// span is the receiver's, so the label exists with the `http` feature.
+    #[cfg(feature = "http")]
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::NoContent => "ok",
+            Self::BadRequest => "bad_request",
+            Self::Unauthorized => "unauthorized",
+            Self::PayloadTooLarge => "payload_too_large",
+            Self::InternalServerError => "handler_error",
+        }
+    }
+
     /// Selects the status for a receive failure, per the crate's response contract.
     ///
     /// `WebhookReceiver` applies this mapping itself; it is public so a

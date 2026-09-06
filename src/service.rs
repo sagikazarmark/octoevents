@@ -289,7 +289,12 @@ where
         tracing::instrument(
             name = "octoevents.receive",
             skip_all,
-            fields(delivery_id = tracing::field::Empty, event = tracing::field::Empty, outcome = tracing::field::Empty)
+            fields(
+                delivery_id = tracing::field::Empty,
+                event = tracing::field::Empty,
+                outcome = tracing::field::Empty,
+                status = tracing::field::Empty,
+            )
         )
     )]
     async fn process<B>(&self, request: Request<B>) -> ResponseStatus
@@ -439,7 +444,8 @@ fn record_headers(headers: &HeaderView<'_>) {
 }
 
 fn record_outcome(status: ResponseStatus) -> ResponseStatus {
-    trace::record("outcome", status.as_u16());
+    trace::record("outcome", status.label());
+    trace::record("status", status.as_u16());
     status
 }
 

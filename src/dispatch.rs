@@ -214,12 +214,31 @@ where
     /// delivery can fail, and an unmatched one succeeds unless a fallback
     /// fails it. [`WebhookHandler::handle`] on the dispatcher keeps only the
     /// result.
+    ///
+    /// With the `tracing` feature, the call runs in an `octoevents.dispatch`
+    /// span that records `delivery_id`, `event`, and, when the delivery has
+    /// them, `action` and `installation_id`, all on open. On the way out it
+    /// records `outcome` as one of four labels: `ok` (matched, every handler
+    /// succeeded), `handler_error` (matched, a handler failed),
+    /// `unmatched_ok` (nothing routed matched, no fallback failed) and
+    /// `unmatched_error` (nothing routed matched, a handler failed, in
+    /// whichever tier). On failure it also records `tier` and
+    /// `registration_site`, the [`DispatchError`]'s, so the span alone says
+    /// which handler failed the delivery.
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(
             name = "octoevents.dispatch",
             skip_all,
-            fields(delivery_id = %envelope.meta.delivery_id, event = %envelope.meta.kind, outcome = tracing::field::Empty)
+            fields(
+                delivery_id = envelope.meta.delivery_id.as_str(),
+                event = envelope.meta.kind.as_str(),
+                action = envelope.meta.action.as_ref().map(Action::as_str),
+                installation_id = envelope.meta.installation_id,
+                outcome = tracing::field::Empty,
+                tier = tracing::field::Empty,
+                registration_site = tracing::field::Empty,
+            )
         )
     )]
     pub async fn dispatch(&self, envelope: Envelope) -> Outcome<E> {
@@ -227,6 +246,10 @@ where
         let result = self.run_tiers(&envelope, matched, routed).await;
         let outcome = Outcome { matched, result };
         trace::record("outcome", outcome.label());
+        if let Err(error) = &outcome.result {
+            trace::record("tier", error.tier.as_str());
+            trace::record_display("registration_site", error.registration_site);
+        }
         outcome
     }
 
@@ -297,6 +320,22 @@ where
 /// does. The receiver never sees this type: [`WebhookHandler::handle`] on the
 /// dispatcher returns `result` alone.
 ///
+/// With the `tracing` feature, the `octoevents.dispatch` span records the
+/// outcome as one label from the same two axes, so a dashboard filters on
+/// what a policy matches on:
+///
+/// | `matched`                            | `result` | `outcome`         |
+/// |--------------------------------------|----------|-------------------|
+/// | `Matched`                            | `Ok`     | `ok`              |
+/// | `Matched`                            | `Err`    | `handler_error`   |
+/// | `UnmatchedAction` or `UnmatchedKind` | `Ok`     | `unmatched_ok`    |
+/// | `UnmatchedAction` or `UnmatchedKind` | `Err`    | `unmatched_error` |
+///
+/// The label says whether the delivery matched and whether it failed, not
+/// which tier failed it: an `always` handler failing an unrouted kind is
+/// `unmatched_error` with no fallback registered. The tier and the
+/// registration site are fields of their own on the same span.
+///
 /// ```
 /// use octoevents::{DispatchError, Dispatcher, Envelope, Match, WebhookHandler};
 /// # use octoevents::DecodeError;
@@ -346,8 +385,8 @@ impl<E> Outcome<E> {
         match (self.matched, self.result.is_ok()) {
             (Match::Matched, true) => "ok",
             (Match::Matched, false) => "handler_error",
-            (Match::UnmatchedAction | Match::UnmatchedKind, true) => "fallback_ok",
-            (Match::UnmatchedAction | Match::UnmatchedKind, false) => "fallback_error",
+            (Match::UnmatchedAction | Match::UnmatchedKind, true) => "unmatched_ok",
+            (Match::UnmatchedAction | Match::UnmatchedKind, false) => "unmatched_error",
         }
     }
 }

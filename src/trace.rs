@@ -2,13 +2,21 @@
 //!
 //! The spans this crate opens (`octoevents.verify`, `octoevents.receive`,
 //! `octoevents.dispatch`) declare their late-bound fields empty and fill them
-//! through [`record`] on the way out. Without the feature the function is a
-//! no-op, so call sites carry no `cfg`; the only conditional code left at
+//! through [`record`] on the way out. Without the feature the functions are
+//! no-ops, so call sites carry no `cfg`; the only conditional code left at
 //! them is the `#[instrument]` attribute that opens the span.
+//!
+//! A field recorded on more than one span is the same field to a subscriber
+//! only if every span records it in the same form, so the shared fields have
+//! one type each: `delivery_id` and `event` are `&str` on the receive and
+//! dispatch spans (the header values on one, the envelope's on the other),
+//! and `outcome` is a `&'static str` label on all three, with the receive
+//! span's HTTP code in its own `status` field. A `Display` value goes through
+//! [`record_display`] for the same reason.
 //!
 //! Nothing secret-derived may pass through here: signature header values,
 //! computed MACs, and secrets are never recorded. `tests/tracing_hygiene.rs`
-//! holds that invariant.
+//! holds that invariant; `tests/tracing_outcome.rs` holds the one above.
 
 /// Records `value` into the named field of the current span.
 #[cfg(feature = "tracing")]
@@ -16,6 +24,22 @@ pub(crate) fn record(field: &str, value: impl tracing::Value) {
     tracing::Span::current().record(field, value);
 }
 
+/// Records `value`'s [`Display`](std::fmt::Display) form into the named field
+/// of the current span, as a string.
+///
+/// Wrapped in `tracing::field::display` instead, the value would reach the
+/// subscriber debug-formatted, a different field type from the `&str` the
+/// other string fields use; formatting first keeps every string field one
+/// type. The allocation happens only with the feature enabled.
+#[cfg(feature = "tracing")]
+pub(crate) fn record_display(field: &str, value: impl std::fmt::Display) {
+    record(field, value.to_string().as_str());
+}
+
 /// Records nothing: the `tracing` feature is disabled.
 #[cfg(not(feature = "tracing"))]
 pub(crate) fn record<V>(_field: &str, _value: V) {}
+
+/// Records nothing: the `tracing` feature is disabled.
+#[cfg(not(feature = "tracing"))]
+pub(crate) fn record_display<V>(_field: &str, _value: V) {}
