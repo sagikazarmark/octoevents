@@ -161,5 +161,8 @@ a clone, `Event<P>` pairs the meta with `P`'s decode, octocrab's
 `WebhookEvent` decodes into octocrab's model (`Envelope::decode_event`), and a
 consumer type implementing `FromEnvelope` itself decodes as it sees fit, a
 view over several kinds with the kind-free `Envelope::decode`. A decode failure
-fails the delivery at the position of the handler that needed it.
+is a `DecodeError` saying why (a kind mismatch, a JSON error, or the input's
+own reason, `DecodeError::Input`, the one a consumer's impl returns for a
+failure that is neither) and fails the delivery at the position of the handler
+that needed it.
 _Avoid_: Parse (kept for the header-to-kind and probe steps), deserialize (the serde mechanism, not the concept)

@@ -2376,6 +2376,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_consumer_input_failing_for_a_reason_of_its_own_is_reported_at_its_registration() {
+        use std::error::Error as _;
+
+        use crate::FromEnvelope;
+
+        /// The installation ID, required rather than optional. Read off the
+        /// meta, so a delivery without one fails for the input's own reason:
+        /// neither a kind mismatch nor a JSON error.
+        struct InstallationId(u64);
+        impl FromEnvelope for InstallationId {
+            fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError> {
+                envelope
+                    .meta
+                    .installation_id
+                    .map(Self)
+                    .ok_or_else(|| DecodeError::input("payload has no installation"))
+            }
+        }
+
+        /// Wraps the decode error with a message of its own, so the consumer's
+        /// reason is two `source()` hops below the dispatch error.
+        #[derive(Debug, thiserror::Error)]
+        enum ServiceError {
+            #[error("input could not be decoded")]
+            Decode(#[from] DecodeError),
+        }
+        impl From<std::convert::Infallible> for ServiceError {
+            fn from(never: std::convert::Infallible) -> Self {
+                match never {}
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let handler_seen = Arc::clone(&seen);
+        let builder = Dispatcher::<ServiceError>::builder();
+        let registration_site = line!() + 1;
+        let dispatcher = builder.on(
+            (EventKind::Installation, Action::Deleted),
+            move |InstallationId(id): InstallationId| {
+                let seen = Arc::clone(&handler_seen);
+                async move {
+                    seen.lock().await.push(id);
+                    Ok::<_, std::convert::Infallible>(())
+                }
+            },
+        );
+        let dispatcher = dispatcher.build();
+
+        // A delivery carrying the installation reaches the handler as the ID.
+        // The synthetic envelope probes nothing, so the meta is set by hand,
+        // as the probe would have from the payload.
+        let mut envelope = envelope_with_action(
+            EventKind::Installation,
+            Action::Deleted,
+            br#"{"action":"deleted"}"#,
+        );
+        envelope.meta.installation_id = Some(42);
+        dispatcher.dispatch(envelope).await.result.unwrap();
+        assert_eq!(seen.lock().await.as_slice(), [42]);
+
+        // One without fails in the route tier at the handler's registration,
+        // and the chain ends at the consumer's own message, not at a decode of
+        // the payload.
+        let error = dispatcher
+            .dispatch(envelope_with_action(
+                EventKind::Installation,
+                Action::Deleted,
+                br#"{"action":"deleted"}"#,
+            ))
+            .await
+            .result
+            .unwrap_err();
+        assert_eq!(error.tier, Tier::Route);
+        assert_eq!(error.registration_site.line(), registration_site);
+        let application = error.source().expect("the application error");
+        assert_eq!(application.to_string(), "input could not be decoded");
+        let reason = application.source().expect("the decode error");
+        assert_eq!(reason.to_string(), "payload has no installation");
+        assert!(
+            matches!(
+                reason.downcast_ref::<DecodeError>(),
+                Some(DecodeError::Input { source: None, .. })
+            ),
+            "{reason:?}"
+        );
+        assert!(reason.source().is_none());
+        // The decode failed before the handler ran, so it saw nothing new.
+        assert_eq!(seen.lock().await.as_slice(), [42]);
+    }
+
+    #[tokio::test]
     async fn an_arc_shared_handler_over_the_envelope_is_registered_as_itself() {
         /// A handler the test keeps a handle on after registering it, to read
         /// what it saw without a closure adapter.
