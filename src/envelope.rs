@@ -636,7 +636,7 @@ pub enum ReceiveError {
 ///
 /// The one error type of every decode path: [`Envelope::decode`],
 /// [`Envelope::decode_payload`], and `Envelope::decode_event` (`octocrab`
-/// feature) return it, and the dispatcher reports it for a typed handler
+/// feature) return it, and the dispatcher reports it for a payload handler
 /// whose decode failed. A single `From<DecodeError>` impl is therefore the
 /// only conversion of a decode failure an application error needs, whichever
 /// path decoded.

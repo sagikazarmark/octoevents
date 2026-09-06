@@ -12,19 +12,18 @@
 | Feature | Default | Provides |
 | --- | --- | --- |
 | `http` | yes | `WebhookReceiver` and its builder, `Envelope::from_signed_headers` and `HeaderView` construction from an `http::HeaderMap`, and `ResponseStatus` conversion into `http::StatusCode` |
-| `octocrab` | no | `EventHandler` over octocrab's decoded `WebhookEvent`, `Payload` impls for octocrab's per-kind payload structs, `Envelope::decode_event`, and `Dispatcher::on` |
+| `octocrab` | no | `FromEnvelope` impl for octocrab's decoded `WebhookEvent`, `Payload` impls for octocrab's per-kind payload structs, and `Envelope::decode_event` |
 | `tower` | no | `tower_service::Service` impl for `WebhookReceiver` |
 | `tracing` | no | verify, receive, and dispatch spans without sensitive values |
 
 Enabling `octocrab` makes octocrab's pre-1.0 version part of this crate's
-public API; the core (envelope, verification, receiver, `WebhookHandler`,
-`PayloadHandler`, and the `Dispatcher` apart from `on`) does not depend on
-it.
+public API; the core (envelope, verification, receiver, both handler
+flavours, and the whole `Dispatcher`) does not depend on it.
 
 ## Handlers
 
 A handler is a struct whose fields are its dependencies, with a plain
-`async fn handle(&self, ..)` and its own error type. Three flavours differ by
+`async fn handle(&self, ..)` and its own error type. Two flavours differ by
 what they receive:
 
 ```rust
@@ -44,8 +43,11 @@ impl WebhookHandler for Persist {
     }
 }
 
-// One kind's decoded payload. The kind comes from the payload type, so this
-// handler cannot be registered under the wrong kind.
+// The envelope decoded as a type implementing `FromEnvelope`: here a
+// `Payload`, a serde view over one kind. The kind comes from the payload
+// type, so this handler cannot be registered under the wrong kind. `()` is
+// an input too, for a handler routed by kind and action that decodes
+// nothing; so is octocrab's `WebhookEvent` with the `octocrab` feature.
 #[derive(serde::Deserialize)]
 struct PullRequestNumber { number: u64 }
 octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
@@ -62,7 +64,7 @@ impl PayloadHandler<PullRequestNumber> for Labeler {
 }
 ```
 
-The receiver accepts a `WebhookHandler`; the typed flavours reach it through
+The receiver accepts a `WebhookHandler`; payload handlers reach it through
 a `Dispatcher`. A receiver for one kind and nothing else needs no dispatcher:
 a `WebhookHandler` that calls `envelope.decode_payload::<PullRequestNumber>()`
 decodes its own view and refuses a delivery of any other kind at the kind.
@@ -70,14 +72,15 @@ decodes its own view and refuses a delivery of any other kind at the kind.
 A `Dispatcher` routes handlers by kind and action through three tiers:
 webhook handlers in its `always` and `fallback` tiers, payload handlers by
 the kind their payload type declares (and, if wanted, some of its actions),
-and, with the `octocrab` feature, `EventHandler`s over octocrab's decoded
-`WebhookEvent` for any kind through `on`:
+and payload handlers over any `FromEnvelope` input for the kinds and actions
+a matcher selects through `on`:
 
 ```rust,ignore
 Dispatcher::<AppError>::builder()
     .always(Auditor { .. })                     // every delivery, first, bytes included; not a match
-    .on([EventKind::PullRequest, EventKind::Issues], Metrics { .. })                 // `octocrab`
-    .on((EventKind::PullRequest, [Action::Opened, Action::Reopened]), Triage { .. }) // `octocrab`
+    .on([EventKind::PullRequest, EventKind::Issues], Metrics { .. })      // a consumer `FromEnvelope` view
+    .on((EventKind::Installation, Action::Deleted), Revoke { .. })        // over `()`: meta only, nothing decoded
+    .on((EventKind::PullRequest, [Action::Opened, Action::Reopened]), Triage { .. }) // over `WebhookEvent`, `octocrab`
     .on_payload(Notify { .. })                  // kind from the payload type, every action
     .on_payload_action([Action::Opened], Labeler { .. })  // kind from the payload type, these actions
     .fallback(Reject)                           // only if nothing matched; bytes included
@@ -88,12 +91,13 @@ Each handler keeps its own error type; the dispatcher converts them into
 `AppError` through `From`, and reports a failure as a `DispatchError` that
 wraps it with the tier it came from, the delivery's ID, kind and action, and
 the source location that registered the failing handler, so a log line leads
-straight to the line of code. Webhook and payload handlers never decode with
-octocrab, so `always`, payload routes, and a strict `fallback` all run for a
-payload octocrab cannot represent; only the first event handler reached
-decodes it, once. A routed handler decodes only when its route matches, so a
-payload handler registered for some actions decodes nothing for a delivery
-carrying another. Unmatched deliveries succeed unless a fallback says
+straight to the line of code. Nothing is decoded on behalf of `always` or
+`fallback`, and each routed handler decodes its own input when its route
+runs, so `always`, routes over consumer views or `()`, and a strict
+`fallback` all run for a payload octocrab cannot represent; only a handler
+over `WebhookEvent` fails on it. A routed handler decodes only when its route
+matches, so a payload handler registered for some actions decodes nothing for
+a delivery carrying another. Unmatched deliveries succeed unless a fallback says
 otherwise. `dispatch` reports an `Outcome` beside the handlers' result:
 matched, or unmatched with the kind known or unknown to the route table. The
 receiver sees only the result; a handler wrapping the dispatcher reads the
@@ -106,7 +110,8 @@ redelivery of a stored delivery ID with success) is that same wrapper. The
 example forwards each envelope from the `always` tier and routes a payload
 handler without octocrab on Cloudflare Workers.
 
-Closures work for every flavour. Annotate the parameters the body uses
+Closures work for both flavours, and `Arc<H>` is a handler of either flavour
+when `H` is. Annotate the parameters a closure's body uses
 (`|envelope: Envelope|`, `|meta: EventMeta, pr: PullRequestNumber|`):
 registration is bound on the handler trait rather than on `Fn`, so rustc does
 not read their types off the call. Always state the error type

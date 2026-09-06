@@ -1,24 +1,15 @@
 use std::{collections::HashMap, error::Error, fmt, panic::Location, sync::Arc};
 
-#[cfg(feature = "octocrab")]
-use octocrab::models::webhook_events::WebhookEvent;
-
 use crate::{
-    Action, DecodeError, Envelope, EventKind, EventMeta, MaybeSend, MaybeSync, Payload,
-    PayloadHandler, WebhookHandler, matcher::Slot, runtime::BoxFuture, trace,
+    Action, DecodeError, Envelope, EventKind, EventMatcher, EventMeta, FromEnvelope, MaybeSend,
+    MaybeSync, Payload, PayloadHandler, WebhookHandler, matcher::Slot, runtime::BoxFuture, trace,
 };
-#[cfg(feature = "octocrab")]
-use crate::{EventHandler, EventMatcher};
 
-// Erased handlers. A trait object admits only one non-auto trait, so these
-// cannot be written as `dyn Fn(..) + MaybeSend + MaybeSync` and carry the
-// platform split by hand; see `runtime` for the rationale.
-#[cfg(all(feature = "octocrab", not(target_arch = "wasm32")))]
-type EventFn<E> =
-    Arc<dyn Fn(EventMeta, WebhookEvent) -> BoxFuture<Result<(), E>> + Send + Sync + 'static>;
-#[cfg(all(feature = "octocrab", target_arch = "wasm32"))]
-type EventFn<E> = Arc<dyn Fn(EventMeta, WebhookEvent) -> BoxFuture<Result<(), E>> + 'static>;
-
+// The erased handler: every flavour is registered as a function of the
+// envelope, a payload handler's decode folded in. A trait object admits only
+// one non-auto trait, so this cannot be written as
+// `dyn Fn(..) + MaybeSend + MaybeSync` and carries the platform split by
+// hand; see `runtime` for the rationale.
 #[cfg(not(target_arch = "wasm32"))]
 type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + Send + Sync + 'static>;
 #[cfg(target_arch = "wasm32")]
@@ -30,11 +21,12 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// Per delivery the dispatcher runs three tiers in the order [`Tier`] lists
 /// them. The `always` chain runs first, for every delivery, and receives the
 /// verified [`Envelope`], bytes included. The routed chains run next: the
-/// chain for the envelope's kind and action, then the kind-wide chain.
-/// `on_payload` and `on_payload_action` route a [`PayloadHandler`] by the
-/// kind its payload type declares, and `on` routes an `EventHandler` for the
-/// kinds and actions a matcher selects. The `fallback` chain runs only if
-/// neither routed chain matched, and receives the envelope as `always` does.
+/// chain for the envelope's kind and action, then the kind-wide chain. Every
+/// routed handler is a [`PayloadHandler`] over some [`FromEnvelope`] input:
+/// `on_payload` and `on_payload_action` route one by the kind its [`Payload`]
+/// type declares, and `on` routes one over any input for the kinds and
+/// actions a matcher selects. The `fallback` chain runs only if neither
+/// routed chain matched, and receives the envelope as `always` does.
 /// Every chain is sequential, in registration order, and stops at the first
 /// error. `always` and `fallback` never count as a match, and an empty
 /// fallback chain succeeds, so unmatched kinds are green in GitHub until you
@@ -72,16 +64,16 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// so an operator reading "delivery X failed" can go to the line of code that
 /// registered the handler.
 ///
-/// The decode rule: webhook and payload handlers never decode with octocrab;
-/// the first event handler reached does, once, and every later one shares
-/// the result. `always` and `fallback` receive the bytes as they were
-/// verified and nothing is decoded on their behalf, and payload handlers
-/// decode their own type from the raw bytes, so a payload octocrab cannot
-/// represent still reaches `always` and every payload handler, a strict
-/// `fallback` answers it with its own error rather than a decode error, and
-/// the delivery fails only at the first event handler. A routed handler
-/// decodes only when its route matches: a payload handler registered for
-/// some actions decodes nothing for a delivery carrying another.
+/// The decode rule: `always` and `fallback` receive the bytes as they were
+/// verified and nothing is decoded on their behalf; each routed handler
+/// decodes its own input, through [`FromEnvelope`], when its route runs. So a
+/// payload octocrab cannot represent still reaches `always`, every handler
+/// over a consumer view or `()`, and a strict `fallback`, which answers it
+/// with its own error rather than a decode error; the delivery fails only at
+/// the first handler over octocrab's `WebhookEvent`, and the
+/// [`DispatchError`] names that registration. A routed handler decodes only
+/// when its route matches: a payload handler registered for some actions
+/// decodes nothing for a delivery carrying another.
 ///
 /// ```
 /// use octoevents::{Action, DecodeError, Dispatcher, Envelope, EventKind, EventMeta};
@@ -126,9 +118,32 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// that impl is the one-line `match never {}` above. Handlers written against
 /// `E` itself need nothing further.
 ///
-/// Everything above is part of the crate's core. `on` is the one method that
-/// needs the `octocrab` feature: it routes an event handler over octocrab's
-/// decoded `WebhookEvent`, for logic that spans kinds.
+/// `on` routes a payload handler over any [`FromEnvelope`] input for the
+/// kinds and actions a matcher selects. `()` decodes nothing, so a handler
+/// over it is routed by kind and action and receives only the [`EventMeta`];
+/// a consumer type implementing `FromEnvelope` itself is a view over fields
+/// several kinds share. Neither needs octocrab.
+///
+/// ```
+/// use octoevents::{Action, Dispatcher, EventKind, EventMeta};
+/// # use octoevents::DecodeError;
+/// # struct AppError;
+/// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
+/// # impl From<std::convert::Infallible> for AppError {
+/// #     fn from(never: std::convert::Infallible) -> Self { match never {} }
+/// # }
+///
+/// let dispatcher = Dispatcher::<AppError>::builder()
+///     .on((EventKind::Installation, Action::Deleted), |meta: EventMeta, (): ()| async move {
+///         println!("revoke tokens for installation {:?}", meta.installation_id);
+///         Ok::<_, std::convert::Infallible>(())
+///     })
+///     .build();
+/// # let _ = dispatcher;
+/// ```
+///
+/// With the `octocrab` feature, octocrab's `WebhookEvent` is a `FromEnvelope`
+/// too: a handler over it receives octocrab's decoded event for any kind.
 ///
 /// ```
 /// # #[cfg(feature = "octocrab")] {
@@ -164,7 +179,8 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 ///
 /// Enabling the `octocrab` feature makes octocrab's pre-1.0 version part of
 /// this crate's public API: an octocrab major bump is a breaking change for
-/// `on` and the `EventHandler` it accepts, not for the rest of this type.
+/// handlers over its `WebhookEvent` and per-kind payload structs, not for
+/// this type or its registration methods.
 pub struct Dispatcher<E> {
     routes: Arc<Routes<E>>,
 }
@@ -252,30 +268,44 @@ where
         matched: Match,
         routed: impl Iterator<Item = &[Route<E>]>,
     ) -> Result<(), DispatchError<E>> {
-        let mut in_flight = InFlight {
-            envelope,
-            #[cfg(feature = "octocrab")]
-            event: None,
-        };
-
-        in_flight
-            .run_chain(Tier::Always, &self.routes.always)
-            .await?;
+        run_chain(envelope, Tier::Always, &self.routes.always).await?;
 
         match matched {
             Match::Matched => {
                 for chain in routed {
-                    in_flight.run_chain(Tier::Route, chain).await?;
+                    run_chain(envelope, Tier::Route, chain).await?;
                 }
                 Ok(())
             }
             Match::UnmatchedAction | Match::UnmatchedKind => {
-                in_flight
-                    .run_chain(Tier::Fallback, &self.routes.fallback)
-                    .await
+                run_chain(envelope, Tier::Fallback, &self.routes.fallback).await
             }
         }
     }
+}
+
+/// Runs one chain in order, stopping at the first error and wrapping it with
+/// the tier, the delivery, and where the failing route was registered. The
+/// clones for the error happen only on that path.
+async fn run_chain<E>(
+    envelope: &Envelope,
+    tier: Tier,
+    chain: &[Route<E>],
+) -> Result<(), DispatchError<E>> {
+    for route in chain {
+        if let Err(source) = (route.handler)(envelope.clone()).await {
+            let meta = &envelope.meta;
+            return Err(DispatchError {
+                tier,
+                registration_site: route.registration_site,
+                delivery_id: meta.delivery_id.clone(),
+                kind: meta.kind.clone(),
+                action: meta.action.clone(),
+                source,
+            });
+        }
+    }
+    Ok(())
 }
 
 impl<E> WebhookHandler for Dispatcher<E>
@@ -511,7 +541,7 @@ pub enum Tier {
     /// The `always` chain: webhook handlers over the envelope, bytes
     /// included, that run for every delivery before routing.
     Always,
-    /// The routed chains: the handlers `on`, `on_payload` and
+    /// The routed chains: the payload handlers `on`, `on_payload` and
     /// `on_payload_action` registered for the delivery's kind and action.
     Route,
     /// The `fallback` chain: webhook handlers that run only when no routed
@@ -534,67 +564,6 @@ impl Tier {
 impl fmt::Display for Tier {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
-    }
-}
-
-/// One envelope being dispatched: the envelope plus, with the `octocrab`
-/// feature, the lazily decoded event that every event route shares.
-struct InFlight<'a> {
-    envelope: &'a Envelope,
-    #[cfg(feature = "octocrab")]
-    event: Option<WebhookEvent>,
-}
-
-impl InFlight<'_> {
-    /// Runs one chain in order, stopping at the first error and naming the
-    /// tier and the route it came from.
-    async fn run_chain<E>(&mut self, tier: Tier, chain: &[Route<E>]) -> Result<(), DispatchError<E>>
-    where
-        E: From<DecodeError>,
-    {
-        for route in chain {
-            if let Err(source) = self.run(&route.handler).await {
-                return Err(self.wrap(tier, route, source));
-            }
-        }
-        Ok(())
-    }
-
-    async fn run<E>(&mut self, handler: &ErasedHandler<E>) -> Result<(), E>
-    where
-        E: From<DecodeError>,
-    {
-        match handler {
-            ErasedHandler::Webhook(handler) | ErasedHandler::Payload(handler) => {
-                handler(self.envelope.clone()).await
-            }
-            #[cfg(feature = "octocrab")]
-            ErasedHandler::Event(handler) => {
-                // Decoded on first use and cloned per event route: a clone is
-                // far cheaper than decoding a payload that can run to megabytes.
-                let event = if let Some(event) = &self.event {
-                    event.clone()
-                } else {
-                    let event = self.envelope.decode_event().map_err(E::from)?;
-                    self.event.insert(event).clone()
-                };
-                handler(self.envelope.meta.clone(), event).await
-            }
-        }
-    }
-
-    /// Wraps a handler's error with the tier, the delivery, and where the
-    /// route was registered. The clones happen only on this path.
-    fn wrap<E>(&self, tier: Tier, route: &Route<E>, source: E) -> DispatchError<E> {
-        let meta = &self.envelope.meta;
-        DispatchError {
-            tier,
-            registration_site: route.registration_site,
-            delivery_id: meta.delivery_id.clone(),
-            kind: meta.kind.clone(),
-            action: meta.action.clone(),
-            source,
-        }
     }
 }
 
@@ -652,25 +621,31 @@ where
         self
     }
 
-    /// Registers an event handler for the kinds and actions the matcher
+    /// Registers a payload handler for the kinds and actions the matcher
     /// selects.
     ///
-    /// A handler registered under several slots is shared, not duplicated.
-    /// The first event handler a delivery reaches decodes octocrab's
-    /// `WebhookEvent` once, and every later one shares it; a payload octocrab
-    /// cannot represent fails the delivery at that position, and the
-    /// [`DispatchError`] names this registration.
+    /// The handler's input is any [`FromEnvelope`], whose docs list the
+    /// shipped impls. A [`Payload`] registered here decodes with its kind
+    /// check, so a matcher that disagrees with the kind the view declares
+    /// fails the delivery with [`DecodeError::KindMismatch`]; `()` decodes
+    /// nothing, for a handler that needs only the [`EventMeta`]. Each route
+    /// decodes its own input when it runs, and a decode failure fails the
+    /// delivery at that position: the [`DispatchError`] names this
+    /// registration.
     ///
-    /// This is the one registration that needs the `octocrab` feature.
-    #[cfg(feature = "octocrab")]
+    /// A handler registered under several slots is shared, not duplicated.
+    /// `P` is inferred from a closure's parameter type or from a struct that
+    /// implements [`PayloadHandler`] for one input; a struct that implements
+    /// it for several names the input: `on::<Sender, _>(matcher, auditor)`.
     #[must_use]
     #[track_caller]
-    pub fn on<H>(mut self, matcher: impl Into<EventMatcher>, handler: H) -> Self
+    pub fn on<P, H>(mut self, matcher: impl Into<EventMatcher>, handler: H) -> Self
     where
-        H: EventHandler + MaybeSend + MaybeSync + 'static,
+        P: FromEnvelope + 'static,
+        H: PayloadHandler<P> + MaybeSend + MaybeSync + 'static,
         E: From<H::Error>,
     {
-        let route = Route::registered(event_handler(handler));
+        let route = Route::registered(payload_handler(handler));
         self.insert_each(matcher.into().into_slots(), &route);
         self
     }
@@ -793,51 +768,38 @@ where
     }
 }
 
-fn webhook_handler<E, H>(handler: H) -> ErasedHandler<E>
+fn webhook_handler<E, H>(handler: H) -> EnvelopeFn<E>
 where
     E: From<H::Error> + 'static,
     H: WebhookHandler + MaybeSend + MaybeSync + 'static,
 {
     let handler = Arc::new(handler);
-    ErasedHandler::Webhook(Arc::new(move |envelope: Envelope| {
+    Arc::new(move |envelope: Envelope| {
         let handler = Arc::clone(&handler);
         Box::pin(async move { handler.handle(envelope).await.map_err(E::from) })
-    }))
+    })
 }
 
-#[cfg(feature = "octocrab")]
-fn event_handler<E, H>(handler: H) -> ErasedHandler<E>
-where
-    E: From<H::Error> + 'static,
-    H: EventHandler + MaybeSend + MaybeSync + 'static,
-{
-    let handler = Arc::new(handler);
-    ErasedHandler::Event(Arc::new(move |meta: EventMeta, event: WebhookEvent| {
-        let handler = Arc::clone(&handler);
-        Box::pin(async move { handler.handle(meta, event).await.map_err(E::from) })
-    }))
-}
-
-fn payload_handler<E, P, H>(handler: H) -> ErasedHandler<E>
+/// Erases a payload handler behind its decode: the route decodes `P` from
+/// the envelope when it runs, so a route that never matches never decodes,
+/// and a decode failure is this route's failure.
+fn payload_handler<E, P, H>(handler: H) -> EnvelopeFn<E>
 where
     E: From<DecodeError> + From<H::Error> + 'static,
-    P: Payload + 'static,
+    P: FromEnvelope + 'static,
     H: PayloadHandler<P> + MaybeSend + MaybeSync + 'static,
 {
     let handler = Arc::new(handler);
-    ErasedHandler::Payload(Arc::new(move |envelope: Envelope| {
+    Arc::new(move |envelope: Envelope| {
         let handler = Arc::clone(&handler);
         Box::pin(async move {
-            // Routing already guaranteed the kind, so the unchecked `decode`
-            // rather than `decode_payload`: only the shape of the payload can
-            // still disagree.
-            let payload = envelope.decode::<P>().map_err(E::from)?;
+            let payload = P::from_envelope(&envelope).map_err(E::from)?;
             handler
                 .handle(envelope.meta, payload)
                 .await
                 .map_err(E::from)
         })
-    }))
+    })
 }
 
 /// One registered handler and where it was registered.
@@ -846,7 +808,7 @@ where
 /// the erased handler is shared, and every clone points at the same
 /// registration.
 struct Route<E> {
-    handler: ErasedHandler<E>,
+    handler: EnvelopeFn<E>,
     /// The call to the registration method, captured through
     /// `#[track_caller]`: a static reference, on `wasm32` as anywhere.
     registration_site: &'static Location<'static>,
@@ -857,7 +819,7 @@ impl<E> Route<E> {
     /// that is being called. `#[track_caller]` here and on that method makes
     /// the location the consumer's, two frames up, not this one.
     #[track_caller]
-    fn registered(handler: ErasedHandler<E>) -> Self {
+    fn registered(handler: EnvelopeFn<E>) -> Self {
         Self {
             handler,
             registration_site: Location::caller(),
@@ -868,58 +830,23 @@ impl<E> Route<E> {
 impl<E> Clone for Route<E> {
     fn clone(&self) -> Self {
         Self {
-            handler: self.handler.clone(),
+            handler: Arc::clone(&self.handler),
             registration_site: self.registration_site,
         }
     }
 }
 
-// The erased handler is never `Debug`; its flavour and where it was
-// registered are what an operator reading the route table wants, so a route
-// prints as `Webhook(src/main.rs:12:10, ..)`, the `..` standing for the
-// elided handler as in `WebhookReceiver`'s `Debug`. No bound on `E`: the
-// dispatcher is `Debug` for any error type, as it is `Clone` for any.
+// The erased handler is never `Debug`; where it was registered is what an
+// operator reading the route table wants, so a route prints as
+// `Route(src/main.rs:12:10, ..)`, the `..` standing for the elided handler
+// as in `WebhookReceiver`'s `Debug`. No bound on `E`: the dispatcher is
+// `Debug` for any error type, as it is `Clone` for any.
 impl<E> fmt::Debug for Route<E> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_tuple(self.handler.flavour())
+            .debug_tuple("Route")
             .field(&format_args!("{}", self.registration_site))
             .finish_non_exhaustive()
-    }
-}
-
-/// A registered handler, erased to its error type but keeping its flavour:
-/// dispatch prepares the input by it, and the route table's `Debug` prints
-/// it.
-enum ErasedHandler<E> {
-    /// Takes the whole envelope, bytes included; nothing to decode.
-    Webhook(EnvelopeFn<E>),
-    /// Takes the shared decoded event.
-    #[cfg(feature = "octocrab")]
-    Event(EventFn<E>),
-    /// Takes the envelope and decodes its own payload type.
-    Payload(EnvelopeFn<E>),
-}
-
-impl<E> ErasedHandler<E> {
-    fn flavour(&self) -> &'static str {
-        match self {
-            Self::Webhook(_) => "Webhook",
-            #[cfg(feature = "octocrab")]
-            Self::Event(_) => "Event",
-            Self::Payload(_) => "Payload",
-        }
-    }
-}
-
-impl<E> Clone for ErasedHandler<E> {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Webhook(handler) => Self::Webhook(Arc::clone(handler)),
-            #[cfg(feature = "octocrab")]
-            Self::Event(handler) => Self::Event(Arc::clone(handler)),
-            Self::Payload(handler) => Self::Payload(Arc::clone(handler)),
-        }
     }
 }
 
@@ -1006,10 +933,8 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::{DispatchError, Dispatcher, Match, Outcome, Tier};
-    #[cfg(feature = "octocrab")]
-    use crate::EventMatcher;
     use crate::{
-        Action, DecodeError, Envelope, EventKind, EventMeta,
+        Action, DecodeError, Envelope, EventKind, EventMatcher, EventMeta,
         test_support::{
             AppError, check_run_completed, envelope_with_action, installation_created, ping,
             pull_request, pull_request_opened, unknown, unrepresentable,
@@ -1102,7 +1027,40 @@ mod tests {
         }
     }
 
-    /// An event handler that appends `value` to the shared log.
+    /// A payload handler over `()` that appends `value` to the shared log:
+    /// routed by kind and action, with nothing decoded.
+    fn record_meta(
+        calls: &Calls,
+        value: &'static str,
+    ) -> impl Fn(EventMeta, ()) -> Recorded<AppError> + Send + Sync + 'static {
+        let calls = Arc::clone(calls);
+        move |_, ()| {
+            let calls = Arc::clone(&calls);
+            Box::pin(async move {
+                calls.lock().await.push(value);
+                Ok(())
+            })
+        }
+    }
+
+    /// A payload handler over `()` that appends `value` to the shared log
+    /// and then fails.
+    fn fail_meta(
+        calls: &Calls,
+        value: &'static str,
+    ) -> impl Fn(EventMeta, ()) -> Recorded<&'static str> + Send + Sync + 'static {
+        let calls = Arc::clone(calls);
+        move |_, ()| {
+            let calls = Arc::clone(&calls);
+            Box::pin(async move {
+                calls.lock().await.push(value);
+                Err(value)
+            })
+        }
+    }
+
+    /// A payload handler over octocrab's `WebhookEvent` that appends `value`
+    /// to the shared log.
     #[cfg(feature = "octocrab")]
     fn record_event(
         calls: &Calls,
@@ -1118,38 +1076,21 @@ mod tests {
         }
     }
 
-    /// An event handler that appends `value` to the shared log and then fails.
-    #[cfg(feature = "octocrab")]
-    fn fail_event(
-        calls: &Calls,
-        value: &'static str,
-    ) -> impl Fn(EventMeta, WebhookEvent) -> Recorded<&'static str> + Send + Sync + 'static {
-        let calls = Arc::clone(calls);
-        move |_, _| {
-            let calls = Arc::clone(&calls);
-            Box::pin(async move {
-                calls.lock().await.push(value);
-                Err(value)
-            })
-        }
-    }
-
-    #[cfg(feature = "octocrab")]
     #[tokio::test]
     async fn tiers_run_always_then_action_then_kind_in_registration_order() {
         let calls = Calls::default();
         let dispatcher = Dispatcher::<AppError>::builder()
-            .on(EventKind::PullRequest, record_event(&calls, "kind-1"))
+            .on(EventKind::PullRequest, record_meta(&calls, "kind-1"))
             .always(record(&calls, "always-1"))
             .on(
                 (EventKind::PullRequest, Action::Opened),
-                record_event(&calls, "action-1"),
+                record_meta(&calls, "action-1"),
             )
-            .on(EventKind::PullRequest, record_event(&calls, "kind-2"))
+            .on(EventKind::PullRequest, record_meta(&calls, "kind-2"))
             .always(record(&calls, "always-2"))
             .on(
                 (EventKind::PullRequest, Action::Opened),
-                record_event(&calls, "action-2"),
+                record_meta(&calls, "action-2"),
             )
             .fallback(record(&calls, "fallback"))
             .build();
@@ -1531,6 +1472,11 @@ mod tests {
                 "always",
             ),
             (
+                registered!(on(EventKind::PullRequest, fail_meta(&calls, "on"))),
+                Tier::Route,
+                "on",
+            ),
+            (
                 registered!(on_payload_action(
                     [Action::Opened],
                     fail_payload(&calls, "action")
@@ -1560,26 +1506,6 @@ mod tests {
             assert_eq!(error.registration_site.line(), line, "{value}");
             assert_eq!(error.source, AppError::Handler(value));
         }
-    }
-
-    #[cfg(feature = "octocrab")]
-    #[tokio::test]
-    async fn on_names_the_route_tier_and_its_own_line() {
-        let calls = Calls::default();
-        let builder = Dispatcher::<AppError>::builder();
-        let line = line!() + 1;
-        let dispatcher = builder.on(EventKind::PullRequest, fail_event(&calls, "event"));
-
-        let error = dispatcher
-            .build()
-            .dispatch(pull_request_opened())
-            .await
-            .result
-            .unwrap_err();
-
-        assert_eq!(error.tier, Tier::Route);
-        assert_eq!(error.registration_site.line(), line);
-        assert_eq!(error.source, AppError::Handler("event"));
     }
 
     #[tokio::test]
@@ -1638,10 +1564,11 @@ mod tests {
 
     #[cfg(feature = "octocrab")]
     #[tokio::test]
-    async fn an_event_decode_failure_is_reported_at_the_event_handler_that_needed_it() {
-        // The payload route before the event handler decodes its own view and
-        // succeeds; octocrab's decode fails at the event handler, and the
-        // error names that registration.
+    async fn an_event_decode_failure_is_reported_at_the_handler_over_webhook_event_that_needed_it()
+    {
+        // The payload route before the handler over `WebhookEvent` decodes
+        // its own view and succeeds; octocrab's decode fails at that handler,
+        // and the error names its registration.
         let calls = Calls::default();
         let builder = Dispatcher::<AppError>::builder().on_payload(record_payload(&calls, "view"));
         let registration_site = line!() + 1;
@@ -1799,14 +1726,13 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "octocrab")]
     #[tokio::test]
     async fn a_registered_kind_with_no_matching_action_still_falls_back() {
         let calls = Calls::default();
         let dispatcher = Dispatcher::<AppError>::builder()
             .on(
                 (EventKind::PullRequest, Action::Closed),
-                record_event(&calls, "closed"),
+                record_meta(&calls, "closed"),
             )
             .fallback(fail(&calls, "unmatched"))
             .build();
@@ -1853,6 +1779,302 @@ mod tests {
             Err(AppError::Handler("unmatched"))
         );
         assert_eq!(calls.lock().await.as_slice(), ["unmatched"]);
+    }
+
+    #[tokio::test]
+    async fn on_routes_a_handler_over_unit_by_kind_and_action_with_nothing_decoded() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let handler_seen = Arc::clone(&seen);
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .on(
+                (EventKind::Installation, Action::Deleted),
+                move |meta: EventMeta, (): ()| {
+                    let seen = Arc::clone(&handler_seen);
+                    async move {
+                        seen.lock()
+                            .await
+                            .push((meta.delivery_id, meta.installation_id));
+                        Ok::<_, std::convert::Infallible>(())
+                    }
+                },
+            )
+            .fallback(|_: Envelope| async { Err::<(), _>("unmatched") })
+            .build();
+
+        // Nothing is decoded on the handler's behalf: a payload that is not
+        // even a JSON object still reaches it, meta in hand.
+        let mut envelope = envelope_with_action(
+            EventKind::Installation,
+            Action::Deleted,
+            b"not a json object",
+        );
+        envelope.meta.installation_id = Some(42);
+        assert_eq!(
+            dispatcher.dispatch(envelope).await,
+            Outcome {
+                matched: Match::Matched,
+                result: Ok(()),
+            }
+        );
+        assert_eq!(
+            seen.lock().await.as_slice(),
+            [("delivery".to_owned(), Some(42))]
+        );
+
+        // The route is by kind and action, so another action of the kind is
+        // unmatched and the strict fallback answers.
+        assert_eq!(
+            unwrapped_outcome(dispatcher.dispatch(installation_created()).await),
+            (Match::UnmatchedAction, Err(AppError::Handler("unmatched")))
+        );
+    }
+
+    #[tokio::test]
+    async fn on_with_a_payload_under_a_matcher_of_another_kind_fails_at_the_kind() {
+        /// Keeps the decode error so the test can see which variant it was.
+        #[derive(Debug)]
+        enum ServiceError {
+            Decode(DecodeError),
+        }
+        impl From<DecodeError> for ServiceError {
+            fn from(error: DecodeError) -> Self {
+                Self::Decode(error)
+            }
+        }
+        impl From<std::convert::Infallible> for ServiceError {
+            fn from(never: std::convert::Infallible) -> Self {
+                match never {}
+            }
+        }
+
+        // The bytes of a check run would fit this view over any object; the
+        // kind the view declares is what disagrees with the matcher.
+        let calls = Calls::default();
+        let always_calls = Arc::clone(&calls);
+        let handler_calls = Arc::clone(&calls);
+        let builder = Dispatcher::<ServiceError>::builder().always(move |_: Envelope| {
+            let calls = Arc::clone(&always_calls);
+            async move {
+                calls.lock().await.push("always");
+                Ok::<_, std::convert::Infallible>(())
+            }
+        });
+        let registration_site = line!() + 1;
+        let dispatcher = builder.on(
+            EventKind::CheckRun,
+            move |_: EventMeta, _: AnyPullRequest| {
+                let calls = Arc::clone(&handler_calls);
+                async move {
+                    calls.lock().await.push("routed");
+                    Ok::<_, std::convert::Infallible>(())
+                }
+            },
+        );
+
+        let error = dispatcher
+            .build()
+            .dispatch(check_run_completed())
+            .await
+            .result
+            .unwrap_err();
+
+        assert_eq!(error.tier, Tier::Route);
+        assert_eq!(error.registration_site.line(), registration_site);
+        assert!(
+            matches!(
+                error.source,
+                ServiceError::Decode(DecodeError::KindMismatch {
+                    expected: EventKind::PullRequest,
+                    actual: EventKind::CheckRun,
+                })
+            ),
+            "{:?}",
+            error.source
+        );
+        assert_eq!(calls.lock().await.as_slice(), ["always"]);
+    }
+
+    #[tokio::test]
+    async fn on_with_a_payload_under_its_own_kind_decodes_it_as_on_payload_does() {
+        let calls = Calls::default();
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .on(EventKind::PullRequest, record_payload(&calls, "on"))
+            .on_payload(record_payload(&calls, "on_payload"))
+            .on(
+                (EventKind::PullRequest, [Action::Opened, Action::Reopened]),
+                record_payload(&calls, "on-actions"),
+            )
+            .build();
+
+        dispatcher
+            .dispatch(pull_request_opened())
+            .await
+            .result
+            .unwrap();
+
+        assert_eq!(
+            calls.lock().await.as_slice(),
+            ["on-actions", "on", "on_payload"]
+        );
+    }
+
+    #[tokio::test]
+    async fn on_routes_a_consumer_from_envelope_view_under_several_kinds() {
+        use crate::FromEnvelope;
+
+        /// The sender's login, which every kind's payload carries; not a
+        /// `Payload`, since it declares no single kind.
+        #[derive(serde::Deserialize)]
+        struct Sender {
+            sender: Login,
+        }
+        #[derive(serde::Deserialize)]
+        struct Login {
+            login: String,
+        }
+        impl FromEnvelope for Sender {
+            fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError> {
+                envelope.decode()
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let handler_seen = Arc::clone(&seen);
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .on(
+                [EventKind::PullRequest, EventKind::CheckRun],
+                move |meta: EventMeta, sender: Sender| {
+                    let seen = Arc::clone(&handler_seen);
+                    async move {
+                        seen.lock().await.push((meta.kind, sender.sender.login));
+                        Ok::<_, std::convert::Infallible>(())
+                    }
+                },
+            )
+            .fallback(|_: Envelope| async { Err::<(), _>("unmatched") })
+            .build();
+
+        dispatcher
+            .dispatch(pull_request_opened())
+            .await
+            .result
+            .unwrap();
+        dispatcher
+            .dispatch(check_run_completed())
+            .await
+            .result
+            .unwrap();
+        // A kind the view was not registered under is unmatched as usual.
+        assert_eq!(
+            unwrapped(dispatcher.dispatch(installation_created()).await),
+            Err(AppError::Handler("unmatched"))
+        );
+
+        assert_eq!(
+            seen.lock().await.as_slice(),
+            [
+                (EventKind::PullRequest, "gagbo".to_owned()),
+                (EventKind::CheckRun, "Codertocat".to_owned()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_arc_shared_webhook_handler_is_registered_as_itself() {
+        use crate::WebhookHandler;
+
+        /// A handler the test keeps a handle on after registering it, to read
+        /// what it saw without a closure adapter.
+        struct Auditor {
+            seen: Mutex<Vec<EventKind>>,
+        }
+
+        impl WebhookHandler for Auditor {
+            type Error = std::convert::Infallible;
+
+            async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
+                self.seen.lock().await.push(envelope.meta.kind);
+                Ok(())
+            }
+        }
+
+        let auditor = Arc::new(Auditor {
+            seen: Mutex::new(Vec::new()),
+        });
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .always(Arc::clone(&auditor))
+            .fallback(Arc::clone(&auditor))
+            .build();
+
+        dispatcher
+            .dispatch(pull_request_opened())
+            .await
+            .result
+            .unwrap();
+
+        // One instance, two registrations, and the test's own handle.
+        assert_eq!(
+            auditor.seen.lock().await.as_slice(),
+            [EventKind::PullRequest, EventKind::PullRequest]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_arc_shared_payload_handler_is_registered_as_itself() {
+        use crate::PayloadHandler;
+
+        struct Labeler {
+            seen: Mutex<Vec<(Option<Action>, &'static str)>>,
+        }
+
+        impl PayloadHandler<AnyPullRequest> for Labeler {
+            type Error = std::convert::Infallible;
+
+            async fn handle(&self, meta: EventMeta, _: AnyPullRequest) -> Result<(), Self::Error> {
+                self.seen.lock().await.push((meta.action, "payload"));
+                Ok(())
+            }
+        }
+
+        impl PayloadHandler<()> for Labeler {
+            type Error = std::convert::Infallible;
+
+            async fn handle(&self, meta: EventMeta, (): ()) -> Result<(), Self::Error> {
+                self.seen.lock().await.push((meta.action, "meta"));
+                Ok(())
+            }
+        }
+
+        let labeler = Arc::new(Labeler {
+            seen: Mutex::new(Vec::new()),
+        });
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .on_payload::<AnyPullRequest, _>(Arc::clone(&labeler))
+            .on::<(), _>(
+                (EventKind::PullRequest, Action::Closed),
+                Arc::clone(&labeler),
+            )
+            .build();
+
+        dispatcher
+            .dispatch(pull_request_opened())
+            .await
+            .result
+            .unwrap();
+        dispatcher
+            .dispatch(pull_request(Action::Closed))
+            .await
+            .result
+            .unwrap();
+
+        assert_eq!(
+            labeler.seen.lock().await.as_slice(),
+            [
+                (Some(Action::Opened), "payload"),
+                (Some(Action::Closed), "meta"),
+                (Some(Action::Closed), "payload"),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1932,30 +2154,29 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "octocrab")]
     #[tokio::test]
     async fn every_matcher_form_expands_to_its_routes() {
         let calls = Calls::default();
         let dispatcher = Dispatcher::<AppError>::builder()
             .on(
                 [EventKind::PullRequest, EventKind::CheckRun],
-                record_event(&calls, "kinds"),
+                record_meta(&calls, "kinds"),
             )
             .on(
                 (EventKind::PullRequest, [Action::Opened, Action::Closed]),
-                record_event(&calls, "actions"),
+                record_meta(&calls, "actions"),
             )
             .on(
                 [
                     (EventKind::PullRequest, Action::Opened),
                     (EventKind::CheckRun, Action::Completed),
                 ],
-                record_event(&calls, "pairs"),
+                record_meta(&calls, "pairs"),
             )
             .on(
                 EventMatcher::from(EventKind::Installation)
                     .or((EventKind::CheckRun, Action::Completed)),
-                record_event(&calls, "or"),
+                record_meta(&calls, "or"),
             )
             .build();
 
@@ -2165,11 +2386,11 @@ mod tests {
 
     #[cfg(feature = "octocrab")]
     #[tokio::test]
-    async fn an_event_decode_failure_stops_the_delivery_at_the_first_event_handler() {
+    async fn an_event_decode_failure_stops_the_delivery_at_the_first_handler_over_webhook_event() {
         // The always tier and payload handlers over a consumer view sit either
-        // side of the event handler, so the log shows exactly where the chain
-        // stopped: octocrab decodes once, when the first event handler is
-        // reached, and nothing before it needed octocrab.
+        // side of the handlers over `WebhookEvent`, so the log shows exactly
+        // where the chain stopped: each `WebhookEvent` route decodes its own
+        // input when it runs, and nothing before the first one needed octocrab.
         let calls = Calls::default();
         let dispatcher = Dispatcher::<AppError>::builder()
             .always(record(&calls, "always"))
@@ -2189,10 +2410,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_delivery_with_only_webhook_and_payload_handlers_never_decodes_the_event() {
-        // The same unrepresentable payload succeeds when no event handler
-        // needs octocrab's decoding: the always and fallback tiers see the
-        // envelope as verified, and a consumer view over the bytes has
-        // nothing octocrab must represent.
+        // The same unrepresentable payload succeeds when no handler over
+        // `WebhookEvent` needs octocrab's decoding: the always and fallback
+        // tiers see the envelope as verified, and a consumer view over the
+        // bytes has nothing octocrab must represent.
         let calls = Calls::default();
         let dispatcher = Dispatcher::<AppError>::builder()
             .always(record(&calls, "always"))
@@ -2230,20 +2451,19 @@ mod tests {
         assert_eq!(calls.lock().await.as_slice(), ["fallback"]);
     }
 
-    #[cfg(feature = "octocrab")]
     #[tokio::test]
     async fn the_routed_chains_fail_fast() {
         let calls = Calls::default();
         let routed = Dispatcher::<AppError>::builder()
             .on(
                 (EventKind::PullRequest, Action::Opened),
-                fail_event(&calls, "action"),
+                fail_meta(&calls, "action"),
             )
             .on(
                 (EventKind::PullRequest, Action::Opened),
-                record_event(&calls, "action-after"),
+                record_meta(&calls, "action-after"),
             )
-            .on(EventKind::PullRequest, record_event(&calls, "kind"))
+            .on(EventKind::PullRequest, record_meta(&calls, "kind"))
             .build();
         assert_eq!(
             unwrapped(routed.dispatch(pull_request_opened()).await),
@@ -2253,8 +2473,8 @@ mod tests {
 
         calls.lock().await.clear();
         let kind_wide = Dispatcher::<AppError>::builder()
-            .on(EventKind::PullRequest, fail_event(&calls, "kind"))
-            .on(EventKind::PullRequest, record_event(&calls, "kind-after"))
+            .on(EventKind::PullRequest, fail_meta(&calls, "kind"))
+            .on(EventKind::PullRequest, record_meta(&calls, "kind-after"))
             .build();
         assert_eq!(
             unwrapped(kind_wide.dispatch(pull_request_opened()).await),

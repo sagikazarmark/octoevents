@@ -800,10 +800,11 @@ mod tests {
 
     #[cfg(feature = "octocrab")]
     #[tokio::test]
-    async fn an_event_handler_receives_octocrabs_decoded_event_with_the_metadata() {
+    async fn a_payload_handler_over_webhook_event_receives_octocrabs_decoded_event_with_the_metadata()
+     {
         use octocrab::models::webhook_events::{WebhookEvent, WebhookEventPayload};
 
-        use crate::EventHandler;
+        use crate::PayloadHandler;
 
         type Seen = Arc<std::sync::Mutex<Vec<(String, Option<u64>, u64)>>>;
 
@@ -811,7 +812,7 @@ mod tests {
             seen: Seen,
         }
 
-        impl EventHandler for EventRecorder {
+        impl PayloadHandler<WebhookEvent> for EventRecorder {
             type Error = std::convert::Infallible;
 
             #[allow(clippy::unused_async_trait_impl)]

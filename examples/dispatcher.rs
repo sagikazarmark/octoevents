@@ -20,7 +20,7 @@
 //! is the store's to replay: a handler failure after that point is
 //! recovered from the store, not by asking GitHub to redeliver.
 //!
-//! Inside the dispatcher, three handler flavours appear, each a struct or
+//! Inside the dispatcher, both handler flavours appear, each a struct or
 //! closure with its own error type:
 //!
 //! - [`Auditor`] is a `WebhookHandler` in the `always` tier: it runs for
@@ -29,9 +29,9 @@
 //! - [`Labeler`] is a `PayloadHandler` over octocrab's pull-request payload;
 //!   its kind comes from that type, so registering it names only the action
 //!   it wants, and other actions never reach it or decode for it.
-//! - The triage closure is an `EventHandler` over octocrab's decoded
-//!   `WebhookEvent`, registered with `on`: the one registration that needs
-//!   the `octocrab` feature.
+//! - The triage closure is a `PayloadHandler` over octocrab's decoded
+//!   `WebhookEvent`, registered with `on` for some pull-request actions; the
+//!   input type is what needs the `octocrab` feature, not the registration.
 //!
 //! The receiver is built with an `on_error` observer that logs every failed
 //! delivery, source chain included, since the receiver answers a handler
@@ -54,7 +54,7 @@ use octoevents::{
 
 /// The application error every handler inside the dispatcher converts into.
 ///
-/// One `From<DecodeError>` covers the dispatcher's event and payload decodes.
+/// One `From<DecodeError>` covers every decode the dispatcher performs.
 #[derive(Debug, thiserror::Error)]
 enum AppError {
     #[error(transparent)]

@@ -1,9 +1,6 @@
-use std::future::Future;
+use std::{future::Future, sync::Arc};
 
-#[cfg(feature = "octocrab")]
-use octocrab::models::webhook_events::WebhookEvent;
-
-use crate::{Envelope, EventMeta, MaybeSend, Payload};
+use crate::{Envelope, EventMeta, MaybeSend};
 
 /// Consumer-owned code that handles one verified [`Envelope`].
 ///
@@ -82,10 +79,11 @@ use crate::{Envelope, EventMeta, MaybeSend, Payload};
 /// [`PayloadHandler`] over the view and answers a delivery of any other kind
 /// with success rather than failure.
 ///
-/// `&H` and `Box<H>` are not webhook handlers when `H` is: std implements
-/// `Fn` for both, so those impls would overlap the closure blanket. The
-/// receiver holds its handler behind its own `Arc`, so it is `Clone` for any
-/// `H` without one.
+/// `Arc<H>` is a webhook handler when `H` is, so one handler struct can be
+/// shared between the receiver and a test that reads its state. `&H` and
+/// `Box<H>` are not: std implements `Fn` for both, so those impls would
+/// overlap the closure blanket. The receiver holds its handler behind its
+/// own `Arc`, so it is `Clone` for any `H` without one.
 ///
 /// Passing something that is not a handler names the flavour and its shape
 /// rather than the `Fn` bound behind it. For a struct with no impl, rustc
@@ -124,7 +122,7 @@ pub trait WebhookHandler {
     ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend;
 }
 
-// Each closure blanket (here and on the two other flavours below) returns
+// Each closure blanket (here and on the payload handler below) returns
 // the closure's future directly. Wrapping it in an `async fn` would capture
 // `&self` and the arguments across the await and demand `F: Sync` and
 // `Send` arguments of the closure for no benefit.
@@ -146,111 +144,34 @@ where
     }
 }
 
-/// Consumer-owned code that handles octocrab's decoded [`WebhookEvent`] for
-/// any kind.
-///
-/// The handler receives the [`EventMeta`] and octocrab's `WebhookEvent`,
-/// whose `specific` payload is an enum over every kind octocrab models. This
-/// is the flavour for logic that spans kinds (an auditor, a metrics counter,
-/// moderation across `issues` and `issue_comment`); for one kind's payload,
-/// prefer a [`PayloadHandler`], which needs no `match`.
-///
-/// ```
-/// use octocrab::models::webhook_events::WebhookEvent;
-/// use octoevents::{EventHandler, EventMeta};
-///
-/// struct Auditor { /* database pool */ }
-///
-/// impl EventHandler for Auditor {
-///     type Error = std::io::Error;
-///
-///     async fn handle(&self, meta: EventMeta, event: WebhookEvent) -> Result<(), Self::Error> {
-///         println!("{} from {:?}", meta.delivery_id, event.sender.map(|sender| sender.login));
-///         Ok(())
-///     }
-/// }
-/// ```
-///
-/// A closure `Fn(EventMeta, WebhookEvent) -> Fut` is an event handler too;
-/// annotate the parameters it uses and state its error type
-/// (`Ok::<_, E>(())`):
-///
-/// ```
-/// use octocrab::models::webhook_events::WebhookEvent;
-/// use octoevents::{EventHandler, EventMeta};
-///
-/// fn audit() -> impl EventHandler<Error = std::convert::Infallible> {
-///     |meta: EventMeta, event: WebhookEvent| async move {
-///         println!("{} {:?}", meta.delivery_id, event.kind);
-///         Ok::<_, std::convert::Infallible>(())
-///     }
-/// }
-/// ```
-///
-/// Enabling the `octocrab` feature makes octocrab's pre-1.0 version part of
-/// this crate's public API: `WebhookEvent` is octocrab's type, so an octocrab
-/// major bump here is a breaking change for this trait and for
-/// `Dispatcher::on`, the one dispatcher method that accepts it.
-///
-/// `&H` and `Box<H>` are not event handlers when `H` is: std implements `Fn`
-/// for both, so those impls would overlap the closure blanket. The dispatcher
-/// wraps every registered handler in its own `Arc`, so sharing needs nothing
-/// from the caller.
-///
-/// A value that is not an event handler is reported as such, with the shape
-/// expected:
-///
-/// ```compile_fail,E0277
-/// use octoevents::EventHandler;
-///
-/// fn assert_handler<H: EventHandler>(_: H) {}
-///
-/// struct Auditor;
-/// assert_handler(Auditor);
-/// ```
-///
-/// [`WebhookEvent`]: octocrab::models::webhook_events::WebhookEvent
-#[cfg(feature = "octocrab")]
-#[diagnostic::on_unimplemented(
-    message = "`{Self}` is not an event handler",
-    label = "expected an `impl EventHandler` or a closure `|meta: EventMeta, event: WebhookEvent| async {{ .. }}`",
-    note = "an event handler receives the `EventMeta` and octocrab's decoded `WebhookEvent`: implement `EventHandler` with `async fn handle(&self, meta: EventMeta, event: WebhookEvent) -> Result<(), Self::Error>`"
-)]
-pub trait EventHandler {
-    /// The error this handler reports for a failed delivery.
-    type Error;
+// `Arc<H>` does not overlap the closure blanket: `Fn` is a fundamental trait
+// and std implements it for `&F` and `Box<F>` but not for `Arc<F>`, so rustc
+// knows `Arc<H>: Fn(..)` never holds. The same reasoning is why `&H` and
+// `Box<H>` cannot be handlers.
+impl<H: WebhookHandler> WebhookHandler for Arc<H> {
+    type Error = H::Error;
 
-    /// Handles one delivery decoded as octocrab's `WebhookEvent`.
     fn handle(
         &self,
-        meta: EventMeta,
-        event: WebhookEvent,
-    ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend;
-}
-
-#[cfg(feature = "octocrab")]
-#[diagnostic::do_not_recommend]
-impl<F, Fut, E> EventHandler for F
-where
-    F: Fn(EventMeta, WebhookEvent) -> Fut,
-    Fut: Future<Output = Result<(), E>> + MaybeSend,
-{
-    type Error = E;
-
-    #[allow(refining_impl_trait)]
-    fn handle(&self, meta: EventMeta, event: WebhookEvent) -> Fut {
-        self(meta, event)
+        envelope: Envelope,
+    ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend {
+        H::handle(self, envelope)
     }
 }
 
-/// Consumer-owned code that handles one kind's decoded payload.
+/// Consumer-owned code that handles one envelope decoded as `P`.
 ///
-/// The kind is declared by the payload type: `P::KIND` is the only kind whose
-/// deliveries reach `handle`, so a handler over
-/// `PullRequestWebhookEventPayload` cannot be registered under `issues`. The
-/// handler receives the [`EventMeta`] for the delivery ID and installation ID
-/// and the decoded payload; it does not receive the raw bytes, so a decoded
-/// handler has one source of truth.
+/// The handler receives the [`EventMeta`] for the delivery ID, kind, action
+/// and installation ID, and the envelope decoded as `P`; it does not receive
+/// the raw bytes, so a decoded handler has one source of truth. `P` is any
+/// [`FromEnvelope`](crate::FromEnvelope): a [`Payload`](crate::Payload) view
+/// over one kind, `()` for a handler that needs only the meta, octocrab's
+/// `WebhookEvent` with the `octocrab` feature, or a consumer type that
+/// implements `FromEnvelope` itself for a view over several kinds.
+///
+/// A handler over a `Payload` is bound to the kind the payload declares:
+/// `P::KIND` is the only kind whose deliveries reach `handle`, so a handler
+/// over `PullRequestWebhookEventPayload` cannot be registered under `issues`.
 ///
 /// ```
 /// use octoevents::{EventKind, EventMeta, PayloadHandler};
@@ -272,8 +193,8 @@ where
 /// ```
 ///
 /// A closure `Fn(EventMeta, P) -> Fut` is a payload handler too. Annotate
-/// the parameters it uses (the payload type is also what fixes `P`) and
-/// state its error type (`Ok::<_, E>(())`):
+/// the parameters it uses (the input type is also what fixes `P`) and state
+/// its error type (`Ok::<_, E>(())`):
 ///
 /// ```
 /// use octoevents::{EventKind, EventMeta, PayloadHandler};
@@ -288,27 +209,37 @@ where
 ///         Ok::<_, std::convert::Infallible>(())
 ///     }
 /// }
+///
+/// // Routed by kind and action alone; nothing is decoded for it.
+/// fn revoke() -> impl PayloadHandler<(), Error = std::convert::Infallible> {
+///     |meta: EventMeta, (): ()| async move {
+///         println!("revoke tokens for installation {:?}", meta.installation_id);
+///         Ok::<_, std::convert::Infallible>(())
+///     }
+/// }
 /// ```
 ///
-/// Register one on a `Dispatcher` with `on_payload` for every action of its
-/// kind or `on_payload_action` for some. The dispatcher decodes with
-/// [`Envelope::decode`] only once a route has matched, so the kind check is
-/// the route table's. For one kind and nothing else, a [`WebhookHandler`]
-/// calling [`Envelope::decode_payload`] needs no dispatcher.
+/// Register one on a `Dispatcher` with `on_payload` for every action of a
+/// payload's kind, `on_payload_action` for some, or `on` with a matcher for
+/// any other input. The dispatcher decodes `P` only once a route has matched,
+/// and a decode failure fails the delivery at that registration. For one kind
+/// and nothing else, a [`WebhookHandler`] calling [`Envelope::decode_payload`]
+/// needs no dispatcher.
 ///
-/// The trait is generic over the payload, so one struct can implement it for
-/// several payload types. Registration then needs a turbofish, because the
-/// struct alone no longer says which payload is meant:
+/// The trait is generic over the input, so one struct can implement it for
+/// several input types. Registration then needs a turbofish, because the
+/// struct alone no longer says which input is meant:
 /// `dispatcher.on_payload::<PullRequestNumber, _>(labeler)`. A closure fixes
-/// the payload by its parameter type and needs no turbofish.
+/// the input by its parameter type and needs no turbofish.
 ///
-/// `&H` and `Box<H>` are not payload handlers when `H` is: std implements
-/// `Fn` for both, so those impls would overlap the closure blanket. The
-/// dispatcher wraps every registered handler in its own `Arc`, so sharing
-/// needs nothing from the caller.
+/// `Arc<H>` is a payload handler when `H` is, so one handler struct can be
+/// shared between a route and a test that reads its state. `&H` and `Box<H>`
+/// are not: std implements `Fn` for both, so those impls would overlap the
+/// closure blanket. The dispatcher wraps every registered handler in its own
+/// `Arc`, so sharing needs nothing from the caller.
 ///
 /// A value that is not a payload handler is reported as such, naming the
-/// payload and the shape expected:
+/// input and the shape expected:
 ///
 /// ```compile_fail,E0277
 /// use octoevents::{EventKind, PayloadHandler};
@@ -322,16 +253,54 @@ where
 /// struct Labeler;
 /// assert_handler(Labeler);
 /// ```
+///
+/// The trait places no bound on `P`; the registration methods do, and that
+/// is where a closure over a serde type that has not declared its kind is
+/// reported. `on_payload` reports it as not a [`Payload`](crate::Payload),
+/// with the `impl_payload!` call that makes it one (abridged):
+///
+/// ```text
+/// error[E0277]: `PullRequestNumber` is not a payload
+///    |
+///    |         .on_payload(|_: EventMeta, pr: PullRequestNumber| async move {
+///    |          ^^^^^^^^^^ expected a `serde::Deserialize` type that declares the event kind it decodes
+///    |
+///    = note: declare the kind with `octoevents::impl_payload!(PullRequestNumber => EventKind::..)`
+/// ```
+///
+/// ```compile_fail,E0277
+/// use octoevents::{Dispatcher, EventMeta};
+/// # use octoevents::DecodeError;
+/// # struct AppError;
+/// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
+/// # impl From<std::convert::Infallible> for AppError {
+/// #     fn from(never: std::convert::Infallible) -> Self { match never {} }
+/// # }
+///
+/// #[derive(serde::Deserialize)]
+/// struct PullRequestNumber { number: u64 }
+///
+/// let dispatcher = Dispatcher::<AppError>::builder()
+///     .on_payload(|_: EventMeta, pr: PullRequestNumber| async move {
+///         println!("PR #{}", pr.number);
+///         Ok::<_, std::convert::Infallible>(())
+///     })
+///     .build();
+/// ```
+///
+/// `on` reports the same type as not a `FromEnvelope`, naming both
+/// `impl_payload!` and a direct `FromEnvelope` impl for a view over several
+/// kinds.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a payload handler for `{P}`",
     label = "expected an `impl PayloadHandler<{P}>` or a closure `|meta: EventMeta, payload: {P}| async {{ .. }}`",
-    note = "a payload handler receives the `EventMeta` and one kind's decoded payload: implement `PayloadHandler<{P}>` with `async fn handle(&self, meta: EventMeta, payload: {P}) -> Result<(), Self::Error>`"
+    note = "a payload handler receives the `EventMeta` and the envelope decoded as `{P}`: implement `PayloadHandler<{P}>` with `async fn handle(&self, meta: EventMeta, payload: {P}) -> Result<(), Self::Error>`"
 )]
-pub trait PayloadHandler<P: Payload> {
+pub trait PayloadHandler<P> {
     /// The error this handler reports for a failed delivery.
     type Error;
 
-    /// Handles one delivery whose payload decoded as `P`.
+    /// Handles one envelope decoded as `P`.
     fn handle(
         &self,
         meta: EventMeta,
@@ -342,7 +311,6 @@ pub trait PayloadHandler<P: Payload> {
 #[diagnostic::do_not_recommend]
 impl<P, F, Fut, E> PayloadHandler<P> for F
 where
-    P: Payload,
     F: Fn(EventMeta, P) -> Fut,
     Fut: Future<Output = Result<(), E>> + MaybeSend,
 {
@@ -351,5 +319,17 @@ where
     #[allow(refining_impl_trait)]
     fn handle(&self, meta: EventMeta, payload: P) -> Fut {
         self(meta, payload)
+    }
+}
+
+impl<P, H: PayloadHandler<P>> PayloadHandler<P> for Arc<H> {
+    type Error = H::Error;
+
+    fn handle(
+        &self,
+        meta: EventMeta,
+        payload: P,
+    ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend {
+        H::handle(self, meta, payload)
     }
 }

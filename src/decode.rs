@@ -4,7 +4,7 @@
 
 use octocrab::models::webhook_events::{WebhookEvent, payload};
 
-use crate::{DecodeError, Envelope, EventKind};
+use crate::{DecodeError, Envelope, EventKind, FromEnvelope};
 
 // Every per-kind payload struct octocrab models, bound to its event kind so
 // each can drive a `PayloadHandler`. The structs carry no
@@ -106,11 +106,22 @@ octocrab_payloads! {
     payload::WorkflowRunWebhookEventPayload => EventKind::WorkflowRun,
 }
 
+/// octocrab's decoded event for any kind, so a handler over it is registered
+/// with `Dispatcher::on` for logic that spans kinds; the decode is
+/// [`Envelope::decode_event`]. octocrab's `WebhookEvent` is not a
+/// [`Payload`](crate::Payload): it declares no single kind.
+impl FromEnvelope for WebhookEvent {
+    fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError> {
+        envelope.decode_event()
+    }
+}
+
 impl Envelope {
     /// Decodes the payload as octocrab's [`WebhookEvent`] for the envelope's
     /// kind.
     ///
-    /// This is what an [`EventHandler`] receives; call it directly from a
+    /// This is what a [`PayloadHandler`] over `WebhookEvent` receives, through
+    /// `WebhookEvent`'s [`FromEnvelope`] impl; call it directly from a
     /// [`WebhookHandler`] that needs octocrab's models alongside the raw bytes.
     ///
     /// Best-effort: octocrab's webhook models are hand-maintained and
@@ -129,7 +140,7 @@ impl Envelope {
     /// octocrab major bump here is a breaking change for this method.
     ///
     /// [`WebhookEventPayload::Unknown`]: octocrab::models::webhook_events::WebhookEventPayload::Unknown
-    /// [`EventHandler`]: crate::EventHandler
+    /// [`PayloadHandler`]: crate::PayloadHandler
     /// [`WebhookHandler`]: crate::WebhookHandler
     ///
     /// # Errors
