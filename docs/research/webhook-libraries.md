@@ -520,7 +520,7 @@ Sources: [octocrab `webhook_events.rs`](https://github.com/XAMPPRocky/octocrab/b
 ### Ranked: the most transferable ideas
 
 1. **`on_error` observer** (octokit, Probot). The one converged feature the
-   crate lacked at 0.1; `WebhookReceiverBuilder::on_error` since 0.2.
+   crate lacked when this was written; now `WebhookReceiverBuilder::on_error`.
 2. **Public, explicitly-unverified `Envelope` constructor for tests** plus a
    fixture helper.
 3. **Route introspection / dry-run** (gidgethub `fetch`, Symfony

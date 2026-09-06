@@ -29,23 +29,24 @@
 //! ```
 //!
 //! `print` runs for every delivery whose signature verifies; a request that
-//! does not verify is refused before it runs. The application error is a
-//! boxed `dyn Error`, so no error enum is written and `?` converts any error
-//! inside a handler. The one cost: `Box<dyn Error + Send + Sync>` is not
-//! itself an `Error`, so neither is [`DispatchError`] over it, and the error
-//! the observer receives has no `source()` to call. The handler's error is
-//! the `source` field, and its chain continues from `error.source.source()`.
-//! `webhook` mounts on Axum with `post_service`, as the complete program
-//! below does.
+//! does not verify is refused before it runs. `webhook` mounts on Axum with
+//! `post_service`, as the complete program below does.
+//!
+//! The application error is a boxed `dyn Error`, so no error enum is written
+//! and `?` converts any error inside a handler. The one cost:
+//! `Box<dyn Error + Send + Sync>` is not itself an `Error`, so neither is
+//! [`DispatchError`] over it, and the error the observer receives has no
+//! `source()` to call. The handler's error is the `source` field, and its
+//! chain continues from `error.source.source()`.
 //!
 //! **Coming from Probot?** The registrations map one to one. The rule that
-//! does not: handlers run in registration order and the first error fails the
+//! does not: handlers run one at a time and the first error fails the
 //! delivery, where Probot runs every matching handler and aggregates.
 //!
 //! | Probot | octoevents |
 //! | --- | --- |
-//! | `app.on('issues.opened', h)` | `impl_payload!(IssueOpened => EventKind::Issues)` on a serde view of the payload, then `on_payload_action([Action::Opened], h)`; an array of actions lists them. There is no string route form |
-//! | `app.on('issues', h)` | `on_payload(h)`, the kind read off the view's type; or `on(EventKind::Issues, h)` for a handler over the envelope or the meta |
+//! | `app.on('issues.opened', h)` | `impl_payload!(IssueOpened => EventKind::Issues)` on a serde view of the payload, then `on_payload_action([Action::Opened], h)`; or `on((EventKind::Issues, Action::Opened), h)` for a handler over the envelope or the meta. There is no string route form |
+//! | `app.on('issues', h)` | `on_payload(h)` after the same `impl_payload!`, or `on(EventKind::Issues, h)` |
 //! | `app.onAny(h)` | `always(h)`: runs first, for every delivery, over the envelope; its error fails the delivery; sees `ping` only when the receiver is built with `handle_ping(true)` |
 //! | `app.onError(h)` | `on_error(h)` on the receiver builder |
 //! | `app.receive(event)` | `dispatcher.dispatch(envelope)` with an envelope built by hand; see [Testing without GitHub](#testing-without-github) |
@@ -230,7 +231,7 @@
 //! only when nothing routed matched, receiving the envelope. A routed handler
 //! decodes its input only when its route matched; `always` and `fallback`
 //! decode nothing. Unmatched deliveries succeed unless a fallback fails them;
-//! a strict receiver that rejects every kind nothing routes is one
+//! a strict fallback that rejects every kind nothing routes is one
 //! [`fallback`](DispatcherBuilder::fallback) registration.
 //!
 //! A failure is a [`DispatchError`]: the application error wrapped with the
@@ -355,7 +356,7 @@
 //! way.
 //!
 //! GitHub holds one secret per webhook, so a rotation window is the
-//! receiver's to open: `Verifier::new(current).also(next)` verifies against
+//! verifier's to open: `Verifier::new(current).also(next)` verifies against
 //! either while the secret is changed in the webhook's settings, and
 //! `Verifier::new(next)` alone once the deliveries signed with the old one
 //! have drained. Every secret is evaluated on every request, a match
@@ -430,14 +431,8 @@
 //! The trade-off of octocrab's types is whole-model decode: a field GitHub
 //! changes fails the delivery with 500, where a view fails only on the fields
 //! it names. Its per-kind payload structs omit the top-level `installation`,
-//! `sender`, `repository` and `organization` objects; [`EventMeta`] carries
-//! the installation ID, a repository reference and the sender and
-//! organization logins beside every payload, octocrab's `WebhookEvent` the
-//! objects themselves.
-//!
-//! Without the `tower` feature, the receiver mounts on Axum as a plain
-//! handler calling [`WebhookReceiver::receive`], as the README's
-//! "One event, one handler" program shows.
+//! `sender`, `repository` and `organization` objects, which its
+//! `WebhookEvent` carries and [`EventMeta`] summarizes.
 // `doc_cfg` propagates each `#[cfg]` into the rendered docs on its own,
 // including from a gated module to the items inside it, so gated items carry
 // no separate `doc(cfg(...))`.

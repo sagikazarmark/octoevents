@@ -26,22 +26,24 @@ let webhook = WebhookReceiverBuilder::new(Verifier::new(Secret::new("development
 ```
 
 `print` runs for every delivery whose signature verifies; a request that
-does not verify is refused before it runs. The application error is a boxed
-`dyn Error`, so no error enum is written and `?` converts any error inside a
-handler. The one cost: `Box<dyn Error + Send + Sync>` is not itself an
-`Error`, so neither is `DispatchError` over it, and the error the observer
-receives has no `source()` to call. The handler's error is the `source`
-field, and its chain continues from `error.source.source()`. `webhook` mounts
-on axum with `post_service`, as the complete program below does.
+does not verify is refused before it runs. `webhook` mounts on axum with
+`post_service`, as the complete program below does.
+
+The application error is a boxed `dyn Error`, so no error enum is written and
+`?` converts any error inside a handler. The one cost:
+`Box<dyn Error + Send + Sync>` is not itself an `Error`, so neither is
+`DispatchError` over it, and the error the observer receives has no
+`source()` to call. The handler's error is the `source` field, and its chain
+continues from `error.source.source()`.
 
 **Coming from Probot?** The registrations map one to one. The rule that does
-not: handlers run in registration order and the first error fails the
-delivery, where Probot runs every matching handler and aggregates.
+not: handlers run one at a time and the first error fails the delivery, where
+Probot runs every matching handler and aggregates.
 
 | Probot | octoevents |
 | --- | --- |
-| `app.on('issues.opened', h)` | `impl_payload!(IssueOpened => EventKind::Issues)` on a serde view of the payload, then `on_payload_action([Action::Opened], h)`; an array of actions lists them. There is no string route form |
-| `app.on('issues', h)` | `on_payload(h)`, the kind read off the view's type; or `on(EventKind::Issues, h)` for a handler over the envelope or the meta |
+| `app.on('issues.opened', h)` | `impl_payload!(IssueOpened => EventKind::Issues)` on a serde view of the payload, then `on_payload_action([Action::Opened], h)`; or `on((EventKind::Issues, Action::Opened), h)` for a handler over the envelope or the meta. There is no string route form |
+| `app.on('issues', h)` | `on_payload(h)` after the same `impl_payload!`, or `on(EventKind::Issues, h)` |
 | `app.onAny(h)` | `always(h)`: runs first, for every delivery, over the envelope; its error fails the delivery; sees `ping` only when the receiver is built with `handle_ping(true)` |
 | `app.onError(h)` | `on_error(h)` on the receiver builder |
 | `app.receive(event)` | `dispatcher.dispatch(envelope)` with an envelope built by hand; see [Testing without GitHub](#testing-without-github) |
@@ -160,7 +162,7 @@ as an ERROR event, source chain included.
 | --- | --- | --- |
 | `http` | yes | `WebhookReceiver` and its builder over `http::Request`, `HeaderView` from an `http::HeaderMap`, `ResponseStatus` into `http::StatusCode` |
 | `tower` | no | `tower_service::Service` for `WebhookReceiver`, so it mounts with `post_service` as above. Without it, the receiver mounts on axum as a plain handler calling `receive`; [One event, one handler](#one-event-one-handler) shows the wiring |
-| `octocrab` | no | `FromEnvelope` for octocrab's decoded `WebhookEvent`, `Payload` for its per-kind payload structs, `Envelope::decode_event`. The trade-off is whole-model decode: a field GitHub changes fails the delivery with 500, where a view fails only on the fields it names. The per-kind payload structs omit the top-level `installation`, `sender`, `repository` and `organization` objects; `EventMeta` carries the installation ID, a repository reference and the sender and organization logins beside every payload, `WebhookEvent` the objects themselves. Makes octocrab's pre-1.0 types part of this crate's public API |
+| `octocrab` | no | `FromEnvelope` for octocrab's decoded `WebhookEvent`, `Payload` for its per-kind payload structs, `Envelope::decode_event`. The trade-off is whole-model decode: a field GitHub changes fails the delivery with 500, where a view fails only on the fields it names. The per-kind payload structs omit the top-level `installation`, `sender`, `repository` and `organization` objects, which `WebhookEvent` carries and `EventMeta` summarizes. Makes octocrab's pre-1.0 types part of this crate's public API |
 | `tracing` | no | receive and dispatch spans at INFO and a verify span at DEBUG, one ERROR event per failed delivery, and the `trace_error` observer that adds the error's text; nothing secret-derived in any of them. The contract is on the crate's front page |
 
 The core (envelope, verification, the handler trait and its inputs, the
@@ -261,8 +263,8 @@ accept a handler over the payload `P` or over `Event<P>`; `on` takes a matcher
 handler over any `FromEnvelope` input. A routed handler decodes its input only
 when its route matched, and `always` and `fallback` decode nothing, so both
 run for a payload no handler can decode. Unmatched deliveries succeed unless
-a fallback fails them; a strict receiver that rejects every kind nothing
-routes is one `fallback` registration, shown in
+a fallback fails them; a strict fallback that rejects every kind nothing
+routes is one registration, shown in
 [its rustdoc](https://docs.rs/octoevents/latest/octoevents/struct.DispatcherBuilder.html#method.fallback).
 
 A failure is a `DispatchError`: the application error wrapped with the tier,
@@ -466,7 +468,7 @@ it and `always` never sees it; `handle_ping(true)` on the receiver builder
 passes it through instead, for an `always` handler that records every
 delivery to record that one too. An unsigned `ping` is 401 either way.
 
-GitHub holds one secret per webhook, so a rotation window is the receiver's
+GitHub holds one secret per webhook, so a rotation window is the verifier's
 to open: `Verifier::new(current).also(next)` verifies against either while
 the secret is changed in the webhook's settings, and `Verifier::new(next)`
 alone once the deliveries signed with the old one have drained. Every secret
