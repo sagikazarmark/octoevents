@@ -60,7 +60,9 @@ use crate::{DecodeError, Envelope, EventKind, EventMeta};
 /// An input need not decode the payload at all. One read off the meta makes a
 /// field the handler requires part of its type, so a delivery without it fails
 /// at the decode, at the handler's registration, instead of every handler
-/// unwrapping an `Option`:
+/// unwrapping an `Option`. The failure is neither a kind mismatch nor a JSON
+/// error, so the input reports its own reason as [`DecodeError::Input`],
+/// whose `Display` is the message verbatim:
 ///
 /// ```
 /// use octoevents::{DecodeError, Envelope, FromEnvelope};
@@ -70,9 +72,11 @@ use crate::{DecodeError, Envelope, EventKind, EventMeta};
 ///
 /// impl FromEnvelope for InstallationId {
 ///     fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError> {
-///         envelope.meta.installation_id.map(Self).ok_or_else(|| {
-///             DecodeError::Json(serde::de::Error::custom("payload has no installation"))
-///         })
+///         envelope
+///             .meta
+///             .installation_id
+///             .map(Self)
+///             .ok_or_else(|| DecodeError::input("payload has no installation"))
 ///     }
 /// }
 /// ```
@@ -102,7 +106,9 @@ pub trait FromEnvelope: Sized {
     ///
     /// Returns the [`DecodeError`] the dispatcher reports at the handler
     /// that needed this input, converted into the application error through
-    /// `From`.
+    /// `From`: [`Envelope::decode_payload`] produces the kind mismatch,
+    /// [`Envelope::decode`] and `decode_payload` the JSON error, and
+    /// [`DecodeError::input`] a reason of the input's own.
     fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError>;
 }
 

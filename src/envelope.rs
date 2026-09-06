@@ -718,6 +718,15 @@ pub enum ReceiveError {
 /// input could not be decoded. A single `From<DecodeError>` impl is therefore
 /// the only conversion of a decode failure an application error needs,
 /// whichever path decoded.
+///
+/// Three variants, each saying why: [`KindMismatch`](Self::KindMismatch),
+/// when a [`Payload`] type's kind disagrees with the envelope's;
+/// [`Json`](Self::Json), when the bytes do not fit the type; and
+/// [`Input`](Self::Input), the one a consumer's own
+/// [`FromEnvelope`](crate::FromEnvelope) impl returns for a reason that is
+/// neither, built with [`DecodeError::input`] or
+/// [`DecodeError::input_with_source`]. The enum is `#[non_exhaustive]`, so a
+/// `match` over it keeps a wildcard arm.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum DecodeError {
@@ -732,6 +741,88 @@ pub enum DecodeError {
     /// The payload did not decode into the expected type.
     #[error("payload could not be decoded")]
     Json(#[source] serde_json::Error),
+    /// The input reported a reason of its own, neither a kind mismatch nor a
+    /// JSON error.
+    ///
+    /// What a consumer's own [`FromEnvelope`](crate::FromEnvelope) impl
+    /// returns when its decode fails on its own terms: a field the meta does
+    /// not carry, a payload a view over several kinds accepts but cannot
+    /// use. [`Display`](fmt::Display) is the consumer's message, verbatim;
+    /// an underlying error the consumer attached is the
+    /// [`source`](std::error::Error::source). Built with
+    /// [`DecodeError::input`] or [`DecodeError::input_with_source`].
+    ///
+    /// Named for what reports the reason, as `KindMismatch` and `Json` are
+    /// named for what went wrong. `Custom` was considered and rejected as
+    /// naming the mechanism (serde's `Error::custom`) rather than the
+    /// concept, and `Missing { field }` as covering the meta-derived case
+    /// exactly while leaving a cross-kind view's other reasons unnameable.
+    #[error("{message}")]
+    Input {
+        /// The consumer's own reason, as `Display` shows it.
+        message: Cow<'static, str>,
+        /// The underlying error, when the consumer attached one.
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+}
+
+impl DecodeError {
+    /// An [`Input`](Self::Input) error with `message` as its reason and no
+    /// underlying source.
+    ///
+    /// The one line a consumer's [`FromEnvelope`](crate::FromEnvelope) impl
+    /// needs to report a failure that is neither a kind mismatch nor a JSON
+    /// error; the trait's docs show one over a required meta field. A
+    /// `&'static str` or a `String` is accepted.
+    #[must_use]
+    pub fn input(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::Input {
+            message: message.into(),
+            source: None,
+        }
+    }
+
+    /// An [`Input`](Self::Input) error with `message` as its reason and
+    /// `source` as the underlying error.
+    ///
+    /// `Display` is the message; the source is one `source()` hop down, where
+    /// an observer that walks the chain finds it. Any `Error + Send + Sync`
+    /// is accepted, boxed or not. For a view that reads a field the payload
+    /// carries as text and parses it further, the parse error is the source:
+    ///
+    /// ```
+    /// use octoevents::{DecodeError, Envelope, FromEnvelope};
+    ///
+    /// #[derive(serde::Deserialize)]
+    /// struct Tagged { release: Release }
+    /// #[derive(serde::Deserialize)]
+    /// struct Release { tag_name: String }
+    ///
+    /// /// The released major version, read off a `v1.2.3` tag.
+    /// struct Major(u64);
+    ///
+    /// impl FromEnvelope for Major {
+    ///     fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError> {
+    ///         let Tagged { release } = envelope.decode()?;
+    ///         let tag = release.tag_name;
+    ///         let major = tag.trim_start_matches('v').split('.').next().unwrap_or_default();
+    ///         major.parse().map(Self).map_err(|error| {
+    ///             DecodeError::input_with_source(format!("tag {tag} has no major version"), error)
+    ///         })
+    ///     }
+    /// }
+    /// ```
+    #[must_use]
+    pub fn input_with_source(
+        message: impl Into<Cow<'static, str>>,
+        source: impl Into<Box<dyn std::error::Error + Send + Sync>>,
+    ) -> Self {
+        Self::Input {
+            message: message.into(),
+            source: Some(source.into()),
+        }
+    }
 }
 
 fn required_header<'a>(
@@ -1288,6 +1379,30 @@ mod tests {
         let payload = envelope.decode::<IssueNumber>().unwrap();
 
         assert_eq!(payload.issue.number, 7);
+    }
+
+    #[test]
+    fn an_input_error_displays_the_consumers_message_and_carries_the_source_it_was_given() {
+        use std::error::Error as _;
+
+        // A plain message: the consumer's words are the whole reason.
+        let error = DecodeError::input("payload has no installation");
+        assert_eq!(error.to_string(), "payload has no installation");
+        assert!(error.source().is_none());
+
+        // With an underlying error: the message is still what `Display`
+        // shows, and the cause is one `source()` hop down, as it is for
+        // `Json`.
+        let cause = "forty-two".parse::<u64>().unwrap_err();
+        let error =
+            DecodeError::input_with_source("installation id is not a number", cause.clone());
+        assert_eq!(error.to_string(), "installation id is not a number");
+        assert_eq!(
+            error
+                .source()
+                .and_then(|source| source.downcast_ref::<std::num::ParseIntError>()),
+            Some(&cause)
+        );
     }
 
     #[test]
