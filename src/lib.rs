@@ -44,7 +44,7 @@
 //!     Ok(())
 //! }
 //!
-//! /// Runs for every verified delivery, bytes included.
+//! /// Runs for every delivery the dispatcher is handed, bytes included.
 //! async fn audit(envelope: Envelope) -> Result<(), AppError> {
 //!     println!("{} {} ({} bytes)", envelope.meta.delivery_id, envelope.meta.kind, envelope.raw.len());
 //!     Ok(())
@@ -147,9 +147,8 @@
 //! ```
 //!
 //! A struct keeps its own error type; the dispatcher converts it into the
-//! application error through `From`. `Arc<H>` is a handler when `H` is, for
-//! sharing one struct between a route and a test that reads its state.
-//! Closures work too, with the annotations [`Handler`] describes.
+//! application error through `From`. Closures work too, with the annotations
+//! [`Handler`] describes.
 //!
 //! # Routing
 //!
@@ -166,8 +165,7 @@
 //! [`Tier`], the delivery's ID, kind and action, the failing handler's name,
 //! and the source location of the registration that put it there.
 //! `dispatch` also reports an [`Outcome`], matched or unmatched with the kind
-//! known or unknown to the route table, for a handler wrapping the dispatcher
-//! to act on.
+//! known or unknown to the route table, beside the result.
 //!
 //! # Testing without GitHub
 //!
@@ -242,13 +240,10 @@
 //! GitHub does not retry a failed delivery on its own, and it abandons a
 //! request after 10 seconds (30 on GitHub Enterprise Server). Persist or
 //! forward an envelope before returning and process it afterwards. With a
-//! dispatcher, that policy lives in a handler wrapping `dispatch`: it
-//! stores the envelope, bytes included, before anything is routed; answers a
-//! redelivery of a stored delivery ID with success without routing it; and
-//! reads the [`Outcome`] to dead-letter a kind the route table does not
-//! know. A tier can continue or fail but never skip, which is why that
-//! wrapper, and not `always`, is the place; the `dispatcher` example shows
-//! it. A forwarder that never needs to skip fits `always`.
+//! dispatcher, persisting, answering a redelivery of a stored delivery ID
+//! with success, and dead-lettering an unmatched delivery all live in a
+//! handler wrapping `dispatch`, [the policy seam](Dispatcher#the-policy-seam),
+//! which the `dispatcher` example shows.
 //!
 //! The receiver answers a failed delivery with a bare 500 and never reads the
 //! error: the response is GitHub's delivery record, not a log. The observer

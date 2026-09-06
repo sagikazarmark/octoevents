@@ -57,16 +57,20 @@ lives in a handler over the envelope wrapping `dispatch`, the *policy seam*.
 _Avoid_: Router (implies path/method routing, which stays with the caller)
 
 **Always**:
-The dispatcher tier that runs first, for every delivery, before routing,
-receiving the envelope, bytes included. Its failure fails the delivery; it
-never counts as a match, so a strict fallback still rejects kinds nothing
-else handles. It can continue or fail but never skip.
+The dispatcher tier that runs first, before routing, receiving the envelope,
+bytes included, for every delivery the dispatcher is handed: not a `ping`
+the receiver answered itself, nor a redelivery a wrapper answered before
+calling `dispatch`. Its failure fails the delivery; it never counts as a
+match, so a strict fallback still rejects kinds nothing else handles. It can
+continue or fail but never skip.
 _Avoid_: Global handler, middleware, raw (the removed tier that once ran before it)
 
 **Fallback**:
 The dispatcher chain that runs only when no routed handler matched,
-receiving the envelope as the always tier does. Empty by default, so
-unmatched deliveries succeed.
+receiving the envelope as the always tier does. It cannot see the match: it
+runs alike for a kind the route table never registered and for an action
+GitHub added to a kind it did, and the envelope does not say which. Empty by
+default, so unmatched deliveries succeed.
 
 **Tier**:
 One of the three steps a dispatcher runs a delivery through, in order:
