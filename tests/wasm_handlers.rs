@@ -5,13 +5,18 @@
 //! this file proves both handler flavours compile through the full erasure
 //! path with such state. Build it with
 //! `cargo build --test wasm_handlers --target wasm32-unknown-unknown --features octocrab,tower`;
-//! it is never run, and it must not compile natively.
+//! it is never run, and it must not compile natively. Every test needs a
+//! receiver or the octocrab model, so the file is empty without `http` or
+//! `octocrab` rather than a set of orphaned definitions.
 
-#![cfg(target_arch = "wasm32")]
+#![cfg(all(target_arch = "wasm32", any(feature = "http", feature = "octocrab")))]
+// The handlers here bump a counter instead of awaiting a JavaScript binding,
+// which is what a real `async fn handle` would do.
+#![allow(clippy::unused_async_trait_impl)]
 
 use std::{cell::Cell, rc::Rc};
 
-use octoevents::{Envelope, EventMeta, WebhookHandler};
+use octoevents::{Envelope, WebhookHandler};
 
 /// A Worker-shaped handler: holds a non-`Send`, non-`Sync` value.
 struct Counter {
@@ -29,17 +34,14 @@ impl WebhookHandler for Counter {
 
 /// The application error a dispatcher under test converts every handler's
 /// error into.
-#[cfg(any(feature = "http", feature = "octocrab"))]
 struct AppError;
 
-#[cfg(any(feature = "http", feature = "octocrab"))]
 impl From<octoevents::DecodeError> for AppError {
     fn from(_: octoevents::DecodeError) -> Self {
         Self
     }
 }
 
-#[cfg(any(feature = "http", feature = "octocrab"))]
 impl From<std::convert::Infallible> for AppError {
     fn from(never: std::convert::Infallible) -> Self {
         match never {}
@@ -74,7 +76,7 @@ fn the_receiver_accepts_single_threaded_handler_state() {
 #[cfg(feature = "http")]
 #[test]
 fn the_receiver_accepts_a_single_threaded_error_observer() {
-    use octoevents::{Secret, Verifier, WebhookReceiverBuilder};
+    use octoevents::{EventMeta, Secret, Verifier, WebhookReceiverBuilder};
 
     struct JsValue;
 
@@ -253,4 +255,7 @@ fn the_dispatcher_accepts_single_threaded_handler_state_of_both_flavours() {
         let _receiver =
             WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(dispatcher);
     }
+    // Without `http` there is no receiver to hand it to; building it was the point.
+    #[cfg(not(feature = "http"))]
+    drop(dispatcher);
 }
