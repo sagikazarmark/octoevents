@@ -36,15 +36,14 @@
 //! # Handlers
 //!
 //! Handlers are structs whose fields are their dependencies, with a plain
-//! `async fn handle(&self, ..)` and their own error type. Four flavours
+//! `async fn handle(&self, ..)` and their own error type. Three flavours
 //! differ by what they receive:
 //!
 //! - A [`WebhookHandler`] receives the verified [`Envelope`]: metadata plus
-//!   the raw payload bytes. This is what the receiver accepts.
-//! - A [`MetaHandler`] receives only the [`EventMeta`]: no bytes and no
-//!   decode, so it runs for any verified delivery. For audit, metrics, and
-//!   deduplication.
-//! - A [`PayloadHandler`] receives the `EventMeta` and one kind's decoded
+//!   the raw payload bytes. This is what the receiver accepts, and what the
+//!   dispatcher's `always` and `fallback` tiers accept. For audit, metrics,
+//!   persistence and forwarding.
+//! - A [`PayloadHandler`] receives the [`EventMeta`] and one kind's decoded
 //!   [`Payload`]; its kind is declared by the payload type. Implement
 //!   `Payload` for your own serde view with [`impl_payload!`], or use
 //!   octocrab's per-kind payload structs with the `octocrab` feature.
@@ -83,15 +82,14 @@
 //! # }
 //! ```
 //!
-//! The other flavours reach the receiver through a [`Dispatcher`], which
+//! The typed flavours reach the receiver through a [`Dispatcher`], which
 //! routes handlers by [`EventKind`] and [`Action`]: webhook handlers in its
-//! raw tier (`always_raw`), meta handlers in its `always` and `fallback`
-//! tiers, payload handlers by the kind their payload type declares
-//! (`on_payload`, or `on_payload_action` for some of its actions), and, with
-//! the `octocrab` feature, event handlers by matcher through `on`. A
-//! dispatcher with one `on_payload` route is the alternative to the handler
-//! above: it takes a [`PayloadHandler`] over the same view and answers a
-//! delivery of any other kind with success rather than failure. The
+//! `always` and `fallback` tiers, payload handlers by the kind their payload
+//! type declares (`on_payload`, or `on_payload_action` for some of its
+//! actions), and, with the `octocrab` feature, event handlers by matcher
+//! through `on`. A dispatcher with one `on_payload` route is the alternative
+//! to the handler above: it takes a [`PayloadHandler`] over the same view and
+//! answers a delivery of any other kind with success rather than failure. The
 //! dispatcher converts each handler's error into one application error via
 //! `From`, and reports a failure as a [`DispatchError`] wrapping that error
 //! with the [`Tier`] it came from, the delivery's ID, kind and action, and
@@ -119,11 +117,14 @@
 //! GitHub does not automatically retry failed webhook deliveries. Keep
 //! handlers below GitHub's timeout (10 seconds on github.com and 30 seconds
 //! on GitHub Enterprise Server) by persisting or forwarding an event before
-//! returning. With a dispatcher, register that work with `always_raw`: the
-//! raw tier receives the verified envelope, bytes included, and runs before
-//! every other tier, so the envelope is stored before any typed handler sees
-//! it, and a delivery whose envelope could not be stored is not routed. The
-//! `dispatcher` example shows the pattern.
+//! returning. With a dispatcher, that work belongs in a webhook handler that
+//! wraps `dispatch`: it stores the envelope, bytes included, before anything
+//! is routed, answers a redelivery of a delivery ID it already holds with
+//! success without routing it, and reads the [`Outcome`] to dead-letter a
+//! kind the route table does not know. A tier can continue or fail but never
+//! skip, so the wrapper is where that policy lives; the `dispatcher` example
+//! shows it. A forwarder that never needs to skip fits the `always` tier,
+//! which receives the same envelope before routing.
 //!
 //! The receiver answers a failed delivery with a bare 500: the response is
 //! GitHub's delivery record, not a log. To see why a delivery failed, register
@@ -187,8 +188,8 @@
 //! this crate's public API: `EventHandler`, `Dispatcher::on`, and the octocrab
 //! `Payload` impls expose octocrab's types, so an octocrab major bump is a
 //! breaking change for them. The core (envelope, verification, receiver,
-//! `WebhookHandler`, `MetaHandler`, `PayloadHandler`, and the dispatcher's
-//! other methods) does not depend on it.
+//! `WebhookHandler`, `PayloadHandler`, and the dispatcher's other methods)
+//! does not depend on it.
 // `doc_cfg` propagates each `#[cfg]` into the rendered docs on its own,
 // including from a gated module to the items inside it, so gated items carry
 // no separate `doc(cfg(...))`.
@@ -220,7 +221,7 @@ pub use envelope::{
 pub use events::{Action, EventKind};
 #[cfg(feature = "octocrab")]
 pub use handler::EventHandler;
-pub use handler::{MetaHandler, PayloadHandler, WebhookHandler};
+pub use handler::{PayloadHandler, WebhookHandler};
 pub use matcher::EventMatcher;
 pub use payload::Payload;
 pub use respond::ResponseStatus;

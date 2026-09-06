@@ -1,10 +1,9 @@
 //! A Cloudflare Worker that forwards every verified envelope to a Restate
-//! virtual object from the dispatcher's raw tier, then routes it.
+//! virtual object from the dispatcher's `always` tier, then routes it.
 //!
 //! Built without the `octocrab` feature (which is never on by default), so
-//! the dispatcher routes webhook, meta and payload handlers only, and the
-//! payload handler decodes a consumer-defined view of the `installation`
-//! payload.
+//! the dispatcher routes webhook and payload handlers only, and the payload
+//! handler decodes a consumer-defined view of the `installation` payload.
 
 // The handlers here log instead of awaiting a database or the GitHub API,
 // which is what a real `async fn handle` would do.
@@ -37,8 +36,9 @@ impl From<Infallible> for AppError {
 }
 
 /// Forwards the raw envelope to the Restate ingress. Registered in the
-/// dispatcher's raw tier, it runs before any typed handler, and a delivery the
-/// ingress refused is not routed.
+/// dispatcher's `always` tier, it receives the envelope, bytes included, and
+/// runs before any typed handler; a delivery the ingress refused is not
+/// routed.
 struct Forward {
     object_url: String,
 }
@@ -121,7 +121,7 @@ async fn fetch(
     let object_url = env.var("RESTATE_OBJECT_URL")?.to_string();
 
     let dispatcher = Dispatcher::<AppError>::builder()
-        .always_raw(Forward { object_url })
+        .always(Forward { object_url })
         .on_payload(InstallationLog)
         .build();
 

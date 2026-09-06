@@ -1,4 +1,4 @@
-use std::{future::Future, sync::Arc};
+use std::future::Future;
 
 #[cfg(feature = "octocrab")]
 use octocrab::models::webhook_events::WebhookEvent;
@@ -8,9 +8,10 @@ use crate::{Envelope, EventMeta, MaybeSend, Payload};
 /// Consumer-owned code that handles one verified [`Envelope`].
 ///
 /// This is the handler flavour the receiver accepts, and the one the
-/// dispatcher's raw tier (`always_raw`) accepts. Implement it on a struct
-/// whose fields are its dependencies and write a plain `async fn handle`; the
-/// future borrows `&self`, so nothing is cloned per delivery:
+/// dispatcher's `always` and `fallback` tiers accept. Implement it on a
+/// struct whose fields are its dependencies and write a plain
+/// `async fn handle`; the future borrows `&self`, so nothing is cloned per
+/// delivery:
 ///
 /// ```
 /// use octoevents::{Envelope, WebhookHandler};
@@ -123,7 +124,7 @@ pub trait WebhookHandler {
     ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend;
 }
 
-// Each closure blanket (here and on the three other flavours below) returns
+// Each closure blanket (here and on the two other flavours below) returns
 // the closure's future directly. Wrapping it in an `async fn` would capture
 // `&self` and the arguments across the await and demand `F: Sync` and
 // `Send` arguments of the closure for no benefit.
@@ -142,101 +143,6 @@ where
     #[allow(refining_impl_trait)]
     fn handle(&self, envelope: Envelope) -> Fut {
         self(envelope)
-    }
-}
-
-/// Consumer-owned code that handles one delivery's [`EventMeta`] alone.
-///
-/// A meta handler receives the routing metadata and nothing else: no payload
-/// bytes and no decoded payload. With nothing to decode it runs for every
-/// verified delivery, including one whose payload no typed handler can
-/// decode, which makes it the flavour for audit, metrics, deduplication, and
-/// rejection: logic that reads only the fields [`EventMeta`] already carries.
-///
-/// ```
-/// use octoevents::{EventMeta, MetaHandler};
-///
-/// struct Dedup { /* seen delivery IDs */ }
-///
-/// impl MetaHandler for Dedup {
-///     type Error = std::io::Error;
-///
-///     async fn handle(&self, meta: EventMeta) -> Result<(), Self::Error> {
-///         println!("{} {} from {:?}", meta.delivery_id, meta.kind, meta.sender);
-///         Ok(())
-///     }
-/// }
-/// ```
-///
-/// A closure `Fn(EventMeta) -> Fut` is a meta handler too; annotate its
-/// parameter type and state its error type (`Ok::<_, E>(())`):
-///
-/// ```
-/// use octoevents::{EventMeta, MetaHandler};
-///
-/// fn log() -> impl MetaHandler<Error = std::convert::Infallible> {
-///     |meta: EventMeta| async move {
-///         println!("{} {}", meta.delivery_id, meta.kind);
-///         Ok::<_, std::convert::Infallible>(())
-///     }
-/// }
-/// ```
-///
-/// An `Arc<H>` is a meta handler whenever `H` is, so one struct can be shared
-/// (between a dispatcher and a test, say) without a closure adapter. `&H` and
-/// `Box<H>` are not: std implements `Fn` for both, so those impls would
-/// overlap the closure blanket.
-///
-/// A value that is not a meta handler is reported as such, with the shape
-/// expected:
-///
-/// ```compile_fail,E0277
-/// use octoevents::MetaHandler;
-///
-/// fn assert_handler<H: MetaHandler>(_: H) {}
-///
-/// struct Dedup;
-/// assert_handler(Dedup);
-/// ```
-#[diagnostic::on_unimplemented(
-    message = "`{Self}` is not a meta handler",
-    label = "expected an `impl MetaHandler` or a closure `|meta: EventMeta| async {{ .. }}`",
-    note = "a meta handler receives only the `EventMeta`: implement `MetaHandler` with `async fn handle(&self, meta: EventMeta) -> Result<(), Self::Error>`"
-)]
-pub trait MetaHandler {
-    /// The error this handler reports for a failed delivery.
-    type Error;
-
-    /// Handles one delivery's metadata.
-    fn handle(&self, meta: EventMeta) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend;
-}
-
-#[diagnostic::do_not_recommend]
-impl<F, Fut, E> MetaHandler for F
-where
-    F: Fn(EventMeta) -> Fut,
-    Fut: Future<Output = Result<(), E>> + MaybeSend,
-{
-    type Error = E;
-
-    #[allow(refining_impl_trait)]
-    fn handle(&self, meta: EventMeta) -> Fut {
-        self(meta)
-    }
-}
-
-// Coherent with the closure blanket because `Fn` is `#[fundamental]`: `Arc<H>`
-// does not implement it, and the compiler may assume it never will. Returns
-// the inner future directly, so `H` needs no `Send + Sync` bound beyond what
-// its own `handle` already states.
-impl<H> MetaHandler for Arc<H>
-where
-    H: MetaHandler + ?Sized,
-{
-    type Error = H::Error;
-
-    fn handle(&self, meta: EventMeta) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend {
-        H::handle(self, meta)
     }
 }
 
@@ -445,46 +351,5 @@ where
     #[allow(refining_impl_trait)]
     fn handle(&self, meta: EventMeta, payload: P) -> Fut {
         self(meta, payload)
-    }
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod tests {
-    use std::sync::Arc;
-
-    use tokio::sync::Mutex;
-
-    use super::MetaHandler;
-    use crate::{EventMeta, test_support::unrepresentable};
-
-    #[tokio::test]
-    async fn an_arc_is_a_meta_handler_whenever_its_target_is() {
-        struct Counter {
-            calls: Arc<Mutex<u32>>,
-        }
-
-        impl MetaHandler for Counter {
-            type Error = std::convert::Infallible;
-
-            async fn handle(&self, _meta: EventMeta) -> Result<(), Self::Error> {
-                *self.calls.lock().await += 1;
-                Ok(())
-            }
-        }
-
-        let calls = Arc::new(Mutex::new(0));
-        let shared = Arc::new(Counter {
-            calls: Arc::clone(&calls),
-        });
-
-        // One struct behind two `Arc`s, each a meta handler in its own right,
-        // with no closure written by hand.
-        let first = Arc::clone(&shared);
-        let second = shared;
-
-        first.handle(unrepresentable().meta).await.unwrap();
-        second.handle(unrepresentable().meta).await.unwrap();
-
-        assert_eq!(*calls.lock().await, 2);
     }
 }

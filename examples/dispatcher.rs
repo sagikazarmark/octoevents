@@ -1,4 +1,5 @@
-//! A GitHub App receiver built from struct handlers of every flavour.
+//! A GitHub App receiver: a webhook handler that persists, deduplicates and
+//! dead-letters, wrapping a dispatcher that only routes.
 //!
 //! Run with real deliveries forwarded by `gh webhook forward` (see the README):
 //!
@@ -7,15 +8,24 @@
 //!   cargo run --example dispatcher --features tower,octocrab
 //! ```
 //!
-//! Four handler flavours appear, each a struct whose fields are its
-//! dependencies and each with its own error type:
+//! [`Inbox`] is the `WebhookHandler` the receiver is built from. It stores
+//! every verified envelope, bytes included, before anything is routed;
+//! answers a redelivery of a delivery ID it already holds with success
+//! without routing it, so a redelivery from GitHub never runs the handlers
+//! twice; and reads the outcome `dispatch` reports to dead-letter the
+//! envelope of a kind the dispatcher never registered, bytes still in hand,
+//! without turning it into an error. None of that fits a dispatcher tier,
+//! which can continue or fail but never skip: the wrapper is where that
+//! policy lives, and the dispatcher only routes. Once stored, the envelope
+//! is the store's to replay: a handler failure after that point is
+//! recovered from the store, not by asking GitHub to redeliver.
 //!
-//! - [`Persist`] is a `WebhookHandler` in the dispatcher's raw tier: it sees
-//!   the verified envelope, bytes included, and stores it before any other
-//!   tier runs. A delivery whose envelope could not be stored is not routed.
-//! - [`Auditor`] is a `MetaHandler` over the metadata alone, in the `always`
-//!   tier: it runs for every delivery and, with nothing to decode, even for
-//!   a payload octocrab cannot represent.
+//! Inside the dispatcher, three handler flavours appear, each a struct or
+//! closure with its own error type:
+//!
+//! - [`Auditor`] is a `WebhookHandler` in the `always` tier: it runs for
+//!   every delivery, reads the metadata off the envelope, and, with nothing
+//!   decoded on its behalf, runs even for a payload octocrab cannot represent.
 //! - [`Labeler`] is a `PayloadHandler` over octocrab's pull-request payload;
 //!   its kind comes from that type, so registering it names only the action
 //!   it wants, and other actions never reach it or decode for it.
@@ -23,13 +33,9 @@
 //!   `WebhookEvent`, registered with `on`: the one registration that needs
 //!   the `octocrab` feature.
 //!
-//! [`DeadLetter`] is a `WebhookHandler` that wraps the dispatcher and reads
-//! the outcome `dispatch` reports: an action GitHub added to a kind this app
-//! handles is tolerated, and a delivery of a kind it never registered is
-//! dead-lettered, bytes included, without being turned into an error. The
-//! receiver is built from that wrapper, with an `on_error` observer that logs
-//! every failed delivery, source chain included, since the receiver answers a
-//! handler error with a bare 500 and says nothing else: the dispatcher's
+//! The receiver is built with an `on_error` observer that logs every failed
+//! delivery, source chain included, since the receiver answers a handler
+//! error with a bare 500 and says nothing else: the dispatcher's
 //! `DispatchError` names the tier, the delivery, and the line that registered
 //! the failing handler.
 
@@ -43,18 +49,16 @@ use axum::{Router, routing::post_service};
 use octocrab::models::webhook_events::{WebhookEvent, payload::PullRequestWebhookEventPayload};
 use octoevents::{
     Action, DecodeError, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, Match,
-    MetaHandler, PayloadHandler, Secret, Verifier, WebhookHandler, WebhookReceiverBuilder,
+    PayloadHandler, Secret, Verifier, WebhookHandler, WebhookReceiverBuilder,
 };
 
-/// The application error every handler's error converts into.
+/// The application error every handler inside the dispatcher converts into.
 ///
 /// One `From<DecodeError>` covers the dispatcher's event and payload decodes.
 #[derive(Debug, thiserror::Error)]
 enum AppError {
     #[error(transparent)]
     Decode(#[from] DecodeError),
-    #[error(transparent)]
-    Store(#[from] StoreError),
 }
 
 impl From<Infallible> for AppError {
@@ -63,57 +67,113 @@ impl From<Infallible> for AppError {
     }
 }
 
-/// A stand-in for a database: remembers which deliveries were stored.
+/// A stand-in for a database: remembers which deliveries were stored, and
+/// keeps the envelopes an operator has to look at.
 #[derive(Default)]
 struct Store {
     delivery_ids: Mutex<Vec<String>>,
+    dead_letters: Mutex<Vec<Envelope>>,
 }
 
+/// What a real store reports when it cannot be reached; here, a poisoned lock.
 #[derive(Debug, thiserror::Error)]
-#[error("delivery {0} was already stored")]
-struct StoreError(String);
+#[error("the delivery store is unavailable")]
+struct StoreError;
 
 impl Store {
-    fn insert(&self, delivery_id: &str) -> Result<(), StoreError> {
-        let mut ids = self.delivery_ids.lock().expect("store lock");
+    /// Remembers the delivery, or reports `false` when it was already stored.
+    fn insert(&self, delivery_id: &str) -> Result<bool, StoreError> {
+        let mut ids = self.delivery_ids.lock().map_err(|_| StoreError)?;
         if ids.iter().any(|id| id == delivery_id) {
-            return Err(StoreError(delivery_id.to_owned()));
+            return Ok(false);
         }
         ids.push(delivery_id.to_owned());
+        Ok(true)
+    }
+
+    /// Sets an envelope aside for an operator, bytes included.
+    fn dead_letter(&self, envelope: Envelope) -> Result<(), StoreError> {
+        self.dead_letters
+            .lock()
+            .map_err(|_| StoreError)?
+            .push(envelope);
         Ok(())
     }
 }
 
-/// Persists the raw envelope. The persist-before-route advice from the crate
-/// docs, expressed as a webhook handler in the raw tier: it runs first for
-/// every delivery, and its failure (here, a redelivery of a stored delivery
-/// ID) keeps the delivery from being routed.
-struct Persist {
-    store: Store,
+/// Everything the wrapper can fail with: its own store, or whatever the
+/// dispatcher reports, tier and registration site included.
+#[derive(Debug, thiserror::Error)]
+enum InboxError {
+    #[error(transparent)]
+    Store(#[from] StoreError),
+    #[error(transparent)]
+    Dispatch(#[from] DispatchError<AppError>),
 }
 
-impl WebhookHandler for Persist {
-    type Error = StoreError;
+/// Persists, deduplicates and dead-letters around a dispatcher that only
+/// routes.
+///
+/// The persist-before-route advice from the crate docs, with the two
+/// decisions a tier cannot make: a redelivery of a stored delivery ID is
+/// answered with success and not routed, and the envelope of a kind the route
+/// table does not know is dead-lettered for an operator to look at, bytes
+/// included, and stays green in GitHub, since redelivery would change
+/// nothing. An action GitHub added to a kind this app handles is tolerated.
+/// Errors from the handlers that ran pass through either way.
+struct Inbox {
+    store: Store,
+    dispatcher: Dispatcher<AppError>,
+}
+
+impl WebhookHandler for Inbox {
+    type Error = InboxError;
 
     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
-        self.store.insert(&envelope.meta.delivery_id)?;
+        // Stored first, so a delivery whose envelope could not be stored is
+        // never routed, and a redelivery is recognised before any handler
+        // runs for it a second time.
+        if !self.store.insert(&envelope.meta.delivery_id)? {
+            println!(
+                "skip {}: already stored, not routed",
+                envelope.meta.delivery_id
+            );
+            return Ok(());
+        }
         println!(
             "stored {} ({} bytes)",
             envelope.meta.delivery_id,
             envelope.raw.len()
         );
-        Ok(())
+
+        // The dispatcher takes the envelope by value; the clone shares the
+        // bytes, so the wrapper still holds them afterwards.
+        let outcome = self.dispatcher.dispatch(envelope.clone()).await;
+        match outcome.matched {
+            Match::Matched | Match::UnmatchedAction => Ok(outcome.result?),
+            Match::UnmatchedKind => {
+                outcome.result?;
+                println!(
+                    "dead-letter {} {} ({} bytes)",
+                    envelope.meta.delivery_id,
+                    envelope.meta.kind,
+                    envelope.raw.len()
+                );
+                Ok(self.store.dead_letter(envelope)?)
+            }
+        }
     }
 }
 
-/// Runs for every delivery, reading only what `EventMeta` carries. Its error
-/// type says it cannot fail.
+/// Runs for every delivery, reading only what `EventMeta` carries off the
+/// envelope. Its error type says it cannot fail.
 struct Auditor;
 
-impl MetaHandler for Auditor {
+impl WebhookHandler for Auditor {
     type Error = Infallible;
 
-    async fn handle(&self, meta: EventMeta) -> Result<(), Self::Error> {
+    async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
+        let meta = &envelope.meta;
         println!(
             "audit {} {} {:?} from {}",
             meta.delivery_id,
@@ -159,57 +219,14 @@ impl PayloadHandler<PullRequestWebhookEventPayload> for Labeler {
     }
 }
 
-/// Decides what an unmatched delivery means, with the bytes still in hand.
-///
-/// The tiers cannot express this policy: a fallback sees only the metadata
-/// and can only continue or fail. The outcome `dispatch` reports says whether
-/// the route table matched the delivery and, if not, whether it knew the
-/// kind. An action GitHub added to a kind this app handles is tolerated; a
-/// kind it never registered is dead-lettered for an operator to look at and
-/// stays green in GitHub, since redelivery would change nothing. Errors from
-/// the handlers that ran are passed through either way.
-struct DeadLetter {
-    dispatcher: Dispatcher<AppError>,
-    letters: Mutex<Vec<Envelope>>,
-}
-
-impl WebhookHandler for DeadLetter {
-    // The dispatcher's error passes through, tier and registration site included.
-    type Error = DispatchError<AppError>;
-
-    async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
-        // The dispatcher takes the envelope by value; the clone shares the
-        // bytes, so the wrapper still holds them afterwards.
-        let outcome = self.dispatcher.dispatch(envelope.clone()).await;
-        match outcome.matched {
-            Match::Matched | Match::UnmatchedAction => outcome.result,
-            Match::UnmatchedKind => {
-                outcome.result?;
-                println!(
-                    "dead-letter {} {} ({} bytes)",
-                    envelope.meta.delivery_id,
-                    envelope.meta.kind,
-                    envelope.raw.len()
-                );
-                self.letters
-                    .lock()
-                    .expect("dead-letter lock")
-                    .push(envelope);
-                Ok(())
-            }
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let secret = std::env::var("GITHUB_WEBHOOK_SECRET")?;
     let verifier = Verifier::new(Secret::new(secret));
 
+    // Routing only: what runs for which kind and action. Whether a delivery
+    // is routed at all is the wrapper's decision.
     let dispatcher = Dispatcher::<AppError>::builder()
-        .always_raw(Persist {
-            store: Store::default(),
-        })
         .always(Auditor)
         .on(
             (
@@ -237,11 +254,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // The receiver answers a handler error with a bare 500 (the response is
     // GitHub's delivery record, not a log), so the observer is where an
-    // operator learns why a delivery failed. The error names the tier, the
-    // delivery, and the line that registered the failing handler; its source
-    // is the application error.
+    // operator learns why a delivery failed. A dispatch error names the tier,
+    // the delivery, and the line that registered the failing handler; its
+    // source is the application error.
     let webhook = WebhookReceiverBuilder::new(verifier)
-        .on_error(|_: &EventMeta, error: &DispatchError<AppError>| {
+        .on_error(|_: &EventMeta, error: &InboxError| {
             eprintln!("{error}");
             let mut cause = error.source();
             while let Some(error) = cause {
@@ -249,9 +266,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cause = error.source();
             }
         })
-        .build(DeadLetter {
+        .build(Inbox {
+            store: Store::default(),
             dispatcher,
-            letters: Mutex::new(Vec::new()),
         });
 
     let app: Router = Router::new().route("/webhook", post_service(webhook));

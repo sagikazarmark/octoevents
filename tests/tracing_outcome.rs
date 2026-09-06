@@ -126,8 +126,8 @@ fn dispatcher() -> Dispatcher<AppError> {
         .on_payload_action([Action::Closed], |_: EventMeta, _: AnyPullRequest| async {
             Err::<(), _>("routed")
         })
-        .fallback(|meta: EventMeta| async move {
-            if meta.kind == EventKind::Installation {
+        .fallback(|envelope: Envelope| async move {
+            if envelope.meta.kind == EventKind::Installation {
                 Err("unmatched")
             } else {
                 Ok(())
@@ -181,7 +181,7 @@ fn the_span_records_one_of_four_outcomes_derived_from_the_returned_outcome() {
 }
 
 /// An `always` handler that fails every delivery.
-async fn fail_audit(_: EventMeta) -> Result<(), &'static str> {
+async fn fail_audit(_: Envelope) -> Result<(), &'static str> {
     Err("audit")
 }
 
@@ -238,8 +238,8 @@ fn the_handle_path_records_the_same_outcome() {
 }
 
 /// A fallback that fails `check_run` deliveries and passes every other kind.
-async fn fail_check_run(meta: EventMeta) -> Result<(), &'static str> {
-    if meta.kind == EventKind::CheckRun {
+async fn fail_check_run(envelope: Envelope) -> Result<(), &'static str> {
+    if envelope.meta.kind == EventKind::CheckRun {
         Err("unmatched")
     } else {
         Ok(())

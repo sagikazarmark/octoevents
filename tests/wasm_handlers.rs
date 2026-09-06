@@ -11,7 +11,7 @@
 
 use std::{cell::Cell, rc::Rc};
 
-use octoevents::{Envelope, EventMeta, MetaHandler, WebhookHandler};
+use octoevents::{Envelope, EventMeta, WebhookHandler};
 
 /// A Worker-shaped handler: holds a non-`Send`, non-`Sync` value.
 struct Counter {
@@ -22,20 +22,6 @@ impl WebhookHandler for Counter {
     type Error = std::convert::Infallible;
 
     async fn handle(&self, _envelope: Envelope) -> Result<(), Self::Error> {
-        self.calls.set(self.calls.get() + 1);
-        Ok(())
-    }
-}
-
-/// The same state behind a meta handler, which never sees the bytes.
-struct MetaCounter {
-    calls: Rc<Cell<u32>>,
-}
-
-impl MetaHandler for MetaCounter {
-    type Error = std::convert::Infallible;
-
-    async fn handle(&self, _meta: EventMeta) -> Result<(), Self::Error> {
         self.calls.set(self.calls.get() + 1);
         Ok(())
     }
@@ -101,21 +87,21 @@ fn the_receiver_accepts_a_single_threaded_error_observer() {
         .build(|_: Envelope| async { Err::<(), _>(JsValue) });
 }
 
-/// A meta handler reaches the receiver through a dispatcher tier, and the
-/// erasure there must keep the relaxed bound for the receiver to accept the
-/// dispatcher.
+/// A webhook handler reaches the receiver through the dispatcher's `always`
+/// and `fallback` tiers, and the erasure there must keep the relaxed bound
+/// for the receiver to accept the dispatcher.
 #[cfg(feature = "http")]
 #[test]
-fn the_receiver_accepts_a_dispatcher_over_a_single_threaded_meta_handler() {
+fn the_receiver_accepts_a_dispatcher_over_single_threaded_always_and_fallback_handlers() {
     use octoevents::{Dispatcher, Secret, Verifier, WebhookReceiverBuilder};
 
     let calls = Rc::new(Cell::new(0));
     let closure_calls = Rc::clone(&calls);
     let dispatcher = Dispatcher::<AppError>::builder()
-        .always(MetaCounter {
+        .always(Counter {
             calls: Rc::clone(&calls),
         })
-        .fallback(move |_: EventMeta| {
+        .fallback(move |_: Envelope| {
             let calls = Rc::clone(&closure_calls);
             async move {
                 calls.set(calls.get() + 1);
@@ -186,10 +172,7 @@ fn the_dispatcher_accepts_single_threaded_handler_state_of_every_flavour() {
     let calls = Rc::new(Cell::new(0));
     let closure_calls = Rc::clone(&calls);
     let dispatcher = Dispatcher::<AppError>::builder()
-        .always_raw(Counter {
-            calls: Rc::clone(&calls),
-        })
-        .always(MetaCounter {
+        .always(Counter {
             calls: Rc::clone(&calls),
         })
         .on(
@@ -214,7 +197,7 @@ fn the_dispatcher_accepts_single_threaded_handler_state_of_every_flavour() {
         .on_payload(Labeler {
             calls: Rc::clone(&calls),
         })
-        .fallback(MetaCounter {
+        .fallback(Counter {
             calls: Rc::clone(&calls),
         })
         .build();

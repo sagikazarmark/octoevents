@@ -141,7 +141,7 @@ impl<E> WebhookReceiverBuilder<E> {
     /// use std::error::Error as _;
     ///
     /// use octoevents::{
-    ///     DispatchError, Dispatcher, EventMeta, Secret, Verifier, WebhookReceiverBuilder,
+    ///     DispatchError, Dispatcher, Envelope, EventMeta, Secret, Verifier, WebhookReceiverBuilder,
     /// };
     /// # use octoevents::DecodeError;
     /// # #[derive(Debug, thiserror::Error)]
@@ -153,7 +153,7 @@ impl<E> WebhookReceiverBuilder<E> {
     /// # }
     ///
     /// let dispatcher = Dispatcher::<AppError>::builder()
-    ///     .always(|_: EventMeta| async { Err::<(), _>(AppError::Database) })
+    ///     .always(|_: Envelope| async { Err::<(), _>(AppError::Database) })
     ///     .build();
     ///
     /// // A failed delivery logs, before the 500:
@@ -466,8 +466,8 @@ mod tests {
 
     use super::{WebhookReceiverBuilder, empty_response};
     use crate::{
-        Action, DecodeError, Dispatcher, Envelope, EventKind, EventMeta, MetaHandler,
-        ResponseStatus, Secret, Verifier, WebhookHandler, test_support::AppError,
+        Action, DecodeError, Dispatcher, Envelope, EventKind, EventMeta, ResponseStatus, Secret,
+        Verifier, WebhookHandler, test_support::AppError,
     };
 
     /// A production-shaped handler: dependencies as fields, borrowed through
@@ -682,18 +682,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_meta_handler_receives_the_metadata_without_decoding_the_payload() {
+    async fn an_always_handler_runs_for_a_payload_no_typed_handler_can_decode() {
         type Seen = Arc<std::sync::Mutex<Vec<(String, EventKind, Option<Action>)>>>;
 
-        struct MetaRecorder {
+        struct Auditor {
             seen: Seen,
         }
 
-        impl MetaHandler for MetaRecorder {
+        impl WebhookHandler for Auditor {
             type Error = std::convert::Infallible;
 
             #[allow(clippy::unused_async_trait_impl)]
-            async fn handle(&self, meta: EventMeta) -> Result<(), Self::Error> {
+            async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
+                let meta = envelope.meta;
                 self.seen
                     .lock()
                     .unwrap()
@@ -704,15 +705,15 @@ mod tests {
 
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let dispatcher = Dispatcher::<AppError>::builder()
-            .always(MetaRecorder {
+            .always(Auditor {
                 seen: Arc::clone(&seen),
             })
             .build();
         let receiver =
             WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(dispatcher);
 
-        // A pull request octocrab cannot represent: a meta handler has nothing
-        // to decode, so the delivery still succeeds.
+        // A pull request octocrab cannot represent: nothing is decoded on the
+        // always tier's behalf, so the delivery still succeeds.
         let response = receiver
             .receive(request(
                 include_bytes!("../tests/fixtures/unrepresentable.json"),
@@ -728,15 +729,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_raw_tier_receives_the_exact_bytes_the_receiver_verified() {
+    async fn the_always_tier_receives_the_exact_bytes_the_receiver_verified() {
         // Irregular whitespace and a trailing newline: any re-encoding between
-        // verification and the raw tier would normalize them away.
+        // verification and the always tier would normalize them away.
         const BODY: &[u8] = b"{ \"action\" :\t\"opened\",\n  \"number\": 7 }\n";
 
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let handler_seen = Arc::clone(&seen);
         let dispatcher = Dispatcher::<AppError>::builder()
-            .always_raw(move |envelope: Envelope| {
+            .always(move |envelope: Envelope| {
                 let seen = Arc::clone(&handler_seen);
                 async move {
                     seen.lock()
@@ -1050,7 +1051,7 @@ mod tests {
         // none of it reaches the response, which stays GitHub's delivery
         // record. The `on_error` observer is where a consumer reads it.
         let dispatcher = Dispatcher::<AppError>::builder()
-            .always(|_: EventMeta| async { Err::<(), _>("audit") })
+            .always(|_: Envelope| async { Err::<(), _>("audit") })
             .build();
         let receiver =
             WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(dispatcher);
@@ -1069,7 +1070,7 @@ mod tests {
 
         let seen: Seen = Arc::default();
         let dispatcher = Dispatcher::<AppError>::builder()
-            .always(|_: EventMeta| async { Err::<(), _>("audit") })
+            .always(|_: Envelope| async { Err::<(), _>("audit") })
             .build();
         let observer_seen = Arc::clone(&seen);
         let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))

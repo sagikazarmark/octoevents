@@ -18,19 +18,21 @@
 
 Enabling `octocrab` makes octocrab's pre-1.0 version part of this crate's
 public API; the core (envelope, verification, receiver, `WebhookHandler`,
-`MetaHandler`, `PayloadHandler`, and the `Dispatcher` apart from `on`) does
-not depend on it.
+`PayloadHandler`, and the `Dispatcher` apart from `on`) does not depend on
+it.
 
 ## Handlers
 
 A handler is a struct whose fields are its dependencies, with a plain
-`async fn handle(&self, ..)` and its own error type. Four flavours differ by
+`async fn handle(&self, ..)` and its own error type. Three flavours differ by
 what they receive:
 
 ```rust
-use octoevents::{Envelope, EventKind, EventMeta, MetaHandler, PayloadHandler, WebhookHandler};
+use octoevents::{Envelope, EventKind, EventMeta, PayloadHandler, WebhookHandler};
 
 // The verified envelope: routing metadata plus the exact payload bytes.
+// Nothing is decoded, so it runs for every verified delivery, including one
+// whose payload nothing can decode.
 struct Persist { /* database pool */ }
 
 impl WebhookHandler for Persist {
@@ -38,19 +40,6 @@ impl WebhookHandler for Persist {
 
     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
         println!("{} {} ({} bytes)", envelope.meta.delivery_id, envelope.meta.kind, envelope.raw.len());
-        Ok(())
-    }
-}
-
-// The metadata alone: no bytes, no decode, so it runs for every verified
-// delivery, including one whose payload nothing can decode.
-struct Dedup { /* seen delivery IDs */ }
-
-impl MetaHandler for Dedup {
-    type Error = std::io::Error;
-
-    async fn handle(&self, meta: EventMeta) -> Result<(), Self::Error> {
-        println!("{} {} from {:?}", meta.delivery_id, meta.kind, meta.sender);
         Ok(())
     }
 }
@@ -73,26 +62,25 @@ impl PayloadHandler<PullRequestNumber> for Labeler {
 }
 ```
 
-The receiver accepts a `WebhookHandler`; the other flavours reach it through a
-`Dispatcher`. A receiver for one kind and nothing else needs no dispatcher: a
-`WebhookHandler` that calls `envelope.decode_payload::<PullRequestNumber>()`
+The receiver accepts a `WebhookHandler`; the typed flavours reach it through
+a `Dispatcher`. A receiver for one kind and nothing else needs no dispatcher:
+a `WebhookHandler` that calls `envelope.decode_payload::<PullRequestNumber>()`
 decodes its own view and refuses a delivery of any other kind at the kind.
 
-A `Dispatcher` routes handlers by kind and action: webhook handlers in its raw
-tier, meta handlers in its `always` and `fallback` tiers, payload handlers by
+A `Dispatcher` routes handlers by kind and action through three tiers:
+webhook handlers in its `always` and `fallback` tiers, payload handlers by
 the kind their payload type declares (and, if wanted, some of its actions),
 and, with the `octocrab` feature, `EventHandler`s over octocrab's decoded
 `WebhookEvent` for any kind through `on`:
 
 ```rust,ignore
 Dispatcher::<AppError>::builder()
-    .always_raw(Persist { .. })                 // every delivery, first, bytes included; not a match
-    .always(Auditor { .. })                     // every delivery, after the raw tier; not a match
+    .always(Auditor { .. })                     // every delivery, first, bytes included; not a match
     .on([EventKind::PullRequest, EventKind::Issues], Metrics { .. })                 // `octocrab`
     .on((EventKind::PullRequest, [Action::Opened, Action::Reopened]), Triage { .. }) // `octocrab`
     .on_payload(Notify { .. })                  // kind from the payload type, every action
     .on_payload_action([Action::Opened], Labeler { .. })  // kind from the payload type, these actions
-    .fallback(Reject)                           // only if nothing matched
+    .fallback(Reject)                           // only if nothing matched; bytes included
     .build()
 ```
 
@@ -100,23 +88,23 @@ Each handler keeps its own error type; the dispatcher converts them into
 `AppError` through `From`, and reports a failure as a `DispatchError` that
 wraps it with the tier it came from, the delivery's ID, kind and action, and
 the source location that registered the failing handler, so a log line leads
-straight to the line of code. Raw, meta and payload handlers never decode
-with octocrab, so `always_raw`, `always`, payload routes, and a strict
-`fallback` all run for a payload octocrab cannot represent; only the first
-event handler reached decodes it, once. A routed handler decodes only when
-its route matches, so a payload handler registered for some actions decodes
-nothing for a delivery carrying another. Unmatched deliveries succeed unless
-a fallback says otherwise. `dispatch` reports an `Outcome` beside the
-handlers' result: matched, or unmatched with the kind known or unknown to the
-route table. The receiver sees only the result; a handler wrapping the
-dispatcher reads the outcome to forward or dead-letter an unmatched delivery,
-bytes included, or to reject kinds it never registered while tolerating a new
-action on a kind it handles. A handler that must see the raw bytes before
-routing (to persist them, say) goes in `always_raw`: it runs before every
-other tier, and its failure keeps the delivery from being routed. The
-`dispatcher` example shows the whole shape behind a receiver, including both
-wrappers; the `worker` example forwards each envelope from the raw tier and
-routes a payload handler without octocrab on Cloudflare Workers.
+straight to the line of code. Webhook and payload handlers never decode with
+octocrab, so `always`, payload routes, and a strict `fallback` all run for a
+payload octocrab cannot represent; only the first event handler reached
+decodes it, once. A routed handler decodes only when its route matches, so a
+payload handler registered for some actions decodes nothing for a delivery
+carrying another. Unmatched deliveries succeed unless a fallback says
+otherwise. `dispatch` reports an `Outcome` beside the handlers' result:
+matched, or unmatched with the kind known or unknown to the route table. The
+receiver sees only the result; a handler wrapping the dispatcher reads the
+outcome to forward or dead-letter an unmatched delivery, bytes included, or
+to reject kinds it never registered while tolerating a new action on a kind
+it handles. A tier can continue or fail but never skip, so a handler that
+decides whether a delivery is routed at all (persist first, answer a
+redelivery of a stored delivery ID with success) is that same wrapper. The
+`dispatcher` example shows the whole shape behind a receiver; the `worker`
+example forwards each envelope from the `always` tier and routes a payload
+handler without octocrab on Cloudflare Workers.
 
 Closures work for every flavour. Annotate the parameters the body uses
 (`|envelope: Envelope|`, `|meta: EventMeta, pr: PullRequestNumber|`):
@@ -133,9 +121,11 @@ GitHub signs no timestamp, so the crate provides no replay protection: treat
 GitHub does not retry a failed delivery on its own, and it abandons a request
 after 10 seconds (30 on GitHub Enterprise Server). Persist or forward an
 envelope before returning and process it afterwards. With a dispatcher, that
-work goes in `always_raw`: the raw tier receives the verified envelope, bytes
-included, runs before every other tier, and its failure keeps the delivery
-from being routed.
+work goes in a webhook handler wrapping `dispatch`: it stores the envelope,
+bytes included, before anything is routed, and answers a redelivery of a
+stored delivery ID with success without routing it. A forwarder that never
+needs to skip fits the `always` tier, which receives the same envelope before
+routing.
 
 The receiver answers a failed delivery with a bare 500: the response is
 GitHub's delivery record, not a log, so the receiver places no `Display` bound
