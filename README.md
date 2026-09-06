@@ -73,8 +73,10 @@ impl PayloadHandler<PullRequestNumber> for Labeler {
 }
 ```
 
-The receiver accepts a `WebhookHandler`; every other flavour converts into one
-with `into_webhook_handler()`.
+The receiver accepts a `WebhookHandler`; the other flavours reach it through a
+`Dispatcher`. A receiver for one kind and nothing else needs no dispatcher: a
+`WebhookHandler` that calls `envelope.decode_payload::<PullRequestNumber>()`
+decodes its own view and refuses a delivery of any other kind at the kind.
 
 A `Dispatcher` routes handlers by kind and action: webhook handlers in its raw
 tier, meta handlers in its `always` and `fallback` tiers, payload handlers by

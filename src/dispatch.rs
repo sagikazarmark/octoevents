@@ -432,11 +432,11 @@ pub enum Match {
 /// and the registration site. Why is the [`source`](Error::source), the
 /// application error, so a reporter that walks the chain prints both, and
 /// [`into_source`](Self::into_source) drops the wrapping for code that wants
-/// the application error alone. The [`Error`] impl asks of `E` what
-/// [`HandleError`](crate::HandleError)'s does, `Error + 'static`; for an `E`
-/// that is not one, `Box<dyn Error + Send + Sync>` included, the dispatcher
-/// still builds, the error still displays, and `into_source` returns the
-/// boxed error, which is one.
+/// the application error alone. The [`Error`] impl asks `Error + 'static` of
+/// `E`, what any source in a chain must be; for an `E` that is not one,
+/// `Box<dyn Error + Send + Sync>` included, the dispatcher still builds, the
+/// error still displays, and `into_source` returns the boxed error, which is
+/// one.
 ///
 /// A wrapping handler that passes the dispatcher's result through keeps the
 /// tier and registration site by making this its error type; the receiver
@@ -919,8 +919,8 @@ impl<E> Clone for Route<E> {
 // The erased handler is never `Debug`; its flavour and where it was
 // registered are what an operator reading the route table wants, so a route
 // prints as `Meta(src/main.rs:12:10, ..)`, the `..` standing for the elided
-// handler as in every adapter's `Debug`. No bound on `E`: the dispatcher is
-// `Debug` for any error type, as it is `Clone` for any.
+// handler as in `WebhookReceiver`'s `Debug`. No bound on `E`: the dispatcher
+// is `Debug` for any error type, as it is `Clone` for any.
 impl<E> fmt::Debug for Route<E> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -1802,9 +1802,9 @@ mod tests {
     #[tokio::test]
     async fn a_boxed_dyn_error_application_error_still_works() {
         // `DispatchError<Box<dyn Error + Send + Sync>>` is not itself an
-        // `Error`, as `HandleError` over that type is not, but the dispatcher
-        // builds, the error displays, and `into_source` returns the boxed
-        // error, which is one.
+        // `Error`, as `Box<dyn Error + Send + Sync>` is not, but the
+        // dispatcher builds, the error displays, and `into_source` returns
+        // the boxed error, which is one.
         type Boxed = Box<dyn std::error::Error + Send + Sync>;
 
         let dispatcher = Dispatcher::<Boxed>::builder()

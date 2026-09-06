@@ -41,6 +41,25 @@ impl MetaHandler for MetaCounter {
     }
 }
 
+/// The application error a dispatcher under test converts every handler's
+/// error into.
+#[cfg(any(feature = "http", feature = "octocrab"))]
+struct AppError;
+
+#[cfg(any(feature = "http", feature = "octocrab"))]
+impl From<octoevents::DecodeError> for AppError {
+    fn from(_: octoevents::DecodeError) -> Self {
+        Self
+    }
+}
+
+#[cfg(any(feature = "http", feature = "octocrab"))]
+impl From<std::convert::Infallible> for AppError {
+    fn from(never: std::convert::Infallible) -> Self {
+        match never {}
+    }
+}
+
 #[cfg(feature = "http")]
 #[test]
 fn the_receiver_accepts_single_threaded_handler_state() {
@@ -82,32 +101,30 @@ fn the_receiver_accepts_a_single_threaded_error_observer() {
         .build(|_: Envelope| async { Err::<(), _>(JsValue) });
 }
 
-/// The meta adapter returns the handler's future as is, so the relaxed bound
-/// must survive `into_webhook_handler()` into the receiver.
+/// A meta handler reaches the receiver through a dispatcher tier, and the
+/// erasure there must keep the relaxed bound for the receiver to accept the
+/// dispatcher.
 #[cfg(feature = "http")]
 #[test]
-fn the_receiver_accepts_a_single_threaded_meta_handler() {
-    use octoevents::{Secret, Verifier, WebhookReceiverBuilder};
+fn the_receiver_accepts_a_dispatcher_over_a_single_threaded_meta_handler() {
+    use octoevents::{Dispatcher, Secret, Verifier, WebhookReceiverBuilder};
 
     let calls = Rc::new(Cell::new(0));
-    let _receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
-        MetaCounter {
-            calls: Rc::clone(&calls),
-        }
-        .into_webhook_handler(),
-    );
-
     let closure_calls = Rc::clone(&calls);
-    let _receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
-        (move |_: EventMeta| {
+    let dispatcher = Dispatcher::<AppError>::builder()
+        .always(MetaCounter {
+            calls: Rc::clone(&calls),
+        })
+        .fallback(move |_: EventMeta| {
             let calls = Rc::clone(&closure_calls);
             async move {
                 calls.set(calls.get() + 1);
-                Ok::<_, ()>(())
+                Ok::<_, std::convert::Infallible>(())
             }
         })
-        .into_webhook_handler(),
-    );
+        .build();
+    let _receiver =
+        WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(dispatcher);
 }
 
 /// The `tower_service::Service` impl boxes the handler's future, and that box
@@ -134,21 +151,7 @@ fn the_tower_service_impl_accepts_single_threaded_handler_state() {
 #[test]
 fn the_dispatcher_accepts_single_threaded_handler_state_of_every_flavour() {
     use octocrab::models::webhook_events::{WebhookEvent, payload::PullRequestWebhookEventPayload};
-    use octoevents::{
-        Action, DecodeError, Dispatcher, EventHandler, EventKind, EventMeta, PayloadHandler,
-    };
-
-    struct AppError;
-    impl From<DecodeError> for AppError {
-        fn from(_: DecodeError) -> Self {
-            Self
-        }
-    }
-    impl From<std::convert::Infallible> for AppError {
-        fn from(never: std::convert::Infallible) -> Self {
-            match never {}
-        }
-    }
+    use octoevents::{Action, Dispatcher, EventHandler, EventKind, EventMeta, PayloadHandler};
 
     struct Auditor {
         calls: Rc<Cell<u32>>,
@@ -215,16 +218,6 @@ fn the_dispatcher_accepts_single_threaded_handler_state_of_every_flavour() {
             calls: Rc::clone(&calls),
         })
         .build();
-
-    // The typed flavours also reach the receiver directly.
-    let _event_handler = Auditor {
-        calls: Rc::clone(&calls),
-    }
-    .into_webhook_handler();
-    let _payload_handler = Labeler {
-        calls: Rc::clone(&calls),
-    }
-    .into_webhook_handler();
 
     #[cfg(feature = "http")]
     {

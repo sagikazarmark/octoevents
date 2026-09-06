@@ -561,12 +561,11 @@ impl Envelope {
     /// Decodes the payload as `P` after checking that the envelope is of
     /// `P`'s kind.
     ///
-    /// This is the decode behind
-    /// [`PayloadHandler::into_webhook_handler`](crate::PayloadHandler::into_webhook_handler),
-    /// for calling by hand from a [`WebhookHandler`](crate::WebhookHandler)
-    /// that matches on [`EventMeta::kind`] itself. The kind check reports a
-    /// wrong payload type at the kind, not as a missing field somewhere in
-    /// the JSON:
+    /// This is the decode of a single-purpose receiver: a
+    /// [`WebhookHandler`](crate::WebhookHandler) for one kind calls it
+    /// instead of matching on [`EventMeta::kind`] itself. The kind check
+    /// reports a wrong payload type at the kind, not as a missing field
+    /// somewhere in the JSON:
     ///
     /// ```
     /// use octoevents::{Bytes, DecodeError, Envelope, EventKind, EventMeta};
@@ -637,10 +636,10 @@ pub enum ReceiveError {
 ///
 /// The one error type of every decode path: [`Envelope::decode`],
 /// [`Envelope::decode_payload`], and `Envelope::decode_event` (`octocrab`
-/// feature) return it, and the typed handler adapters carry it as
-/// [`HandleError::Decode`](crate::HandleError::Decode). A single
-/// `From<DecodeError>` impl is therefore the only conversion of a decode
-/// failure an application error needs, whichever path decoded.
+/// feature) return it, and the dispatcher reports it for a typed handler
+/// whose decode failed. A single `From<DecodeError>` impl is therefore the
+/// only conversion of a decode failure an application error needs, whichever
+/// path decoded.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum DecodeError {

@@ -51,24 +51,12 @@
 //! - An `EventHandler` (`octocrab` feature) receives the `EventMeta` and
 //!   octocrab's decoded `WebhookEvent`, for logic that spans kinds.
 //!
-//! Every other flavour reaches the receiver through its
-//! `into_webhook_handler()`. A [`Dispatcher`] routes handlers by [`EventKind`]
-//! and [`Action`]: webhook handlers in its raw tier (`always_raw`), meta
-//! handlers in its `always` and `fallback` tiers, payload handlers by the kind
-//! their payload type declares (`on_payload`, or `on_payload_action` for some
-//! of its actions), and, with the `octocrab` feature, event handlers by
-//! matcher through `on`. It converts each handler's error into one
-//! application error via `From`, and reports a failure as a
-//! [`DispatchError`] wrapping that error with the [`Tier`] it came from, the
-//! delivery's ID, kind and action, and the source location that registered
-//! the failing handler. Its `dispatch` reports an [`Outcome`]: whether the
-//! delivery matched, and if not, whether its kind was known to the route
-//! table, beside the handlers' result. As a `WebhookHandler` it keeps only
-//! the result, so the receiver sees an unmatched delivery as a success unless
-//! a fallback failed it.
+//! For one kind and nothing else, no dispatcher is needed: a webhook handler
+//! decodes its own view with [`Envelope::decode_payload`], which refuses a
+//! delivery of any other kind at the kind:
 //!
 //! ```
-//! use octoevents::{EventKind, EventMeta, PayloadHandler};
+//! use octoevents::{DecodeError, Envelope, EventKind, WebhookHandler};
 //!
 //! #[derive(serde::Deserialize)]
 //! struct PullRequestNumber { number: u64 }
@@ -76,11 +64,12 @@
 //!
 //! struct Labeler { /* GitHub API client */ }
 //!
-//! impl PayloadHandler<PullRequestNumber> for Labeler {
-//!     type Error = std::io::Error;
+//! impl WebhookHandler for Labeler {
+//!     type Error = DecodeError;
 //!
-//!     async fn handle(&self, meta: EventMeta, pr: PullRequestNumber) -> Result<(), Self::Error> {
-//!         println!("{}: label PR #{} for installation {:?}", meta.delivery_id, pr.number, meta.installation_id);
+//!     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
+//!         let pr = envelope.decode_payload::<PullRequestNumber>()?;
+//!         println!("{}: label PR #{} for installation {:?}", envelope.meta.delivery_id, pr.number, envelope.meta.installation_id);
 //!         Ok(())
 //!     }
 //! }
@@ -89,10 +78,28 @@
 //! use octoevents::{Secret, Verifier, WebhookReceiverBuilder};
 //!
 //! let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("current secret")))
-//!     .build(Labeler {}.into_webhook_handler());
+//!     .build(Labeler {});
 //! # let _ = receiver;
 //! # }
 //! ```
+//!
+//! The other flavours reach the receiver through a [`Dispatcher`], which
+//! routes handlers by [`EventKind`] and [`Action`]: webhook handlers in its
+//! raw tier (`always_raw`), meta handlers in its `always` and `fallback`
+//! tiers, payload handlers by the kind their payload type declares
+//! (`on_payload`, or `on_payload_action` for some of its actions), and, with
+//! the `octocrab` feature, event handlers by matcher through `on`. A
+//! dispatcher with one `on_payload` route is the alternative to the handler
+//! above: it takes a [`PayloadHandler`] over the same view and answers a
+//! delivery of any other kind with success rather than failure. The
+//! dispatcher converts each handler's error into one application error via
+//! `From`, and reports a failure as a [`DispatchError`] wrapping that error
+//! with the [`Tier`] it came from, the delivery's ID, kind and action, and
+//! the source location that registered the failing handler. Its `dispatch`
+//! reports an [`Outcome`]: whether the delivery matched, and if not, whether
+//! its kind was known to the route table, beside the handlers' result. As a
+//! `WebhookHandler` it keeps only the result, so the receiver sees an
+//! unmatched delivery as a success unless a fallback failed it.
 //!
 //! Closures implement every flavour too. Annotate the parameters the body
 //! uses (`|envelope: Envelope|`, `|meta: EventMeta, pr: PullRequestNumber|`):
@@ -212,10 +219,8 @@ pub use envelope::{
 };
 pub use events::{Action, EventKind};
 #[cfg(feature = "octocrab")]
-pub use handler::{EventAdapter, EventHandler};
-pub use handler::{
-    HandleError, MetaAdapter, MetaHandler, PayloadAdapter, PayloadHandler, WebhookHandler,
-};
+pub use handler::EventHandler;
+pub use handler::{MetaHandler, PayloadHandler, WebhookHandler};
 pub use matcher::EventMatcher;
 pub use payload::Payload;
 pub use respond::ResponseStatus;

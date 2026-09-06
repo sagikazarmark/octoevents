@@ -190,9 +190,8 @@ mod tests {
         assert_eq!(envelope.raw, Bytes::from_static(b"not json"));
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    #[tokio::test]
-    async fn octocrab_payload_types_decode_the_fixture_corpus_for_their_kind() {
+    #[test]
+    fn octocrab_payload_types_decode_the_fixture_corpus_for_their_kind() {
         use std::str::FromStr as _;
 
         use octocrab::models::webhook_events::payload::{
@@ -201,49 +200,33 @@ mod tests {
             PullRequestWebhookEventPayload,
         };
 
-        use crate::{EventMeta, Payload, PayloadHandler as _, WebhookHandler as _};
+        use crate::Payload;
 
-        async fn decodes<P: Payload + 'static>(event_name: &str, raw: &'static [u8]) -> bool {
-            let handler = (|_: EventMeta, _: P| async { Ok::<_, ()>(()) }).into_webhook_handler();
+        fn decodes<P: Payload>(event_name: &str, raw: &'static [u8]) -> bool {
             let kind = EventKind::from_str(event_name).unwrap();
             assert_eq!(P::KIND, kind, "{event_name} maps to the wrong kind");
-            handler.handle(envelope(kind, raw)).await.is_ok()
+            envelope(kind, raw).decode_payload::<P>().is_ok()
         }
 
-        assert!(
-            decodes::<PullRequestWebhookEventPayload>(
-                "pull_request",
-                include_bytes!("../tests/fixtures/pull_request.opened.json"),
-            )
-            .await
-        );
-        assert!(
-            decodes::<CheckRunWebhookEventPayload>(
-                "check_run",
-                include_bytes!("../tests/fixtures/check_run.completed.json"),
-            )
-            .await
-        );
-        assert!(
-            decodes::<InstallationWebhookEventPayload>(
-                "installation",
-                include_bytes!("../tests/fixtures/installation.created.json"),
-            )
-            .await
-        );
-        assert!(
-            decodes::<InstallationRepositoriesWebhookEventPayload>(
-                "installation_repositories",
-                include_bytes!("../tests/fixtures/installation_repositories.removed.json"),
-            )
-            .await
-        );
-        assert!(
-            decodes::<PingWebhookEventPayload>(
-                "ping",
-                include_bytes!("../tests/fixtures/ping.json")
-            )
-            .await
-        );
+        assert!(decodes::<PullRequestWebhookEventPayload>(
+            "pull_request",
+            include_bytes!("../tests/fixtures/pull_request.opened.json"),
+        ));
+        assert!(decodes::<CheckRunWebhookEventPayload>(
+            "check_run",
+            include_bytes!("../tests/fixtures/check_run.completed.json"),
+        ));
+        assert!(decodes::<InstallationWebhookEventPayload>(
+            "installation",
+            include_bytes!("../tests/fixtures/installation.created.json"),
+        ));
+        assert!(decodes::<InstallationRepositoriesWebhookEventPayload>(
+            "installation_repositories",
+            include_bytes!("../tests/fixtures/installation_repositories.removed.json"),
+        ));
+        assert!(decodes::<PingWebhookEventPayload>(
+            "ping",
+            include_bytes!("../tests/fixtures/ping.json")
+        ));
     }
 }

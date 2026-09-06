@@ -183,8 +183,7 @@ impl<E> WebhookReceiverBuilder<E> {
     /// Builds a receiver around one caller-owned handler.
     ///
     /// The handler is any [`WebhookHandler`]: a struct with dependencies, a
-    /// closure, a `Dispatcher`, or a typed handler converted with its
-    /// `into_webhook_handler()`. It does not need to be `Clone`.
+    /// closure, or a `Dispatcher`. It does not need to be `Clone`.
     ///
     /// A handler error is answered with a bare 500: the response is GitHub's
     /// delivery record, not a log, so the receiver places no `Display` bound
@@ -467,8 +466,8 @@ mod tests {
 
     use super::{WebhookReceiverBuilder, empty_response};
     use crate::{
-        Action, Envelope, EventKind, EventMeta, MetaHandler, PayloadHandler, ResponseStatus,
-        Secret, Verifier, WebhookHandler,
+        Action, DecodeError, Dispatcher, Envelope, EventKind, EventMeta, MetaHandler,
+        ResponseStatus, Secret, Verifier, WebhookHandler, test_support::AppError,
     };
 
     /// A production-shaped handler: dependencies as fields, borrowed through
@@ -503,17 +502,21 @@ mod tests {
 
     crate::impl_payload!(IssueView => EventKind::Issues);
 
+    /// The single-handler path: a webhook handler that decodes one kind's
+    /// view itself with `decode_payload`, so a delivery of another kind or a
+    /// payload that does not fit the view fails the delivery.
     struct IssueRecorder {
         seen: Arc<std::sync::Mutex<Vec<(String, String, u64)>>>,
     }
 
-    impl PayloadHandler<IssueView> for IssueRecorder {
-        type Error = std::convert::Infallible;
+    impl WebhookHandler for IssueRecorder {
+        type Error = DecodeError;
 
         #[allow(clippy::unused_async_trait_impl)]
-        async fn handle(&self, meta: EventMeta, payload: IssueView) -> Result<(), Self::Error> {
+        async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
+            let payload = envelope.decode_payload::<IssueView>()?;
             self.seen.lock().unwrap().push((
-                meta.delivery_id,
+                envelope.meta.delivery_id,
                 payload.action,
                 payload.issue.number,
             ));
@@ -618,13 +621,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_payload_handler_receives_its_decoded_view_with_the_metadata() {
+    async fn a_single_kind_handler_receives_its_decoded_view_with_the_metadata() {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
             IssueRecorder {
                 seen: Arc::clone(&seen),
-            }
-            .into_webhook_handler(),
+            },
         );
 
         let response = receiver
@@ -642,13 +644,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_payload_handler_rejects_an_envelope_of_the_wrong_kind() {
+    async fn a_single_kind_handler_fails_a_delivery_of_another_kind() {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
             IssueRecorder {
                 seen: Arc::clone(&seen),
-            }
-            .into_webhook_handler(),
+            },
         );
 
         // The body would decode as an IssueView; only the kind is wrong.
@@ -664,13 +665,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_payload_handler_fails_the_delivery_when_the_payload_does_not_decode() {
+    async fn a_single_kind_handler_fails_a_delivery_whose_payload_does_not_decode() {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
             IssueRecorder {
                 seen: Arc::clone(&seen),
-            }
-            .into_webhook_handler(),
+            },
         );
 
         let response = receiver
@@ -703,12 +703,13 @@ mod tests {
         }
 
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
-            MetaRecorder {
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .always(MetaRecorder {
                 seen: Arc::clone(&seen),
-            }
-            .into_webhook_handler(),
-        );
+            })
+            .build();
+        let receiver =
+            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(dispatcher);
 
         // A pull request octocrab cannot represent: a meta handler has nothing
         // to decode, so the delivery still succeeds.
@@ -728,8 +729,6 @@ mod tests {
 
     #[tokio::test]
     async fn the_raw_tier_receives_the_exact_bytes_the_receiver_verified() {
-        use crate::{Dispatcher, test_support::AppError};
-
         // Irregular whitespace and a trailing newline: any re-encoding between
         // verification and the raw tier would normalize them away.
         const BODY: &[u8] = b"{ \"action\" :\t\"opened\",\n  \"number\": 7 }\n";
@@ -761,8 +760,6 @@ mod tests {
 
     #[tokio::test]
     async fn accepts_a_dispatcher_as_its_handler() {
-        use crate::{Dispatcher, test_support::AppError};
-
         // A consumer view over the ping payload: the dispatcher routes it by
         // the kind the view declares, with no octocrab in the picture.
         #[derive(serde::Deserialize)]
@@ -835,12 +832,16 @@ mod tests {
         }
 
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
-            EventRecorder {
-                seen: Arc::clone(&seen),
-            }
-            .into_webhook_handler(),
-        );
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .on(
+                EventKind::PullRequest,
+                EventRecorder {
+                    seen: Arc::clone(&seen),
+                },
+            )
+            .build();
+        let receiver =
+            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(dispatcher);
 
         let response = receiver
             .receive(request(
@@ -865,21 +866,24 @@ mod tests {
 
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let handler_seen = Arc::clone(&seen);
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
-            (move |meta: EventMeta, payload: PullRequestWebhookEventPayload| {
-                let seen = Arc::clone(&handler_seen);
-                async move {
-                    seen.lock().unwrap().push((
-                        meta.delivery_id,
-                        payload.number,
-                        payload.action,
-                        payload.pull_request.title,
-                    ));
-                    Ok::<_, std::convert::Infallible>(())
-                }
-            })
-            .into_webhook_handler(),
-        );
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .on_payload(
+                move |meta: EventMeta, payload: PullRequestWebhookEventPayload| {
+                    let seen = Arc::clone(&handler_seen);
+                    async move {
+                        seen.lock().unwrap().push((
+                            meta.delivery_id,
+                            payload.number,
+                            payload.action,
+                            payload.pull_request.title,
+                        ));
+                        Ok::<_, std::convert::Infallible>(())
+                    }
+                },
+            )
+            .build();
+        let receiver =
+            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(dispatcher);
 
         let response = receiver
             .receive(request(
@@ -1042,8 +1046,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_dispatch_error_is_still_a_bare_internal_server_error() {
-        use crate::{Dispatcher, test_support::AppError};
-
         // The dispatcher's error names the tier and the registration site;
         // none of it reaches the response, which stays GitHub's delivery
         // record. The `on_error` observer is where a consumer reads it.
@@ -1061,7 +1063,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_error_observer_sees_the_event_meta_and_the_dispatch_error_before_the_500() {
-        use crate::{DispatchError, Dispatcher, Tier, test_support::AppError};
+        use crate::{DispatchError, Tier};
 
         type Seen = Arc<std::sync::Mutex<Vec<(EventMeta, DispatchError<AppError>)>>>;
 
