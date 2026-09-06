@@ -1,9 +1,10 @@
 //! A Cloudflare Worker that forwards every verified envelope to a Restate
 //! virtual object from the dispatcher's raw tier, then routes it.
 //!
-//! Built with `default-features = false`: no octocrab, so the dispatcher
-//! routes raw, meta and payload handlers only, and the payload handler decodes
-//! a consumer-defined view of the `installation` payload.
+//! Built without the `octocrab` feature (which is never on by default), so
+//! the dispatcher routes webhook, meta and payload handlers only, and the
+//! payload handler decodes a consumer-defined view of the `installation`
+//! payload.
 
 // The handlers here log instead of awaiting a database or the GitHub API,
 // which is what a real `async fn handle` would do.

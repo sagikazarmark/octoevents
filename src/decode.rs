@@ -12,7 +12,32 @@ use crate::{DecodeError, Envelope, EventKind};
 // flattened JSON object, so decoding the whole payload into one works.
 // `ScheduleWebhookEventPayload` is deliberately absent: `schedule` is a
 // workflow trigger, not a webhook event GitHub delivers.
-crate::impl_payload! {
+//
+// A local macro rather than `impl_payload!` so every impl carries the same
+// rustdoc: the note below is what a consumer reaching for `payload.sender`
+// needs, and it renders on the `Payload` trait page beside each impl.
+macro_rules! octocrab_payloads {
+    ($($payload:ty => $kind:expr),+ $(,)?) => {
+        $(
+            /// octocrab's payload for this kind: the fields specific to the
+            /// kind. The top-level `installation`, `sender`, `repository`
+            /// and `organization` objects belong to octocrab's
+            /// [`WebhookEvent`], and its per-kind structs mostly do not
+            /// repeat them, so check this struct's fields before reading
+            /// `payload.sender`. [`EventMeta`](crate::EventMeta) carries the
+            /// installation ID, the sender and organization logins and a
+            /// repository reference beside every payload; for the full
+            /// objects, decode the event as [`WebhookEvent`]
+            /// ([`Envelope::decode_event`]), or define a view naming the
+            /// objects you need with [`impl_payload!`](crate::impl_payload).
+            impl crate::Payload for $payload {
+                const KIND: EventKind = $kind;
+            }
+        )+
+    };
+}
+
+octocrab_payloads! {
     payload::BranchProtectionRuleWebhookEventPayload => EventKind::BranchProtectionRule,
     payload::CheckRunWebhookEventPayload => EventKind::CheckRun,
     payload::CheckSuiteWebhookEventPayload => EventKind::CheckSuite,

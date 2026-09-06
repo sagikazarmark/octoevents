@@ -12,8 +12,7 @@
 //! the body before verification invalidates GitHub's signature.
 //!
 //! ```
-//! use bytes::Bytes;
-//! use octoevents::{Envelope, HeaderView, Secret, Verifier};
+//! use octoevents::{Bytes, Envelope, HeaderView, Secret, Verifier};
 //!
 //! let body = Bytes::from_static(br#"{"action":"opened"}"#);
 //! let headers = HeaderView::new()
@@ -163,7 +162,9 @@
 //!   its issue tracker is a record of fields those structs lack and per-action
 //!   variance they cannot follow. octocrab's per-kind structs are available
 //!   as payloads behind the `octocrab` feature for handlers that want the
-//!   whole document. See [`Payload`].
+//!   kind's full model; they mostly leave the top-level `installation`,
+//!   `sender`, `repository` and `organization` objects to octocrab's
+//!   `WebhookEvent`. See [`Payload`].
 //! - **No priorities or propagation control.** Handlers run in tier order,
 //!   then registration order, and each can only continue or fail: none can be
 //!   moved ahead of an earlier registration, stop the chain, or pass a
@@ -192,6 +193,7 @@ mod dispatch;
 mod envelope;
 mod events;
 mod handler;
+pub mod header;
 mod matcher;
 mod payload;
 mod respond;
@@ -222,6 +224,14 @@ pub use secret::Secret;
 #[cfg(feature = "http")]
 pub use service::{WebhookReceiver, WebhookReceiverBuilder};
 pub use verify::{Verifier, VerifyError};
+
+/// The byte buffer type of [`Envelope::raw`] and of the body
+/// [`Envelope::from_signed`] takes, re-exported from the `bytes` crate.
+///
+/// A transport that never touches `bytes` otherwise builds the body from
+/// here (`Bytes::from(String)`, `Bytes::from(Vec<u8>)`, or
+/// `Bytes::from_static`) without adding the dependency for one type.
+pub use bytes::Bytes;
 
 /// GitHub's maximum delivered payload size: 25 MiB.
 pub const DEFAULT_BODY_LIMIT: usize = 25 * 1024 * 1024;

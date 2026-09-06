@@ -6,18 +6,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_json::value::RawValue;
 use thiserror::Error;
 
-use crate::{Action, EventKind, Payload, Verifier, VerifyError};
-
-#[cfg(feature = "http")]
-const SIGNATURE_HEADER: &str = "x-hub-signature-256";
-const DELIVERY_HEADER: &str = "x-github-delivery";
-const EVENT_HEADER: &str = "x-github-event";
-#[cfg(feature = "http")]
-const CONTENT_TYPE_HEADER: &str = "content-type";
-#[cfg(feature = "http")]
-const TARGET_TYPE_HEADER: &str = "x-github-hook-installation-target-type";
-#[cfg(feature = "http")]
-const TARGET_ID_HEADER: &str = "x-github-hook-installation-target-id";
+use crate::{Action, EventKind, Payload, Verifier, VerifyError, header};
 
 /// The routing metadata of a webhook: everything in an [`Envelope`] except
 /// the payload bytes.
@@ -38,25 +27,25 @@ pub struct EventMeta {
     /// The event kind parsed from `X-GitHub-Event`.
     pub kind: EventKind,
     /// The payload's top-level action, when available.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<Action>,
     /// The GitHub App installation ID, when present.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installation_id: Option<u64>,
     /// A compact repository reference, when present.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repository: Option<RepositoryRef>,
     /// The organization login, when present.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub organization: Option<String>,
     /// The sender login, when present.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sender: Option<String>,
     /// The webhook installation target type.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_type: Option<TargetType>,
     /// The webhook installation target ID.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_id: Option<u64>,
 }
 
@@ -194,6 +183,19 @@ impl FromStr for TargetType {
 /// The headers needed to authenticate and route a GitHub webhook.
 ///
 /// Use [`From`] with an `http::HeaderMap` when the `http` feature is enabled.
+/// Otherwise look each header up in your transport's map by the names in
+/// [`header`](crate::header) and pass the value to the setter of the same
+/// name; the module docs show the shape.
+///
+/// Header-name case is the caller's concern. The view holds values, and
+/// which header a value came from is fixed by the setter that received it,
+/// so it never compares a name. `http::HeaderMap` matches names
+/// case-insensitively; a plain string map does not, and the casing its keys
+/// hold depends on the hop that filled it: HTTP/1.1 carries names as the
+/// sender wrote them (GitHub writes `X-GitHub-Delivery`), HTTP/2 and HTTP/3
+/// lowercase them, and a gateway in between may do either. A transport whose
+/// map keeps the sender's casing lowercases its keys, or compares
+/// case-insensitively, before looking up the lowercase constants.
 #[derive(Clone, Default)]
 pub struct HeaderView<'a> {
     signature: Option<Cow<'a, str>>,
@@ -316,14 +318,14 @@ impl<'a> From<&'a http::HeaderMap> for HeaderView<'a> {
         }
 
         Self {
-            signature: value(headers, SIGNATURE_HEADER),
-            delivery_id: value(headers, DELIVERY_HEADER),
-            event_name: value(headers, EVENT_HEADER),
-            content_type: value(headers, CONTENT_TYPE_HEADER),
-            target_type: value(headers, TARGET_TYPE_HEADER),
-            target_id: value(headers, TARGET_ID_HEADER),
+            signature: value(headers, header::SIGNATURE),
+            delivery_id: value(headers, header::DELIVERY_ID),
+            event_name: value(headers, header::EVENT_NAME),
+            content_type: value(headers, header::CONTENT_TYPE),
+            target_type: value(headers, header::TARGET_TYPE),
+            target_id: value(headers, header::TARGET_ID),
             malformed_signature: headers
-                .get(SIGNATURE_HEADER)
+                .get(header::SIGNATURE)
                 .is_some_and(|value| value.to_str().is_err()),
         }
     }
@@ -342,13 +344,66 @@ impl<'a> From<&'a http::HeaderMap> for HeaderView<'a> {
 /// The fields are nevertheless public and the struct is deliberately *not*
 /// `#[non_exhaustive]`: consumers must be able to build synthetic envelopes to
 /// unit-test handlers and dispatchers without HTTP, and to reconstruct one that
-/// a trusted internal transport forwarded (see the [`Deserialize`] impl). A
+/// a trusted internal transport forwarded (see the wire format below). A
 /// value obtained that way carries no authentication claim; only one returned
 /// by [`Envelope::from_signed`] does. Extensibility lives in [`EventMeta`],
 /// which is `#[non_exhaustive]` and built with [`EventMeta::new`].
 ///
-/// On the wire the metadata is flattened beside `raw`, so a serialized
-/// envelope is one flat JSON object with no `meta` nesting.
+/// # Wire format
+///
+/// A serialized envelope is one flat JSON object: the metadata sits at the
+/// top level beside `raw`, with no `meta` nesting, so a consumer in another
+/// language reads it without knowing the Rust-side split. This is the
+/// envelope of a `pull_request` delivery with every field present:
+///
+/// ```
+/// use octoevents::{Action, Bytes, Envelope, EventKind, TargetType};
+///
+/// let document = r#"{
+///   "delivery_id": "72d3162e-cc78-11e3-81ab-4c9367dc0958",
+///   "kind": "pull_request",
+///   "action": "opened",
+///   "installation_id": 42,
+///   "repository": {
+///     "id": 1296269,
+///     "name": "Hello-World",
+///     "full_name": "octocat/Hello-World",
+///     "owner": "octocat"
+///   },
+///   "organization": "octocat",
+///   "sender": "monalisa",
+///   "target_type": "integration",
+///   "target_id": 12345,
+///   "raw": "eyJhY3Rpb24iOiJvcGVuZWQifQ=="
+/// }"#;
+///
+/// let envelope: Envelope = serde_json::from_str(document).unwrap();
+/// assert_eq!(envelope.meta.kind, EventKind::PullRequest);
+/// assert_eq!(envelope.meta.action, Some(Action::Opened));
+/// assert_eq!(envelope.meta.target_type, Some(TargetType::Integration));
+/// assert_eq!(envelope.raw, Bytes::from_static(br#"{"action":"opened"}"#));
+///
+/// // Serializing produces the same document back.
+/// let expected: serde_json::Value = serde_json::from_str(document).unwrap();
+/// assert_eq!(serde_json::to_value(&envelope).unwrap(), expected);
+/// ```
+///
+/// - `raw` is the exact payload bytes in standard base64 with padding
+///   (RFC 4648 section 4), so the payload survives the hop without being
+///   re-encoded and still verifies against GitHub's signature.
+/// - `kind`, `action` and `target_type` are GitHub's wire strings
+///   (`"pull_request"`, `"opened"`, `"integration"`); a value this version
+///   of the crate does not know reads back as the `Unknown` variant carrying
+///   the string, never as an error.
+/// - `repository` is an object with `id`, `name`, `full_name` and `owner`,
+///   where `owner` is the login.
+///
+/// On deserialize, `delivery_id`, `kind` and `raw` are required; every other
+/// field is optional, and a field that is absent reads the same as one that
+/// is `null`. On serialize, an optional field with no value is omitted rather
+/// than written as `null`. Unknown fields are ignored, so a producer may
+/// annotate the document for its own transport, and a producer on a newer
+/// version of this crate does not break an older consumer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Envelope {
     /// The routing metadata extracted from the headers and the payload probe.
@@ -368,6 +423,15 @@ pub struct Envelope {
 impl Envelope {
     /// Authenticates the body before constructing an envelope and extracting fields.
     ///
+    /// This is the sans-I/O entry point: the `http`-feature receiver is built
+    /// on it, and a transport that has no `http::Request` (a serverless
+    /// runtime handing over a header map and a body string, say) calls it
+    /// directly with a [`HeaderView`] and the body as [`Bytes`]. Answer with
+    /// the receiver's contract, as [`ResponseStatus`](crate::ResponseStatus):
+    /// [`for_receive_error`](crate::ResponseStatus::for_receive_error) for a
+    /// failure here, `NoContent` once the handler has succeeded, and
+    /// `InternalServerError` when it has failed.
+    ///
     /// Probe parsing is best-effort. Malformed top-level JSON leaves all
     /// probe-derived fields empty; an invalid captured field clears only that
     /// field. In both cases, [`Envelope::raw`] is preserved.
@@ -379,6 +443,32 @@ impl Envelope {
     /// [`Envelope::raw`] the signed input but no longer the payload every
     /// decode reads. The crate docs record this under
     /// [Deliberately left out](crate#deliberately-left-out).
+    ///
+    /// # What the receiver adds
+    ///
+    /// `WebhookReceiver` (`http` feature) does three things around this call
+    /// that a transport built directly on it must do for itself, or decide
+    /// to go without:
+    ///
+    /// - **Header-only rejection before reading the body.** The receiver
+    ///   refuses a request with no `X-Hub-Signature-256` header before it
+    ///   reads a byte of the body, so unsigned traffic never occupies
+    ///   memory. This function takes the body already read; a transport
+    ///   that streams checks the header is present
+    ///   ([`header::SIGNATURE`](crate::header::SIGNATURE)) before buffering,
+    ///   and answers its absence as `for_receive_error` answers
+    ///   [`VerifyError::MissingSignature`], the error this function would
+    ///   have returned.
+    /// - **The body limit.** The receiver stops reading at its configured
+    ///   limit ([`DEFAULT_BODY_LIMIT`](crate::DEFAULT_BODY_LIMIT), GitHub's
+    ///   25 MiB cap) and answers as `for_receive_error` answers
+    ///   [`ReceiveError::BodyTooLarge`]. This function verifies whatever it
+    ///   is given; a transport bounds the body before calling.
+    /// - **The ping short-circuit.** The receiver answers a verified `ping`
+    ///   with `NoContent` and passes it to no handler unless configured to.
+    ///   This function returns a `ping` like any other envelope, so a
+    ///   transport that forwards every envelope forwards pings too unless it
+    ///   checks [`EventMeta::kind`] for [`EventKind::Ping`] first.
     ///
     /// # Errors
     ///
@@ -400,8 +490,8 @@ impl Envelope {
             return Err(ReceiveError::UnsupportedContentType);
         }
 
-        let delivery_id = required_header(headers.delivery_id.as_deref(), DELIVERY_HEADER)?;
-        let event_name = required_header(headers.event_name.as_deref(), EVENT_HEADER)?;
+        let delivery_id = required_header(headers.delivery_id.as_deref(), header::DELIVERY_ID)?;
+        let event_name = required_header(headers.event_name.as_deref(), header::EVENT_NAME)?;
         let probe = serde_json::from_slice::<Probe<'_>>(&body).unwrap_or_default();
 
         let kind = EventKind::from_str(event_name).unwrap_or_else(|never| match never {});
@@ -479,8 +569,7 @@ impl Envelope {
     /// the JSON:
     ///
     /// ```
-    /// use bytes::Bytes;
-    /// use octoevents::{DecodeError, Envelope, EventKind, EventMeta};
+    /// use octoevents::{Bytes, DecodeError, Envelope, EventKind, EventMeta};
     ///
     /// #[derive(serde::Deserialize)]
     /// struct IssueNumber { issue: Numbered }
@@ -660,7 +749,7 @@ mod tests {
     use super::{
         DecodeError, Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef, TargetType,
     };
-    use crate::{Action, EventKind, Secret, Verifier, VerifyError, test_support};
+    use crate::{Action, EventKind, Secret, Verifier, VerifyError, header, test_support};
 
     const BODY: &[u8] = br#"{
         "action":"opened",
@@ -695,6 +784,18 @@ mod tests {
             .content_type("application/json; charset=utf-8")
             .target_type("repository")
             .target_id("7")
+    }
+
+    /// The top-level keys of a serialized envelope, sorted for comparison.
+    fn sorted_keys(value: &serde_json::Value) -> Vec<&str> {
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        keys
     }
 
     #[test]
@@ -794,14 +895,11 @@ mod tests {
                 .unwrap();
 
         let value = serde_json::to_value(envelope).unwrap();
-        let object = value.as_object().unwrap();
 
         // The meta/raw split is a Rust-side composition only: on the wire the
         // metadata sits at the top level with no `meta` nesting.
-        let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
-        keys.sort_unstable();
         assert_eq!(
-            keys,
+            sorted_keys(&value),
             [
                 "action",
                 "delivery_id",
@@ -902,7 +1000,11 @@ mod tests {
             .content_type("application/json");
         assert_eq!(
             Envelope::from_signed(&verifier(), &no_delivery, Bytes::new()),
-            Err(ReceiveError::MissingHeader("x-github-delivery"))
+            Err(ReceiveError::MissingHeader(header::DELIVERY_ID))
+        );
+        assert_eq!(
+            ReceiveError::MissingHeader(header::DELIVERY_ID).to_string(),
+            "missing x-github-delivery header"
         );
     }
 
@@ -936,6 +1038,87 @@ mod tests {
         assert_eq!(received, envelope);
         assert_eq!(received.raw, Bytes::from_static(BODY));
         assert_eq!(received.meta.target_type, Some(TargetType::Repository));
+    }
+
+    #[test]
+    fn omits_absent_optional_fields_from_the_serialized_envelope() {
+        // A forwarded envelope says what it knows and nothing else, so a
+        // consumer in another language reads a missing key, not a null.
+        let envelope = Envelope {
+            meta: EventMeta::new("delivery", EventKind::Push),
+            raw: Bytes::from_static(b"{}"),
+        };
+
+        let value = serde_json::to_value(envelope).unwrap();
+
+        assert_eq!(sorted_keys(&value), ["delivery_id", "kind", "raw"]);
+    }
+
+    #[test]
+    fn deserializes_null_and_absent_optional_fields_alike() {
+        // Both spellings of "unknown" that a producer might use read back as
+        // the same envelope, so a hand-written forwarder need not pick one.
+        let with_nulls = r#"{
+            "delivery_id": "delivery",
+            "kind": "push",
+            "action": null,
+            "installation_id": null,
+            "repository": null,
+            "organization": null,
+            "sender": null,
+            "target_type": null,
+            "target_id": null,
+            "raw": "e30="
+        }"#;
+        let without = r#"{"delivery_id": "delivery", "kind": "push", "raw": "e30="}"#;
+
+        let from_nulls: Envelope = serde_json::from_str(with_nulls).unwrap();
+        let from_absent: Envelope = serde_json::from_str(without).unwrap();
+
+        assert_eq!(from_nulls, from_absent);
+        assert_eq!(
+            from_absent,
+            Envelope {
+                meta: EventMeta::new("delivery", EventKind::Push),
+                raw: Bytes::from_static(b"{}"),
+            }
+        );
+    }
+
+    #[test]
+    fn requires_delivery_id_kind_and_raw_on_deserialize() {
+        // The three fields the docs name as required are the three whose
+        // absence is an error; every other field defaults.
+        for missing in ["delivery_id", "kind", "raw"] {
+            let mut document =
+                serde_json::json!({"delivery_id": "delivery", "kind": "push", "raw": "e30="});
+            document.as_object_mut().unwrap().remove(missing);
+
+            let error = serde_json::from_value::<Envelope>(document).unwrap_err();
+
+            assert!(
+                error.to_string().contains(missing),
+                "removing {missing} should name it: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn ignores_unknown_fields_on_deserialize() {
+        // A producer on a newer version, or one that annotates the document
+        // for its own transport, does not break an older consumer.
+        let document = r#"{
+            "delivery_id": "delivery",
+            "kind": "push",
+            "raw": "e30=",
+            "enterprise": {"id": 1},
+            "received_at": "2026-09-06T00:00:00Z"
+        }"#;
+
+        let envelope: Envelope = serde_json::from_str(document).unwrap();
+
+        assert_eq!(envelope.meta, EventMeta::new("delivery", EventKind::Push));
+        assert_eq!(envelope.raw, Bytes::from_static(b"{}"));
     }
 
     #[test]
@@ -1035,18 +1218,12 @@ mod tests {
     fn constructs_from_an_http_header_map() {
         let signature = signature(b"secret", BODY);
         let mut map = http::HeaderMap::new();
-        map.insert("x-hub-signature-256", signature.parse().unwrap());
-        map.insert("x-github-delivery", "delivery".parse().unwrap());
-        map.insert("x-github-event", "pull_request".parse().unwrap());
-        map.insert("content-type", "application/json".parse().unwrap());
-        map.insert(
-            "x-github-hook-installation-target-type",
-            "integration".parse().unwrap(),
-        );
-        map.insert(
-            "x-github-hook-installation-target-id",
-            "12345".parse().unwrap(),
-        );
+        map.insert(header::SIGNATURE, signature.parse().unwrap());
+        map.insert(header::DELIVERY_ID, "delivery".parse().unwrap());
+        map.insert(header::EVENT_NAME, "pull_request".parse().unwrap());
+        map.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+        map.insert(header::TARGET_TYPE, "integration".parse().unwrap());
+        map.insert(header::TARGET_ID, "12345".parse().unwrap());
 
         let envelope =
             Envelope::from_signed_headers(&verifier(), &map, Bytes::from_static(BODY)).unwrap();

@@ -19,8 +19,11 @@ use crate::EventKind;
 /// library's hand-written struct per kind is perpetually behind; a view names
 /// the fields its handler reads and ignores the rest, so a field GitHub adds
 /// or drops elsewhere in the document changes nothing. A handler that wants
-/// the whole document uses octocrab's struct for the kind, which is a payload
-/// like any other. The crate docs record this under
+/// the kind's full model uses octocrab's struct for the kind, which is a
+/// payload like any other, though those structs mostly leave the top-level
+/// `installation`, `sender`, `repository` and `organization` objects to
+/// octocrab's `WebhookEvent`; each impl's docs say where to find them. The
+/// crate docs record this under
 /// [Deliberately left out](crate#deliberately-left-out).
 ///
 /// ```
