@@ -15,8 +15,8 @@ use tower_service::Service;
 #[cfg(feature = "tower")]
 use crate::runtime::BoxFuture;
 use crate::{
-    DEFAULT_BODY_LIMIT, Envelope, EventKind, EventMeta, HeaderView, MaybeSend, MaybeSync,
-    ReceiveError, ResponseStatus, Verifier, WebhookHandler, trace,
+    DEFAULT_BODY_LIMIT, Envelope, EventKind, EventMeta, Handler, HeaderView, MaybeSend, MaybeSync,
+    ReceiveError, ResponseStatus, Verifier, trace,
 };
 
 type ServiceResponse = Response<Empty<Bytes>>;
@@ -192,8 +192,9 @@ impl<E> WebhookReceiverBuilder<E> {
 
     /// Builds a receiver around one caller-owned handler.
     ///
-    /// The handler is any [`WebhookHandler`]: a struct with dependencies, a
-    /// closure, or a `Dispatcher`. It does not need to be `Clone`.
+    /// The handler is any [`Handler`] over the [`Envelope`]: an `async fn`
+    /// taking the envelope, a struct with dependencies, a closure, or a
+    /// `Dispatcher`. It does not need to be `Clone`.
     ///
     /// A handler error is answered with a bare 500: the response is GitHub's
     /// delivery record, not a log, so the receiver places no `Display` bound
@@ -202,7 +203,7 @@ impl<E> WebhookReceiverBuilder<E> {
     #[must_use]
     pub fn build<H>(self, handler: H) -> WebhookReceiver<H>
     where
-        H: WebhookHandler<Error = E> + MaybeSend + MaybeSync + 'static,
+        H: Handler<Envelope, Error = E> + MaybeSend + MaybeSync + 'static,
     {
         WebhookReceiver {
             inner: Arc::new(Inner {
@@ -241,19 +242,19 @@ impl<E> Clone for WebhookReceiverBuilder<E> {
 /// where they are handed over.
 // Bounded on the struct, as `Inner` is, because the observer's type names
 // `H::Error`. Nothing is lost: `build` already required a handler.
-pub struct WebhookReceiver<H: WebhookHandler> {
+pub struct WebhookReceiver<H: Handler<Envelope>> {
     // Shared rather than owned so the receiver is `Clone` for any handler:
     // Tower routers clone a service per connection and its future must own
     // its state, and a struct handler should not need `Clone` for that.
     inner: Arc<Inner<H>>,
 }
 
-struct Inner<H: WebhookHandler> {
+struct Inner<H: Handler<Envelope>> {
     config: Config<H::Error>,
     handler: H,
 }
 
-impl<H: WebhookHandler> fmt::Debug for WebhookReceiver<H> {
+impl<H: Handler<Envelope>> fmt::Debug for WebhookReceiver<H> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         // The handler is elided rather than bounded: closures are never
         // `Debug`, and the configuration is what is worth printing.
@@ -263,7 +264,7 @@ impl<H: WebhookHandler> fmt::Debug for WebhookReceiver<H> {
     }
 }
 
-impl<H: WebhookHandler> Clone for WebhookReceiver<H> {
+impl<H: Handler<Envelope>> Clone for WebhookReceiver<H> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -273,7 +274,7 @@ impl<H: WebhookHandler> Clone for WebhookReceiver<H> {
 
 impl<H> WebhookReceiver<H>
 where
-    H: WebhookHandler + MaybeSend + MaybeSync + 'static,
+    H: Handler<Envelope> + MaybeSend + MaybeSync + 'static,
 {
     /// Authenticates, bounds, and dispatches one request.
     ///
@@ -291,7 +292,7 @@ where
 
 impl<H> Inner<H>
 where
-    H: WebhookHandler,
+    H: Handler<Envelope>,
 {
     #[cfg_attr(
         feature = "tracing",
@@ -391,11 +392,11 @@ where
 ///
 /// ```
 /// use axum::{Router, routing::post_service};
-/// use octoevents::{Envelope, Secret, Verifier, WebhookHandler, WebhookReceiverBuilder};
+/// use octoevents::{Envelope, Handler, Secret, Verifier, WebhookReceiverBuilder};
 ///
 /// struct Persist { /* database pool */ }
 ///
-/// impl WebhookHandler for Persist {
+/// impl Handler<Envelope> for Persist {
 ///     type Error = std::io::Error;
 ///
 ///     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
@@ -418,7 +419,7 @@ where
 #[cfg(feature = "tower")]
 impl<H, B> Service<Request<B>> for WebhookReceiver<H>
 where
-    H: WebhookHandler + MaybeSend + MaybeSync + 'static,
+    H: Handler<Envelope> + MaybeSend + MaybeSync + 'static,
     B: Body<Data = Bytes> + MaybeSend + Unpin + 'static,
 {
     type Response = ServiceResponse;
@@ -482,8 +483,8 @@ mod tests {
 
     use super::{WebhookReceiverBuilder, empty_response};
     use crate::{
-        Action, DecodeError, Dispatcher, Envelope, EventKind, EventMeta, ResponseStatus, Secret,
-        Verifier, WebhookHandler, test_support::AppError,
+        Action, DecodeError, Dispatcher, Envelope, Event, EventKind, EventMeta, Handler,
+        ResponseStatus, Secret, Verifier, test_support::AppError,
     };
 
     /// A production-shaped handler: dependencies as fields, borrowed through
@@ -492,7 +493,7 @@ mod tests {
         calls: Arc<AtomicUsize>,
     }
 
-    impl WebhookHandler for Recorder {
+    impl Handler<Envelope> for Recorder {
         type Error = std::convert::Infallible;
 
         // A real handler awaits its dependencies; this one only counts.
@@ -518,14 +519,14 @@ mod tests {
 
     crate::impl_payload!(IssueView => EventKind::Issues);
 
-    /// The single-handler path: a webhook handler that decodes one kind's
-    /// view itself with `decode_payload`, so a delivery of another kind or a
-    /// payload that does not fit the view fails the delivery.
+    /// The single-handler path: a handler over the envelope that decodes one
+    /// kind's view itself with `decode_payload`, so a delivery of another
+    /// kind or a payload that does not fit the view fails the delivery.
     struct IssueRecorder {
         seen: Arc<std::sync::Mutex<Vec<(String, String, u64)>>>,
     }
 
-    impl WebhookHandler for IssueRecorder {
+    impl Handler<Envelope> for IssueRecorder {
         type Error = DecodeError;
 
         #[allow(clippy::unused_async_trait_impl)]
@@ -608,6 +609,37 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn accepts_an_async_fn_item_over_the_envelope() {
+        async fn count(envelope: Envelope) -> Result<(), std::convert::Infallible> {
+            COUNTED_BYTES.fetch_add(envelope.raw.len(), Ordering::Relaxed);
+            Ok(())
+        }
+        static COUNTED_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+        let receiver =
+            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(count);
+
+        let response = receiver.receive(request(b"{}", "push")).await;
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(COUNTED_BYTES.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn accepts_an_arc_shared_struct_handler_and_leaves_the_caller_its_handle() {
+        let recorder = Arc::new(Recorder {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+            .build(Arc::clone(&recorder));
+
+        let response = receiver.receive(request(b"{}", "push")).await;
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(recorder.calls.load(Ordering::Relaxed), 1);
     }
 
     #[cfg(feature = "tower")]
@@ -698,14 +730,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_always_handler_runs_for_a_payload_no_typed_handler_can_decode() {
+    async fn an_always_handler_runs_for_a_payload_no_routed_handler_can_decode() {
         type Seen = Arc<std::sync::Mutex<Vec<(String, EventKind, Option<Action>)>>>;
 
         struct Auditor {
             seen: Seen,
         }
 
-        impl WebhookHandler for Auditor {
+        impl Handler<Envelope> for Auditor {
             type Error = std::convert::Infallible;
 
             #[allow(clippy::unused_async_trait_impl)]
@@ -788,7 +820,7 @@ mod tests {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let handler_seen = Arc::clone(&seen);
         let dispatcher = Dispatcher::<AppError>::builder()
-            .on_payload(move |meta: EventMeta, payload: Zen| {
+            .on_payload(move |Event { meta, payload }: Event<Zen>| {
                 let seen = Arc::clone(&handler_seen);
                 async move {
                     seen.lock().unwrap().push((meta.kind, payload.zen));
@@ -816,11 +848,9 @@ mod tests {
 
     #[cfg(feature = "octocrab")]
     #[tokio::test]
-    async fn an_event_handler_over_webhook_event_receives_octocrabs_decoded_event_with_the_metadata()
+    async fn a_handler_over_event_of_webhook_event_receives_octocrabs_decoded_event_with_the_metadata()
      {
         use octocrab::models::webhook_events::{WebhookEvent, WebhookEventPayload};
-
-        use crate::EventHandler;
 
         type Seen = Arc<std::sync::Mutex<Vec<(String, Option<u64>, u64)>>>;
 
@@ -828,22 +858,21 @@ mod tests {
             seen: Seen,
         }
 
-        impl EventHandler<WebhookEvent> for EventRecorder {
+        impl Handler<Event<WebhookEvent>> for EventRecorder {
             type Error = std::convert::Infallible;
 
             #[allow(clippy::unused_async_trait_impl)]
             async fn handle(
                 &self,
-                meta: EventMeta,
-                event: WebhookEvent,
+                Event { meta, payload }: Event<WebhookEvent>,
             ) -> Result<(), Self::Error> {
-                let WebhookEventPayload::PullRequest(payload) = event.specific else {
+                let WebhookEventPayload::PullRequest(pull_request) = payload.specific else {
                     panic!("expected a pull request payload");
                 };
                 self.seen.lock().unwrap().push((
                     meta.delivery_id,
                     meta.installation_id,
-                    payload.number,
+                    pull_request.number,
                 ));
                 Ok(())
             }
@@ -877,7 +906,7 @@ mod tests {
 
     #[cfg(feature = "octocrab")]
     #[tokio::test]
-    async fn an_event_handler_over_octocrabs_payload_receives_it_for_its_kind() {
+    async fn a_handler_over_octocrabs_payload_receives_it_for_its_kind() {
         use octocrab::models::webhook_events::payload::{
             PullRequestWebhookEventAction, PullRequestWebhookEventPayload,
         };
@@ -886,7 +915,7 @@ mod tests {
         let handler_seen = Arc::clone(&seen);
         let dispatcher = Dispatcher::<AppError>::builder()
             .on_payload(
-                move |meta: EventMeta, payload: PullRequestWebhookEventPayload| {
+                move |Event { meta, payload }: Event<PullRequestWebhookEventPayload>| {
                     let seen = Arc::clone(&handler_seen);
                     async move {
                         seen.lock().unwrap().push((

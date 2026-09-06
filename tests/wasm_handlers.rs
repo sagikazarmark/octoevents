@@ -2,8 +2,8 @@
 //!
 //! Cloudflare Workers are single-threaded and hand handlers JavaScript values
 //! and `Rc` state. `MaybeSend`/`MaybeSync` relax the handler bounds there, and
-//! this file proves both handler flavours compile through the full erasure
-//! path with such state. Build it with
+//! this file proves handlers over every input compile through the full
+//! erasure path with such state. Build it with
 //! `cargo build --test wasm_handlers --target wasm32-unknown-unknown --features octocrab,tower`;
 //! it is never run, and it must not compile natively. Every test needs a
 //! receiver or the octocrab model, so the file is empty without `http` or
@@ -16,14 +16,14 @@
 
 use std::{cell::Cell, rc::Rc};
 
-use octoevents::{Envelope, WebhookHandler};
+use octoevents::{Envelope, Handler};
 
 /// A Worker-shaped handler: holds a non-`Send`, non-`Sync` value.
 struct Counter {
     calls: Rc<Cell<u32>>,
 }
 
-impl WebhookHandler for Counter {
+impl Handler<Envelope> for Counter {
     type Error = std::convert::Infallible;
 
     async fn handle(&self, _envelope: Envelope) -> Result<(), Self::Error> {
@@ -89,9 +89,9 @@ fn the_receiver_accepts_a_single_threaded_error_observer() {
         .build(|_: Envelope| async { Err::<(), _>(JsValue) });
 }
 
-/// A webhook handler reaches the receiver through the dispatcher's `always`
-/// and `fallback` tiers, and the erasure there must keep the relaxed bound
-/// for the receiver to accept the dispatcher.
+/// A handler over the envelope reaches the receiver through the dispatcher's
+/// `always` and `fallback` tiers, and the erasure there must keep the relaxed
+/// bound for the receiver to accept the dispatcher.
 #[cfg(feature = "http")]
 #[test]
 fn the_receiver_accepts_a_dispatcher_over_single_threaded_always_and_fallback_handlers() {
@@ -116,7 +116,7 @@ fn the_receiver_accepts_a_dispatcher_over_single_threaded_always_and_fallback_ha
 }
 
 /// The `tower_service::Service` impl boxes the handler's future, and that box
-/// must drop `Send` on `wasm32` exactly as the handler traits do.
+/// must drop `Send` on `wasm32` exactly as the handler trait does.
 #[cfg(feature = "tower")]
 #[test]
 fn the_tower_service_impl_accepts_single_threaded_handler_state() {
@@ -135,24 +135,40 @@ fn the_tower_service_impl_accepts_single_threaded_handler_state() {
     assert_service(&receiver);
 }
 
-/// An event handler over `()` reaches the dispatcher through `on` with no
-/// feature enabled, and the erasure keeps the relaxed bound.
+/// Handlers over the meta, the envelope and a consumer view reach the
+/// dispatcher through `on` with no feature enabled, and the erasure keeps the
+/// relaxed bound.
 #[cfg(feature = "http")]
 #[test]
-fn the_dispatcher_accepts_a_single_threaded_handler_over_unit() {
+fn the_dispatcher_accepts_single_threaded_handlers_over_the_meta_the_envelope_a_view_and_an_event()
+{
     use octoevents::{
-        Action, Dispatcher, EventHandler, EventKind, EventMeta, Secret, Verifier,
-        WebhookReceiverBuilder,
+        Action, DecodeError, Dispatcher, Envelope, Event, EventKind, EventMeta, FromEnvelope,
+        Secret, Verifier, WebhookReceiverBuilder,
     };
+
+    #[derive(serde::Deserialize)]
+    struct Sender {
+        sender: Login,
+    }
+    #[derive(serde::Deserialize)]
+    struct Login {
+        login: String,
+    }
+    impl FromEnvelope for Sender {
+        fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError> {
+            envelope.decode()
+        }
+    }
 
     struct Revoker {
         calls: Rc<Cell<u32>>,
     }
 
-    impl EventHandler<()> for Revoker {
+    impl Handler<EventMeta> for Revoker {
         type Error = std::convert::Infallible;
 
-        async fn handle(&self, _meta: EventMeta, (): ()) -> Result<(), Self::Error> {
+        async fn handle(&self, _meta: EventMeta) -> Result<(), Self::Error> {
             self.calls.set(self.calls.get() + 1);
             Ok(())
         }
@@ -160,6 +176,8 @@ fn the_dispatcher_accepts_a_single_threaded_handler_over_unit() {
 
     let calls = Rc::new(Cell::new(0));
     let closure_calls = Rc::clone(&calls);
+    let view_calls = Rc::clone(&calls);
+    let event_calls = Rc::clone(&calls);
     let dispatcher = Dispatcher::<AppError>::builder()
         .on(
             (EventKind::Installation, Action::Deleted),
@@ -167,13 +185,41 @@ fn the_dispatcher_accepts_a_single_threaded_handler_over_unit() {
                 calls: Rc::clone(&calls),
             },
         )
-        .on(EventKind::Installation, move |_: EventMeta, (): ()| {
+        .on(EventKind::Installation, move |_: EventMeta| {
             let calls = Rc::clone(&closure_calls);
             async move {
                 calls.set(calls.get() + 1);
                 Ok::<_, std::convert::Infallible>(())
             }
         })
+        .on(
+            EventKind::Push,
+            Counter {
+                calls: Rc::clone(&calls),
+            },
+        )
+        .on(
+            [EventKind::Issues, EventKind::IssueComment],
+            move |sender: Sender| {
+                let calls = Rc::clone(&view_calls);
+                async move {
+                    let _ = sender.sender.login;
+                    calls.set(calls.get() + 1);
+                    Ok::<_, std::convert::Infallible>(())
+                }
+            },
+        )
+        .on(
+            [EventKind::Issues, EventKind::IssueComment],
+            move |Event { meta, payload }: Event<Sender>| {
+                let calls = Rc::clone(&event_calls);
+                async move {
+                    let _ = (meta.delivery_id, payload.sender.login);
+                    calls.set(calls.get() + 1);
+                    Ok::<_, std::convert::Infallible>(())
+                }
+            },
+        )
         .build();
     let _receiver =
         WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(dispatcher);
@@ -181,18 +227,18 @@ fn the_dispatcher_accepts_a_single_threaded_handler_over_unit() {
 
 #[cfg(feature = "octocrab")]
 #[test]
-fn the_dispatcher_accepts_single_threaded_handler_state_of_both_flavours() {
+fn the_dispatcher_accepts_single_threaded_handler_state_over_every_input() {
     use octocrab::models::webhook_events::{WebhookEvent, payload::PullRequestWebhookEventPayload};
-    use octoevents::{Action, Dispatcher, EventHandler, EventKind, EventMeta};
+    use octoevents::{Action, Dispatcher, Event, EventKind};
 
     struct Auditor {
         calls: Rc<Cell<u32>>,
     }
 
-    impl EventHandler<WebhookEvent> for Auditor {
+    impl Handler<Event<WebhookEvent>> for Auditor {
         type Error = std::convert::Infallible;
 
-        async fn handle(&self, _meta: EventMeta, _event: WebhookEvent) -> Result<(), Self::Error> {
+        async fn handle(&self, _event: Event<WebhookEvent>) -> Result<(), Self::Error> {
             self.calls.set(self.calls.get() + 1);
             Ok(())
         }
@@ -202,12 +248,11 @@ fn the_dispatcher_accepts_single_threaded_handler_state_of_both_flavours() {
         calls: Rc<Cell<u32>>,
     }
 
-    impl EventHandler<PullRequestWebhookEventPayload> for Labeler {
+    impl Handler<PullRequestWebhookEventPayload> for Labeler {
         type Error = std::convert::Infallible;
 
         async fn handle(
             &self,
-            _meta: EventMeta,
             _payload: PullRequestWebhookEventPayload,
         ) -> Result<(), Self::Error> {
             self.calls.set(self.calls.get() + 1);
@@ -226,7 +271,7 @@ fn the_dispatcher_accepts_single_threaded_handler_state_of_both_flavours() {
                 EventKind::PullRequest,
                 [Action::Opened, Action::Synchronize],
             ),
-            move |_: EventMeta, _: WebhookEvent| {
+            move |_: WebhookEvent| {
                 let calls = Rc::clone(&closure_calls);
                 async move {
                     calls.set(calls.get() + 1);

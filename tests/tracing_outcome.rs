@@ -7,8 +7,8 @@
 //! The four labels are a contract dashboards filter on: `ok` and
 //! `handler_error` for a matched delivery, `unmatched_ok` and
 //! `unmatched_error` for an unmatched one, whichever tier failed it. The same
-//! span wraps `WebhookHandler::handle`, so the receiver's path records the
-//! value too, and the fields it shares with the `octoevents.receive` span are
+//! span wraps `Handler::handle`, so the receiver's path records the value
+//! too, and the fields it shares with the `octoevents.receive` span are
 //! recorded in the same form on both.
 
 #![cfg(all(feature = "tracing", not(target_arch = "wasm32")))]
@@ -17,8 +17,8 @@ mod common;
 
 use bytes::Bytes;
 use octoevents::{
-    Action, DecodeError, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, Match, Outcome,
-    WebhookHandler as _,
+    Action, DecodeError, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, Handler as _,
+    Match, Outcome,
 };
 
 #[derive(Debug, PartialEq)]
@@ -120,10 +120,10 @@ where
 
 fn dispatcher() -> Dispatcher<AppError> {
     Dispatcher::<AppError>::builder()
-        .on_payload_action([Action::Opened], |_: EventMeta, _: AnyPullRequest| async {
+        .on_payload_action([Action::Opened], |_: AnyPullRequest| async {
             Ok::<_, AppError>(())
         })
-        .on_payload_action([Action::Closed], |_: EventMeta, _: AnyPullRequest| async {
+        .on_payload_action([Action::Closed], |_: AnyPullRequest| async {
             Err::<(), _>("routed")
         })
         .fallback(|envelope: Envelope| async move {
@@ -191,7 +191,7 @@ fn a_failure_before_routing_is_labelled_by_the_match_the_route_table_decided() {
     // location is that of the registration method's name, so the failing
     // handler is registered on the line after `line!()`.
     let builder = Dispatcher::<AppError>::builder()
-        .on_payload(|_: EventMeta, _: AnyPullRequest| async { Ok::<_, AppError>(()) });
+        .on_payload(|_: AnyPullRequest| async { Ok::<_, AppError>(()) });
     let registration_line = line!() + 1;
     let dispatcher = builder.always(fail_audit).build();
 

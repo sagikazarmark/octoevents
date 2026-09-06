@@ -7,7 +7,7 @@ use octocrab::models::webhook_events::{WebhookEvent, payload};
 use crate::{DecodeError, Envelope, EventKind, FromEnvelope};
 
 // Every per-kind payload struct octocrab models, bound to its event kind so
-// each can drive an `EventHandler`. The structs carry no
+// each can be a handler's input. The structs carry no
 // `deny_unknown_fields`, and octocrab itself builds them from the same
 // flattened JSON object, so decoding the whole payload into one works.
 // `ScheduleWebhookEventPayload` is deliberately absent: `schedule` is a
@@ -120,9 +120,10 @@ impl Envelope {
     /// Decodes the payload as octocrab's [`WebhookEvent`] for the envelope's
     /// kind.
     ///
-    /// This is what an [`EventHandler`] over `WebhookEvent` receives, through
-    /// `WebhookEvent`'s [`FromEnvelope`] impl; call it directly from a
-    /// [`WebhookHandler`] that needs octocrab's models alongside the raw bytes.
+    /// This is what a [`Handler`] over `WebhookEvent` (or over
+    /// `Event<WebhookEvent>`) receives, through `WebhookEvent`'s
+    /// [`FromEnvelope`] impl; call it directly from a handler over the
+    /// [`Envelope`] that needs octocrab's models alongside the raw bytes.
     ///
     /// Best-effort: octocrab's webhook models are hand-maintained and
     /// self-described as beta. An event kind octocrab does not know still
@@ -136,8 +137,7 @@ impl Envelope {
     /// calling it repeatedly: a delivery can carry megabytes of JSON.
     ///
     /// [`WebhookEventPayload::Unknown`]: octocrab::models::webhook_events::WebhookEventPayload::Unknown
-    /// [`EventHandler`]: crate::EventHandler
-    /// [`WebhookHandler`]: crate::WebhookHandler
+    /// [`Handler`]: crate::Handler
     ///
     /// # Errors
     ///
@@ -209,7 +209,10 @@ mod tests {
 
         use crate::Payload;
 
-        fn decodes<P: Payload>(event_name: &str, raw: &'static [u8]) -> bool {
+        fn decodes<P: Payload + serde::de::DeserializeOwned>(
+            event_name: &str,
+            raw: &'static [u8],
+        ) -> bool {
             let kind = EventKind::from_str(event_name).unwrap();
             assert_eq!(P::KIND, kind, "{event_name} maps to the wrong kind");
             envelope(kind, raw).decode_payload::<P>().is_ok()

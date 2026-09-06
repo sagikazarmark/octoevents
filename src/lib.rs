@@ -39,8 +39,8 @@
 //! octoevents::impl_payload!(IssueOpened => EventKind::Issues);
 //!
 //! /// Runs for `issues.opened`, with the payload decoded as `IssueOpened`.
-//! async fn label(meta: EventMeta, payload: IssueOpened) -> Result<(), AppError> {
-//!     println!("{}: label #{} '{}'", meta.delivery_id, payload.issue.number, payload.issue.title);
+//! async fn label(issue: IssueOpened) -> Result<(), AppError> {
+//!     println!("label #{} '{}'", issue.issue.number, issue.issue.title);
 //!     Ok(())
 //! }
 //!
@@ -93,37 +93,69 @@
 //!
 //! # Handlers
 //!
-//! A handler is an `async fn` that takes what it handles and returns
+//! A handler is an `async fn` that takes one input and returns
 //! `Result<(), E>`; the receiver and the dispatcher accept the function
-//! itself, as the dispatcher above does with `audit` and `label`. Two
-//! flavours, named by what they receive:
+//! itself, as the dispatcher above does with `audit` and `label`. One trait,
+//! [`Handler<I>`](Handler), and the input type `I` says what the handler
+//! receives and what is decoded for it:
 //!
-//! - A [`WebhookHandler`] receives the verified [`Envelope`]: the
-//!   [`EventMeta`] and the exact payload bytes. The receiver accepts one,
-//!   and so do the dispatcher's `always` and `fallback` tiers. `audit` is
-//!   one.
-//! - An [`EventHandler`] receives the [`EventMeta`] and the envelope decoded
-//!   as some `P: `[`FromEnvelope`]. `label` is one, over the `IssueOpened`
-//!   view; [`impl_payload!`] declared which kind the view decodes, so
-//!   `on_payload_action` needed no kind and could not be given the wrong
-//!   one. `()` is an input too, for a handler routed by kind and action that
-//!   decodes nothing; octocrab's `WebhookEvent` is one with the `octocrab`
-//!   feature; and a view over fields several kinds share implements
-//!   `FromEnvelope` itself and is registered under those kinds with `on`.
+//! - [`Envelope`]: the [`EventMeta`] and the exact payload bytes, nothing
+//!   decoded. What the receiver and the `always` and `fallback` tiers take;
+//!   `audit` is one. `async fn audit(envelope: Envelope)`
+//! - [`EventMeta`]: the meta alone, for a handler routed by kind and action
+//!   that reads no payload. `async fn revoke(meta: EventMeta)`
+//! - A [`Payload`] view `P`: the payload decoded as `P`, kind checked; the
+//!   kind comes from the type, so `on_payload_action` above needed none and
+//!   could not be given the wrong one. `label` is one.
+//!   `async fn label(issue: IssueOpened)`
+//! - [`Event<P>`](Event): the meta beside the payload, in one parameter. Meta
+//!   and payload together is `Event<P>`, not two parameters; destructure it or
+//!   read `event.meta` and `event.payload`.
+//!   `async fn notify(Event { meta, payload }: Event<IssueOpened>)`
+//!
+//! A view over fields several kinds share (the sender, say) implements
+//! [`FromEnvelope`] itself with the kind-free [`Envelope::decode`] and is
+//! registered under those kinds with `on`. With the `octocrab` feature,
+//! octocrab's `WebhookEvent` is an input too, on its own or inside `Event`,
+//! and its per-kind payload structs are payloads.
 //!
 //! A handler with dependencies is a struct implementing the trait, the
-//! dependencies its fields borrowed through `&self`; each trait's docs show
-//! one, and `Arc<H>` is a handler when `H` is. Closures work too, with the
-//! annotations [`WebhookHandler`] describes. A struct keeps its own error
-//! type; the dispatcher converts it into the application error through
-//! `From`.
+//! dependencies its fields borrowed through `&self`:
+//!
+//! ```
+//! use octoevents::{Event, EventKind, Handler};
+//!
+//! #[derive(serde::Deserialize)]
+//! struct IssueOpened { issue: Issue }
+//! #[derive(serde::Deserialize)]
+//! struct Issue { number: u64 }
+//! octoevents::impl_payload!(IssueOpened => EventKind::Issues);
+//!
+//! struct Labeler {
+//!     label: String, // stands in for a GitHub API client
+//! }
+//!
+//! impl Handler<Event<IssueOpened>> for Labeler {
+//!     type Error = std::io::Error;
+//!
+//!     async fn handle(&self, Event { meta, payload }: Event<IssueOpened>) -> Result<(), Self::Error> {
+//!         println!("{}: label #{} {}", meta.delivery_id, payload.issue.number, self.label);
+//!         Ok(())
+//!     }
+//! }
+//! ```
+//!
+//! A struct keeps its own error type; the dispatcher converts it into the
+//! application error through `From`. `Arc<H>` is a handler when `H` is, for
+//! sharing one struct between a route and a test that reads its state.
+//! Closures work too, with the annotations [`Handler`] describes.
 //!
 //! # Routing
 //!
-//! A [`Dispatcher`] is itself a webhook handler that runs three tiers in
-//! order: `always`, for every delivery, receiving the envelope; the routed
-//! event handlers registered for the delivery's kind and action, then for the
-//! kind, by the payload type (`on_payload`, `on_payload_action`) or by an
+//! A [`Dispatcher`] is itself a handler over the envelope that runs three
+//! tiers in order: `always`, for every delivery, receiving the envelope; the
+//! routed handlers registered for the delivery's kind and action, then for
+//! the kind, by the payload type (`on_payload`, `on_payload_action`) or by an
 //! [`EventMatcher`] over any `FromEnvelope` input (`on`); and `fallback`,
 //! only when nothing routed matched, receiving the envelope. A routed handler
 //! decodes its input only when its route matched; `always` and `fallback`
@@ -133,8 +165,8 @@
 //! [`Tier`], the delivery's ID, kind and action, and the source location of
 //! the registration that put the failing handler there. `dispatch` also
 //! reports an [`Outcome`], matched or unmatched with the kind known or
-//! unknown to the route table, for a webhook handler wrapping the dispatcher
-//! to act on.
+//! unknown to the route table, for a handler wrapping the dispatcher to act
+//! on.
 //!
 //! # Testing without GitHub
 //!
@@ -146,12 +178,12 @@
 //! `sha256=` plus the lowercase hex HMAC-SHA256 of the body under the secret.
 //! The README shows both as `#[tokio::test]` functions.
 //!
-//! # One event, one webhook handler
+//! # One event, one handler
 //!
-//! A receiver for one kind and nothing else needs no dispatcher: a webhook
-//! handler decodes its own view with [`Envelope::decode_payload`], which
-//! refuses a delivery of any other kind at the kind. Without the `tower`
-//! feature, the receiver mounts on Axum as a plain handler calling
+//! A receiver for one kind and nothing else needs no dispatcher: a handler
+//! over the envelope decodes its own view with [`Envelope::decode_payload`],
+//! which refuses a delivery of any other kind at the kind. Without the
+//! `tower` feature, the receiver mounts on Axum as a plain handler calling
 //! [`WebhookReceiver::receive`]; the README shows the wiring.
 //!
 //! ```
@@ -209,7 +241,7 @@
 //! GitHub does not retry a failed delivery on its own, and it abandons a
 //! request after 10 seconds (30 on GitHub Enterprise Server). Persist or
 //! forward an envelope before returning and process it afterwards. With a
-//! dispatcher, that policy lives in a webhook handler wrapping `dispatch`: it
+//! dispatcher, that policy lives in a handler wrapping `dispatch`: it
 //! stores the envelope, bytes included, before anything is routed; answers a
 //! redelivery of a stored delivery ID with success without routing it; and
 //! reads the [`Outcome`] to dead-letter a kind the route table does not
@@ -285,8 +317,8 @@
 //! the `Payload` impls for its per-kind payload structs, and
 //! `Envelope::decode_event` expose octocrab's types, so an octocrab major
 //! bump is a breaking change for handlers over them. The core (envelope,
-//! verification, receiver, both handler flavours, and the whole dispatcher)
-//! does not depend on it.
+//! verification, receiver, the handler trait and its inputs, and the whole
+//! dispatcher) does not depend on it.
 // `doc_cfg` propagates each `#[cfg]` into the rendered docs on its own,
 // including from a gated module to the items inside it, so gated items carry
 // no separate `doc(cfg(...))`.
@@ -316,9 +348,9 @@ pub use envelope::{
     DecodeError, Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef, TargetType,
 };
 pub use events::{Action, EventKind};
-pub use handler::{EventHandler, WebhookHandler};
+pub use handler::Handler;
 pub use matcher::EventMatcher;
-pub use payload::{FromEnvelope, Payload};
+pub use payload::{Event, FromEnvelope, Payload};
 pub use respond::ResponseStatus;
 pub use runtime::{MaybeSend, MaybeSync};
 pub use secret::Secret;

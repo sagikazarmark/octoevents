@@ -73,7 +73,7 @@ with success without running the handlers again" fits in `always`. A
 skip makes "matched" a run-time decision of one handler rather than a
 property of the route table, so the `Outcome` could no longer be trusted and
 a strict `fallback` could no longer say what it rejects. The same policy is
-expressed, with the outcome in hand, by a webhook handler that wraps
+expressed, with the outcome in hand, by a handler over the envelope that wraps
 `dispatch`: it persists first, returns `Ok(())` for a duplicate without
 calling `dispatch`, and reads `Outcome::matched` to dead-letter or forward an
 unmatched delivery. That wrapper is the policy seam; the dispatcher only
@@ -96,13 +96,14 @@ a job. The meta handler hid bytes from a handler that would not read them
 anyway, at the cost of a trait, an adapter, an erased-handler variant and a
 paragraph in every doc; an `Envelope` clone is an `EventMeta` clone plus a
 refcount bump on the bytes, so nothing was saved. Letting `always` and
-`fallback` take webhook handlers covers both, and `()` as a `FromEnvelope`
-input covers the other thing the meta handler was for: a handler routed by
-kind and action that decodes nothing and receives only the meta.
+`fallback` take handlers over the envelope covers both, and `EventMeta` as a
+`FromEnvelope` input covers the other thing the meta handler was for: a
+handler routed by kind and action that decodes nothing and receives only the
+meta.
 
 ## No `TryFrom<Envelope>` as the decode bound
 
-The event handler's input is bounded by the crate's own `FromEnvelope` rather
+A routed handler's input is bounded by the crate's own `FromEnvelope` rather
 than by `TryFrom<Envelope>`, which would have read as std interop. Probed and
 rejected on three grounds.
 
@@ -134,11 +135,13 @@ the bound rather than as it, remains possible and is not planned.
 
 ## Not `Event` as the bound's name, nor `EventDecoder`
 
-`FromEnvelope` was nearly `Event`, so that `EventHandler<P: Event>` would
+`FromEnvelope` was nearly `Event`, so that a handler bound `P: Event` would
 read naturally. Rejected: the blanket `impl<T: Payload> Event for T` would
 read "every payload is an event", inverting GitHub's containment, in which
 an event *has* a kind, an action and a payload. The vocabulary elsewhere in
-the crate keeps that direction. `EventDecoder` was rejected because the
+the crate keeps that direction; the name went instead to the struct
+`Event<P>`, which is exactly that containment, the meta beside the payload.
+`EventDecoder` was rejected because the
 `-er` suffix names the agent that performs the decode, and the type
 parameter `P` is the subject: the thing decoded, not the thing decoding.
 `FromEnvelope` follows `FromStr` and `FromIterator`: it says where `P` comes
@@ -155,19 +158,94 @@ spans kinds implements it for a view over the fields those kinds share and
 registers the handler under several kinds with `on`, with no octocrab in the
 picture. Recorded on `FromEnvelope`.
 
-## No single generic handler trait
+## One generic handler trait, not two (reversed)
 
-One trait `Handler<I>` over the input, with `Handler<Envelope>` for webhook
-handlers and `Handler<(EventMeta, P)>` for event handlers, was probed and
-compiles: with the input as a trait parameter rather than an associated type,
-the closure blankets for the two shapes do not overlap. It was rejected on
-ergonomics. A struct implementing the typed shape degrades to a tuple
-argument, `async fn handle(&self, (meta, payload): (EventMeta, P))`, where
-the two-trait design writes `handle(&self, meta: EventMeta, payload: P)`;
-and a forwarding trait that restores the two-parameter signature over the
-single trait overlaps the closure blanket again. Two traits over a shared
-decode bound cost one extra trait and buy the signature every handler
-writes.
+One trait `Handler<I>` over the input, with `Handler<Envelope>` for the
+receiver and the always and fallback tiers and `Handler<(EventMeta, P)>` for
+routed handlers, was first probed and rejected on ergonomics: a struct
+implementing the typed shape degraded to a tuple argument,
+`async fn handle(&self, (meta, payload): (EventMeta, P))`, and a forwarding
+trait restoring two parameters overlapped the closure blanket.
+
+The single trait was then adopted with a named struct in place of the bare
+tuple. `Event<P> { meta: EventMeta, payload: P }`, destructured in the
+parameter as `Event { meta, payload }: Event<P>` or read as `event.meta` and
+`event.payload`, gives the two halves names without a second trait, and a
+handler that needs only the payload takes `P` alone with no dead meta
+parameter. `Payload: FromEnvelope` as a supertrait with
+`impl<P: Payload> Payload for Event<P>` lets `on_payload` accept a handler
+over `P` or `Event<P>` under one bound, with no helper trait to look through
+the wrapper. The four review personas compiled their programs against a
+prototype with no crate-caused failure at a registration. What was given up:
+a two-argument `async fn(meta, payload)` is no longer a handler, and rustc
+reports one passed to a registration method with its arity error (E0593)
+rather than the trait's `on_unimplemented` hint; the README says that meta
+and payload together is `Event<P>`. Recorded on `Handler` and `Event`.
+
+## No argument-shape marker on the handler trait
+
+`EventHandler<P, Args = (EventMeta, P)>`, a second type parameter naming the
+closure shape a blanket covers, was probed on the two-trait design and is
+coherent: it admits a payload-only `Fn(P)` blanket beside the two-argument
+one, keeps struct impls unchanged through the default, forwards through
+`Arc<H>`, and, because two impl candidates unify with the obligation, turns
+the E0593 arity error on a wrong-shape closure into the crate's own E0277
+message. It is also the only stable mechanism that does so: rustc emits E0593
+whenever it can commit to a single impl candidate whose `Fn` bound then fails
+on arity, and `#[diagnostic::do_not_recommend]`, sealed helper bounds and
+indirection through a helper trait all leave it in place (probed). Declined
+as a second type parameter on the headline trait, visible in rustdoc, in
+every registration signature and in rustc's `help` lines; the single trait
+over one input reaches the same shapes with one parameter. The arity error on
+a two-argument handler is the accepted cost. Recorded on `Handler`.
+
+## No `()` input, and no `EventMeta` under a two-argument handler
+
+`()` was a `FromEnvelope` that decoded nothing, so a meta-only route was
+spelled `async fn revoke(meta: EventMeta, (): ())`. Removed with the single
+trait: `EventMeta` is an input in its own right and the route is
+`async fn revoke(meta: EventMeta)`. The one property `()` had over a view,
+running for a body nothing can decode, cannot reach an action-routed slot
+through `Envelope::from_signed`: a non-object body probes no `action`, so the
+slot never matches, and the case existed only in a hand-built test.
+
+`impl FromEnvelope for EventMeta` on its own, under the two-argument
+`Fn(EventMeta, P)` blanket, was the first proposal for retiring `(): ()`. It
+is coherent but delivers the meta twice, `async fn revoke(meta: EventMeta,
+also_meta: EventMeta)`, and a one-argument blanket beside the two-argument
+one is E0119; the one-argument shape needs either the marker above or the
+single trait.
+
+## No handler attribute macro, no derives
+
+`#[octoevents::handler]` on an `async fn`, admitting any parameter list by
+generating the trait impl, was prototyped (about 200 lines of `syn`, no new
+third-party dependency, about half a second on a clean build). Declined on
+what it generates rather than what it costs: a fn item can only become a
+handler through an `Fn` blanket, so the macro turns the fn into a unit struct
+of the same name, which makes `label(pr).await` in a test an error and lists
+the fn as a struct in rustdoc; the tier a handler belongs to is decided by
+the spelling of a parameter type, so `use Envelope as Env` silently unfits
+it for `always`; and errors inside the generated impl are reported several
+times at the attribute, with the crate's own notes advising a struct impl
+the user never wrote. `#[derive(Payload)]` and `#[derive(FromEnvelope)]`
+expand to the same lines `impl_payload!` and a three-line impl write, and
+`impl_payload!` already reports a misspelled kind at the literal. Revisit the
+attribute only as a diagnostic aid in the `#[debug_handler]` sense, if arity
+errors keep appearing in reviews.
+
+## No generic no-kind-check input, no `Deref` on `Event`
+
+`View<T>`, a wrapper making any serde type a `FromEnvelope` through the
+kind-free `Envelope::decode`, was prototyped and is coherent. None of the
+four simulated users reached for it, three called it noise in the list of
+inputs, and a view over several kinds is a three-line `FromEnvelope` impl
+that keeps the crate's open seam in view. Deferred: it is additive, and can
+ship if demand appears.
+
+`Deref<Target = P>` on `Event<P>` was probed and dropped: the payload has a
+name, `payload`, and the deref would shadow a view field named `meta` or
+`payload` behind a type-safe but surprising resolution. Recorded on `Event`.
 
 ## Deferred, not declined
 

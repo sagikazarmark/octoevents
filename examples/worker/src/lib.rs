@@ -2,7 +2,7 @@
 //! virtual object from the dispatcher's `always` tier, then routes it.
 //!
 //! Built without the `octocrab` feature (which is never on by default), so
-//! the event handler decodes a consumer-defined view of the `installation`
+//! the routed handler decodes a consumer-defined view of the `installation`
 //! payload rather than octocrab's model.
 
 // The handlers here log instead of awaiting a database or the GitHub API,
@@ -10,8 +10,8 @@
 #![allow(clippy::unused_async_trait_impl)]
 
 use octoevents::{
-    DecodeError, Dispatcher, Envelope, EventHandler, EventKind, EventMeta, Secret, Verifier,
-    WebhookHandler, WebhookReceiverBuilder,
+    DecodeError, Dispatcher, Envelope, Event, EventKind, Handler, Secret, Verifier,
+    WebhookReceiverBuilder,
 };
 use worker::{Context, Env, Fetch, HttpRequest, Method, Request, RequestInit, console_log, event};
 
@@ -29,13 +29,13 @@ enum AppError {
 
 /// Forwards the raw envelope to the Restate ingress. Registered in the
 /// dispatcher's `always` tier, it receives the envelope, bytes included, and
-/// runs before any typed handler; a delivery the ingress refused is not
+/// runs before any routed handler; a delivery the ingress refused is not
 /// routed.
 struct Forward {
     object_url: String,
 }
 
-impl WebhookHandler for Forward {
+impl Handler<Envelope> for Forward {
     type Error = AppError;
 
     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
@@ -84,14 +84,17 @@ struct Account {
 
 octoevents::impl_payload!(InstallationView => EventKind::Installation);
 
-/// Logs installation lifecycle changes. Receives the decoded view and no raw
-/// bytes; other kinds never reach it.
+/// Logs installation lifecycle changes. Receives the meta and the decoded
+/// view and no raw bytes; other kinds never reach it.
 struct InstallationLog;
 
-impl EventHandler<InstallationView> for InstallationLog {
+impl Handler<Event<InstallationView>> for InstallationLog {
     type Error = AppError;
 
-    async fn handle(&self, meta: EventMeta, payload: InstallationView) -> Result<(), Self::Error> {
+    async fn handle(
+        &self,
+        Event { meta, payload }: Event<InstallationView>,
+    ) -> Result<(), Self::Error> {
         console_log!(
             "{}: installation {:?} {:?} for {}",
             meta.delivery_id,

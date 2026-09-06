@@ -1,7 +1,7 @@
 //! Minimal Tower service mounted on an Axum route.
 
 use axum::{Router, routing::post_service};
-use octoevents::{Envelope, Secret, Verifier, WebhookHandler, WebhookReceiverBuilder};
+use octoevents::{Envelope, Handler, Secret, Verifier, WebhookReceiverBuilder};
 
 /// The application error the handler returns; the receiver answers it with a
 /// 500. A real one wraps what the handler's dependencies fail with.
@@ -14,7 +14,7 @@ struct AppError;
 /// through `&self` on every delivery.
 struct Announce;
 
-impl WebhookHandler for Announce {
+impl Handler<Envelope> for Announce {
     type Error = AppError;
 
     // A real handler awaits its dependencies here.
