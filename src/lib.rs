@@ -83,9 +83,10 @@
 //! The dispatcher routes each verified envelope by kind and action:
 //! `audit` runs for every delivery, `label` for `issues.opened` only, with
 //! the payload decoded as the view it asked for. The `on_error` observer is
-//! where a failure becomes visible; without it a failed delivery is a silent
-//! 500. It prints where (the tier and the line that registered the failing
-//! handler) and why (the handler's own error).
+//! where a failure's cause becomes visible: it prints where (the tier and
+//! the line that registered the failing handler) and why (the handler's own
+//! error). Without it a failed delivery is a bare 500 and, with the `tracing`
+//! feature, one ERROR event naming the delivery; see [Tracing](#tracing).
 //!
 //! Always pass the exact request bytes. Parsing, re-encoding, or normalizing
 //! the body before verification invalidates GitHub's signature.
@@ -222,6 +223,54 @@
 //! [`EventMeta`] and the handler's error before the 500 is answered, with no
 //! bound on the error type. It runs only when a handler ran and failed.
 //!
+//! # Tracing
+//!
+//! With the `tracing` feature, a delivery runs in three spans:
+//!
+//! - `octoevents.receive`, at INFO, around [`WebhookReceiver::receive`]. It
+//!   records `delivery_id` and `event` from the headers as soon as they are
+//!   read, before verification, and on the way out `outcome` and `status`,
+//!   the HTTP code answered. `outcome` is one of `ok`, `bad_request`,
+//!   `unauthorized`, `payload_too_large` and `handler_error`.
+//! - `octoevents.verify`, at DEBUG, around [`Verifier::verify`], inside the
+//!   receive span. It records `secret_count` and `body_len` on open and
+//!   `outcome` on the way out: `verified`, `malformed` or `mismatch`. It is
+//!   the detail behind the receive span's `unauthorized` and `bad_request`
+//!   outcomes, which is why it opens a level below them.
+//! - `octoevents.dispatch`, at INFO, around [`Dispatcher::dispatch`], inside
+//!   the receive span when the dispatcher is the receiver's handler. It
+//!   records `delivery_id`, `event` and, when the delivery has them, `action`
+//!   and `installation_id` on open; on the way out `outcome`, one of `ok`,
+//!   `handler_error`, `unmatched_ok` and `unmatched_error`, and when a
+//!   handler failed the [`Tier`] it ran in as `tier` and its registration
+//!   site as `registration_site`.
+//!
+//! A field recorded in more than one place is recorded in one form
+//! everywhere: `delivery_id`, `event` and `action` as strings,
+//! `installation_id` and `status` as integers, and `outcome` as a string
+//! label with its own vocabulary per span. The one value two vocabularies
+//! share, `handler_error`, partitions differently: on the receive span it is
+//! every delivery a handler failed, since any handler error is a 500; on the
+//! dispatch span it is a matched delivery a handler failed, and an unmatched
+//! delivery failed by its `always` or `fallback` tier is `unmatched_error`.
+//! A receive `handler_error` is a dispatch `handler_error` or
+//! `unmatched_error`.
+//!
+//! A failed delivery also emits one event at ERROR, `handler failed`, with
+//! `delivery_id`, `event`, `status`, and `action` and `installation_id` when
+//! the delivery has them, so a subscriber filtering at ERROR sees every
+//! failed delivery without an observer. A successful delivery, a request
+//! refused before any handler ran and a short-circuited `ping` emit no event.
+//! The event carries no text of the error, since the receiver places no
+//! bound on the handler's error type; the text and its source chain appear
+//! only through the opt-in `trace_error` observer, which exists with the
+//! feature and is registered with `WebhookReceiverBuilder::on_error`. It
+//! emits a second ERROR event, `handler error`, with `delivery_id` and the
+//! error as an `error` field the subscriber renders with its sources.
+//!
+//! Nothing secret-derived is recorded anywhere: not the secret, the
+//! signature header, nor a computed MAC.
+//!
 //! # Design
 //!
 //! What this crate declines on purpose, and why, is recorded in the
@@ -275,6 +324,8 @@ pub use runtime::{MaybeSend, MaybeSync};
 pub use secret::Secret;
 #[cfg(feature = "http")]
 pub use service::{WebhookReceiver, WebhookReceiverBuilder};
+#[cfg(feature = "tracing")]
+pub use trace::trace_error;
 pub use verify::{Verifier, VerifyError};
 
 /// The byte buffer type of [`Envelope::raw`] and of the body

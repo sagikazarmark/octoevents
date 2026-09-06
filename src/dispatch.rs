@@ -231,7 +231,8 @@ where
     /// `unmatched_error` (nothing routed matched, a handler failed, in
     /// whichever tier). On failure it also records `tier` and
     /// `registration_site`, the [`DispatchError`]'s, so the span alone says
-    /// which handler failed the delivery.
+    /// which handler failed the delivery. The crate's tracing contract as a
+    /// whole is under [Tracing](crate#tracing).
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(

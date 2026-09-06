@@ -4,7 +4,8 @@
 //! name, outcome and status are recordable; signature header values, computed
 //! MACs and secrets are not. The `on_error` observer is under the same rule: it
 //! sees the event meta and the handler's error, nothing the receiver derived
-//! from the secret.
+//! from the secret; so are the ERROR event a failed delivery emits and the
+//! one the `trace_error` observer adds.
 
 #![cfg(all(feature = "tracing", feature = "tower", not(target_arch = "wasm32")))]
 
@@ -15,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use bytes::Bytes;
 use http::Request;
 use http_body_util::Full;
-use octoevents::{EventMeta, Secret, Verifier, WebhookReceiverBuilder};
+use octoevents::{EventMeta, Secret, Verifier, WebhookReceiverBuilder, trace_error};
 use tower::ServiceExt as _;
 
 const SECRET: &str = "It's a Secret to Everybody";
@@ -66,6 +67,26 @@ fn the_error_observer_and_the_spans_see_nothing_secret_derived_on_a_failed_deliv
     );
     assert!(observed.contains("handler failed"), "observed: {observed}");
     assert_nothing_secret_derived(&observed, &signature);
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("database is down")]
+struct Database;
+
+#[test]
+fn the_trace_error_observer_emits_the_error_and_nothing_secret_derived() {
+    let (signature, request) = signed_request();
+
+    let service = WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
+        .on_error(trace_error)
+        .build(|_| async { Err::<(), _>(Database) });
+
+    let (logged, response) = common::traced(service.oneshot(request));
+    assert_eq!(response.unwrap().status(), 500);
+
+    assert!(logged.contains("d34db33f-delivery"), "logged: {logged}");
+    assert!(logged.contains("database is down"), "logged: {logged}");
+    assert_nothing_secret_derived(&logged, &signature);
 }
 
 fn signed_request() -> (String, Request<Full<Bytes>>) {

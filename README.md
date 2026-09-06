@@ -87,8 +87,9 @@ answers GitHub with a bare status: 204 when the handler succeeded, 500 when
 it failed, 401, 400 or 413 for a request that never reached one. The
 dispatcher routes each verified envelope by kind and action: `audit` runs for
 every delivery, `label` for `issues.opened` only, with the payload decoded
-as the view it asked for. The `on_error` observer is where a failure becomes
-visible; without it a failed delivery is a silent 500. The observer prints
+as the view it asked for. The `on_error` observer is where a failure's cause
+becomes visible; without it a failed delivery is a bare 500 (and, with the
+`tracing` feature, one ERROR event naming the delivery). The observer prints
 where (the tier and the line that registered the failing handler) and why
 (the handler's own error); for a payload that does not fit the view, that is:
 
@@ -106,7 +107,7 @@ The serde error naming the field is one step further down the error's
 | `http` | yes | `WebhookReceiver` and its builder over `http::Request`, `HeaderView` from an `http::HeaderMap`, `ResponseStatus` into `http::StatusCode` |
 | `tower` | no | `tower_service::Service` for `WebhookReceiver`, so it mounts with `post_service` |
 | `octocrab` | no | `FromEnvelope` for octocrab's decoded `WebhookEvent`, `Payload` for its per-kind payload structs, `Envelope::decode_event`. Makes octocrab's pre-1.0 types part of this crate's public API |
-| `tracing` | no | verify, receive and dispatch spans, with nothing secret-derived in them |
+| `tracing` | no | receive and dispatch spans at INFO and a verify span at DEBUG, one ERROR event per failed delivery, and the `trace_error` observer that adds the error's text; nothing secret-derived in any of them. The contract is on the crate's front page |
 
 The core (envelope, verification, both handler flavours, the dispatcher)
 depends on none of them and builds for `wasm32-unknown-unknown`.
