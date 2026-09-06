@@ -103,7 +103,7 @@ The serde error naming the field is one step further down the error's
 
 | Feature | Default | Provides |
 | --- | --- | --- |
-| `http` | yes | `WebhookReceiver` and its builder over `http::Request`, `Envelope::from_signed_headers` and `HeaderView` from an `http::HeaderMap`, `ResponseStatus` into `http::StatusCode` |
+| `http` | yes | `WebhookReceiver` and its builder over `http::Request`, `HeaderView` from an `http::HeaderMap`, `ResponseStatus` into `http::StatusCode` |
 | `tower` | no | `tower_service::Service` for `WebhookReceiver`, so it mounts with `post_service` |
 | `octocrab` | no | `FromEnvelope` for octocrab's decoded `WebhookEvent`, `Payload` for its per-kind payload structs, `Envelope::decode_event`. Makes octocrab's pre-1.0 types part of this crate's public API |
 | `tracing` | no | verify, receive and dispatch spans, with nothing secret-derived in them |
@@ -335,16 +335,21 @@ delivery of any other kind with success rather than failure.
 
 The core is sans-I/O. A transport that has no `http::Request` (a serverless
 runtime handing over a header map and a body string, say) builds a
-`HeaderView` from the values under the names in `octoevents::header`, calls
-`Envelope::from_signed` with the verifier and the body as `Bytes`, and
-answers with `ResponseStatus`: `for_receive_error` for a failure there,
-`NoContent` once the handler succeeded, `InternalServerError` when it failed.
-The docs of `Envelope::from_signed` list the three things the receiver does
-that this path does not: refusing an unsigned request before reading the
-body, bounding the body, and short-circuiting `ping`. `Envelope` serializes
-with serde for forwarding, bytes in base64; its docs show the document. The
-`worker` example runs the receiver itself, through `receive`, on Cloudflare
-Workers.
+`HeaderView` with `HeaderView::from_lookup`, which asks the map for each
+header by the names in `octoevents::header`, calls `Envelope::from_signed`
+with the verifier and the body as `Bytes`, and answers with `ResponseStatus`:
+`for_receive_error` for a failure there, `NoContent` once the handler
+succeeded, `InternalServerError` when it failed. The header names are
+lowercase and the lookup compares nothing itself, so matching the case of the
+map's keys is the transport's concern: a map that kept GitHub's
+`X-GitHub-Delivery` casing is lowercased first. `Dispatcher::dispatch` is a
+plain `async fn` with no runtime of its own, so a transport awaits it on
+whatever executor it has. The docs of `Envelope::from_signed` show, as code
+to copy, the three things the receiver does that this path does not: refusing
+an unsigned request before reading the body, bounding the body, and
+short-circuiting `ping`. `Envelope` serializes with serde for forwarding,
+bytes in base64; its docs show the document. The `worker` example runs the
+receiver itself, through `receive`, on Cloudflare Workers.
 
 ## Delivery semantics
 
