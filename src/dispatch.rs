@@ -39,8 +39,9 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// decided by handlers at run time would leave the route table unable to say
 /// what it routes; the designs this was weighed against are recorded in the
 /// repository's design notes, linked from the crate docs under
-/// [Design](crate#design). A handler that decides whether routing happens at
-/// all wraps the dispatcher instead.
+/// [Design](crate#design). Whether a delivery is routed at all is not a
+/// tier's decision either; it is made outside the dispatcher, at
+/// [the policy seam](#the-policy-seam).
 ///
 /// [`dispatch`](Self::dispatch) reports an [`Outcome`]: whether the delivery
 /// was matched, and if not, whether its kind was known to the route table,
@@ -50,11 +51,8 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// kind, or its kind and action; matching is decided by the route table,
 /// never by a handler, and the `always` tier does not match. As a
 /// [`Handler<Envelope>`] the dispatcher keeps only the result, so the receiver
-/// sees an unmatched delivery as a success unless a fallback failed it. A
-/// handler that wraps the dispatcher reads the outcome instead: to forward or
-/// dead-letter an unmatched delivery, bytes included, without turning
-/// "unhandled" into an error, or to reject a kind the route table does not
-/// know while tolerating an action GitHub added to one it does.
+/// sees an unmatched delivery as a success unless a fallback failed it; the
+/// outcome is for the policy seam to read.
 ///
 /// A failure is reported as a [`DispatchError`]: the application error `E`
 /// wrapped with the [`Tier`] the failing handler ran in, the delivery's ID,
@@ -196,16 +194,30 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// # }
 /// ```
 ///
+/// # The policy seam
+///
 /// A tier can continue or fail, never skip. An `always` handler that cannot
 /// store an envelope fails the delivery, as it should; one that finds the
 /// delivery ID already stored cannot answer the redelivery with success and
-/// keep it from being routed. That policy, and what an unmatched delivery
-/// means, belong in a [`Handler<Envelope>`] that wraps the dispatcher: it
-/// persists the envelope first, answers a redelivery of a stored delivery ID
-/// with success without calling `dispatch`, and reads the [`Outcome`] to
-/// dead-letter or forward an unmatched delivery, bytes still in hand,
-/// without a strict `fallback` turning it into an error. The dispatcher only
-/// routes. The `dispatcher` example shows the wrapper.
+/// keep it from being routed. A `fallback` handler receives the envelope and
+/// not the match, so it cannot tell a kind the route table never registered
+/// from an action GitHub added to a kind it did, and it can only fail the
+/// delivery or let it pass. A tier that could skip would make "matched" the
+/// run-time decision of one handler rather than a property of the route
+/// table, and neither the [`Outcome`] nor a strict fallback could then say
+/// what it reports or rejects.
+///
+/// The policy the tiers cannot express belongs in a [`Handler<Envelope>`]
+/// that wraps the dispatcher and calls [`dispatch`](Self::dispatch) itself.
+/// It persists the envelope first; answers a redelivery of a stored delivery
+/// ID with success without calling `dispatch`; and reads the [`Outcome`] to
+/// dead-letter or forward an unmatched delivery, bytes still in hand, without
+/// failing it, or to reject a kind the route table does not know while
+/// tolerating an added action. What the wrapper answers before `dispatch`
+/// reaches no tier, `always` included. The dispatcher only routes.
+/// [`Outcome`]'s docs show a wrapper that dead-letters an unknown kind; the
+/// `dispatcher` example shows one that also persists and deduplicates. The
+/// [design notes](crate#design) record the short-circuit tier this replaces.
 pub struct Dispatcher<E> {
     routes: Arc<Routes<E>>,
 }
@@ -362,11 +374,9 @@ where
 /// failing handler and where it was registered. A matched delivery can fail;
 /// an unmatched one succeeds unless a fallback fails it.
 ///
-/// A handler wrapping a [`Dispatcher`] reads both to set policy the tiers
-/// cannot: forward or dead-letter an unmatched delivery, bytes included,
-/// without turning "unhandled" into an error, or reject a kind the route
-/// table does not know while tolerating an action GitHub added to a kind it
-/// does. The receiver never sees this type: [`Handler::handle`] on the
+/// A handler wrapping a [`Dispatcher`] reads both to set the policy the
+/// tiers cannot, as [The policy seam](Dispatcher#the-policy-seam) describes;
+/// the receiver never sees this type, since [`Handler::handle`] on the
 /// dispatcher returns `result` alone.
 ///
 /// With the `tracing` feature, the `octoevents.dispatch` span records the
@@ -638,17 +648,26 @@ impl<E> DispatcherBuilder<E>
 where
     E: From<DecodeError> + 'static,
 {
-    /// Registers a handler over the [`Envelope`] that runs for every delivery,
-    /// before routing.
+    /// Registers a handler over the [`Envelope`] that runs for every delivery
+    /// the dispatcher receives, before routing.
     ///
     /// It receives the verified envelope, bytes included, and nothing is
     /// decoded on its behalf, so it runs even for a payload no routed handler
     /// can decode: the tier for audit, metrics, and forwarding. Its failure
     /// fails the delivery, and it never counts as a match, so a strict
-    /// fallback still rejects kinds nothing else handles. It cannot skip: a
-    /// handler that decides whether a delivery is routed at all (to answer a
-    /// redelivery of a stored delivery ID with success, say) wraps the
-    /// dispatcher instead.
+    /// fallback still rejects kinds nothing else handles. It can continue or
+    /// fail but never skip; a handler that decides whether a delivery is
+    /// routed at all wraps the dispatcher instead, as
+    /// [The policy seam](Dispatcher#the-policy-seam) describes.
+    ///
+    /// Every delivery means every one the dispatcher is handed; two things
+    /// upstream of it keep some from arriving. The receiver answers a `ping`
+    /// itself, before the dispatcher, unless built with
+    /// `WebhookReceiverBuilder::handle_ping(true)`. A wrapper that answers a
+    /// redelivery of a stored delivery ID with success before calling
+    /// `dispatch` keeps that redelivery from this tier too, so a metric that
+    /// must count every verified delivery belongs at the top of the wrapper,
+    /// not here.
     ///
     /// Like every registration method, this records the handler's name and
     /// where it was called so a [`DispatchError`] can point back at the
@@ -934,13 +953,43 @@ where
     /// routed chain matched.
     ///
     /// Several may be registered; they run in order and stop at the first
-    /// error. "Log it, then reject it" is two small handlers. Like `always`,
-    /// the chain receives the envelope and nothing is decoded on its behalf,
-    /// so a strict fallback reports its own error for an unmatched payload
-    /// nothing can decode, not a decode error. A fallback can only continue
-    /// or fail: to forward or dead-letter an unmatched delivery without
-    /// failing it, a handler wrapping the dispatcher reads the [`Outcome`]
-    /// instead.
+    /// error. Like `always`, the chain receives the envelope and nothing is
+    /// decoded on its behalf, so a strict fallback reports its own error for
+    /// an unmatched payload nothing can decode, not a decode error. The chain
+    /// cannot see the match: it runs alike for a kind the route table never
+    /// registered and for an action GitHub added to a kind it did
+    /// ([`Match::UnmatchedKind`] and [`Match::UnmatchedAction`]), and the
+    /// envelope does not say which. A policy that tells the two apart, or
+    /// that dead-letters an unmatched delivery without failing it, reads the
+    /// [`Outcome`] from a handler wrapping the dispatcher, as
+    /// [The policy seam](Dispatcher#the-policy-seam) describes.
+    ///
+    /// The usual fallback logs what nothing routed and leaves the delivery
+    /// green in GitHub:
+    ///
+    /// ```
+    /// use octoevents::{Dispatcher, Envelope};
+    /// # use octoevents::DecodeError;
+    /// # struct AppError;
+    /// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
+    ///
+    /// async fn log_unrouted(envelope: Envelope) -> Result<(), AppError> {
+    ///     let meta = &envelope.meta;
+    ///     println!("unrouted {} {} {:?}", meta.delivery_id, meta.kind, meta.action);
+    ///     Ok(())
+    /// }
+    ///
+    /// let dispatcher = Dispatcher::<AppError>::builder().fallback(log_unrouted).build();
+    /// # let _ = dispatcher;
+    /// ```
+    ///
+    /// A strict fallback fails the delivery instead, so an unmatched delivery
+    /// shows as a failure in GitHub's delivery log rather than passing
+    /// silently. Not seeing the match, it rejects an action GitHub added to a
+    /// handled kind as readily as an unknown kind; and with the receiver built
+    /// with `handle_ping(true)`, it rejects the `ping` GitHub sends on creating
+    /// the webhook unless a route registers that kind. "Log it, then reject
+    /// it" is the two handlers in that order:
     ///
     /// ```
     /// use octoevents::{Dispatcher, Envelope, EventKind};
@@ -948,12 +997,16 @@ where
     /// # #[derive(Debug)]
     /// # enum AppError { Decode(DecodeError), Unhandled(EventKind) }
     /// # impl From<DecodeError> for AppError { fn from(error: DecodeError) -> Self { Self::Decode(error) } }
+    /// # async fn log_unrouted(_: Envelope) -> Result<(), AppError> { Ok(()) }
     ///
     /// async fn reject(envelope: Envelope) -> Result<(), AppError> {
     ///     Err(AppError::Unhandled(envelope.meta.kind))
     /// }
     ///
-    /// let dispatcher = Dispatcher::<AppError>::builder().fallback(reject).build();
+    /// let dispatcher = Dispatcher::<AppError>::builder()
+    ///     .fallback(log_unrouted)
+    ///     .fallback(reject)
+    ///     .build();
     /// # let _ = dispatcher;
     /// ```
     #[must_use]
