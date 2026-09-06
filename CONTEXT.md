@@ -11,13 +11,14 @@ vocabulary is deliberately kept out of this one.
 The verified unit of receipt: exact payload bytes plus the routing metadata
 extracted from headers and a best-effort payload probe. Composed of an
 `EventMeta` and the raw bytes.
-_Avoid_: Delivery (reserved for the outbound `octodelivery` project), event, message
+_Avoid_: Delivery (reserved for the outbound `octodelivery` project), event (the decoded unit, `Event<P>`, is the envelope decoded for one handler), message
 
 **EventMeta**:
 The envelope's routing metadata without the payload bytes: delivery ID, kind,
-action, installation ID, repository, organization, sender, target. What event
-handlers receive alongside their decoded input, and what the error observer
-receives alongside the handler's error.
+action, installation ID, repository, organization, sender, target. An input
+in its own right, for a handler routed by kind and action that reads no
+payload; the `meta` half of `Event<P>`; and what the error observer receives
+alongside the handler's error.
 _Avoid_: Common (the former nested group; its name carried no meaning), header (it also holds probed payload fields), delivery (reserved for `octodelivery`), receipt (reads as acknowledgement, and sits too close to Receiver), context (implies ambient services; this is plain data), routing (delivery ID and sender are not routing)
 
 **Receiver**:
@@ -26,24 +27,25 @@ owning no routing of paths or methods.
 _Avoid_: Service (names the optional Tower impl, not the concept), endpoint, listener
 
 **Handler**:
-Consumer-owned code that handles one verified delivery: an `async fn` item,
-a struct implementing the trait, or a closure. Handlers *handle*; the
-receiver *receives*. Two flavours are distinguished by what they receive: a
-*webhook handler* receives the envelope, raw bytes included, and is what the
-receiver and the always and fallback tiers accept; an *event handler*
-receives the metadata plus the envelope decoded as its input type. "Handler"
-alone means either. The event handler is the *typed* flavour: the one that
-needs a decode.
-_Avoid_: Callback, subscriber, raw handler (raw named a removed tier), meta handler (removed; an event handler over `()` receives only the metadata)
+Consumer-owned code that handles one verified delivery, received as one
+input: an `async fn` item, a struct implementing `Handler<I>`, or a closure.
+Handlers *handle*; the receiver *receives*. One trait, named by what it
+receives: the input type `I` is any `FromEnvelope`, and it says what the
+handler gets and what is decoded for it: the `Envelope` (bytes included), the
+`EventMeta` alone, a `Payload` view alone, or `Event<P>` for the meta beside
+the payload. The receiver and the always and fallback tiers take a handler
+over the envelope; a routed handler is over any input. In prose, "a handler
+over `Envelope`", "a handler over `Event<P>`".
+_Avoid_: Callback, subscriber, webhook handler and event handler (the former two flavours; now one trait and an input type), typed handler, payload handler (survives only in `on_payload` and `on_payload_action`, which register a handler whose payload type fixes the kind), raw handler (raw named a removed tier), meta handler (removed; a handler over `EventMeta` receives only the metadata)
 
-**Event handler**:
-A handler that receives the `EventMeta` and the envelope decoded as a type
-implementing `FromEnvelope`: a `Payload` view over one kind, bound to that
-kind by its type so registering it needs no matcher and cannot disagree with
-the type; `()` for a handler routed by kind and action that decodes nothing;
-octocrab's `WebhookEvent` for logic over octocrab's model; or a consumer view
-over fields several kinds share.
-_Avoid_: Payload handler (the former name; survives only in `on_payload` and `on_payload_action`, which register an event handler whose payload type fixes the kind), typed handler, WebhookEventHandler (collides with "webhook handler")
+**Event**:
+`Event<P>`: the envelope decoded for one handler, the `EventMeta` beside the
+payload decoded as `P`, as the named fields `meta` and `payload`. Distinct
+from Envelope, whose payload is bytes. Meta and payload together is one
+input, destructured in the parameter: `Event { meta, payload }:
+Event<IssueOpened>`. When `P` is a `Payload`, so is `Event<P>`, of the same
+kind, so `on_payload` takes a handler over either.
+_Avoid_: Decoded envelope, typed envelope, context (implies ambient services)
 
 **Dispatcher**:
 A handler that routes envelopes to other handlers by kind and action, in
@@ -51,7 +53,7 @@ tiers: the *always* tier, the matched routes, then the *fallback* chain.
 Produces an *outcome*. Part of the crate's core with every registration
 method; only octocrab's input types need the `octocrab` feature. A policy the
 tiers cannot express (skip a duplicate, dead-letter an unmatched delivery)
-lives in a webhook handler wrapping `dispatch`, the *policy seam*.
+lives in a handler over the envelope wrapping `dispatch`, the *policy seam*.
 _Avoid_: Router (implies path/method routing, which stays with the caller)
 
 **Always**:
@@ -146,15 +148,18 @@ _Avoid_: Token, key
 **Payload**:
 The JSON document GitHub sends: the envelope's raw bytes, viewed as content
 rather than as signed input. As a type (`Payload`), one kind's decoded
-payload, declaring the kind it belongs to; octocrab's per-kind structs and
-consumer-defined serde views are payloads, octocrab's `WebhookEvent` is not.
+payload, declaring the kind it belongs to; octocrab's per-kind structs,
+consumer-defined serde views and `Event<P>` over any of them are payloads;
+octocrab's `WebhookEvent` and a view over several kinds are not.
 _Avoid_: Body (reserved for the HTTP transport layer)
 
 **Decode**:
-Turning an envelope into an event handler's input, through `FromEnvelope`:
-a `Payload` type checks the kind and then decodes the bytes
-(`Envelope::decode_payload`), `()` decodes nothing, octocrab's `WebhookEvent`
-decodes into octocrab's model (`Envelope::decode_event`), and a consumer view
-over several kinds decodes as it sees fit (`Envelope::decode`). A decode
-failure fails the delivery at the position of the handler that needed it.
+Turning an envelope into a handler's input, through `FromEnvelope`: a serde
+`Payload` type checks the kind and then decodes the bytes
+(`Envelope::decode_payload`), `EventMeta` decodes nothing and `Envelope` is
+a clone, `Event<P>` pairs the meta with `P`'s decode, octocrab's
+`WebhookEvent` decodes into octocrab's model (`Envelope::decode_event`), and a
+consumer type implementing `FromEnvelope` itself decodes as it sees fit, a
+view over several kinds with the kind-free `Envelope::decode`. A decode failure
+fails the delivery at the position of the handler that needed it.
 _Avoid_: Parse (kept for the header-to-kind and probe steps), deserialize (the serde mechanism, not the concept)

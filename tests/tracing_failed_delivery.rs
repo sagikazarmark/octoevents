@@ -46,7 +46,7 @@ fn request_with(event: &str, body: &'static [u8]) -> Request<Full<Bytes>> {
 
 fn receiver<H>(handler: H) -> WebhookReceiver<H>
 where
-    H: octoevents::WebhookHandler + Send + Sync + 'static,
+    H: octoevents::Handler<Envelope> + Send + Sync + 'static,
 {
     WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET))).build(handler)
 }

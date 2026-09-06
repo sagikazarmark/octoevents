@@ -1,5 +1,5 @@
-//! A GitHub App receiver: a webhook handler that persists, deduplicates and
-//! dead-letters, wrapping a dispatcher that only routes.
+//! A GitHub App receiver: a handler over the envelope that persists,
+//! deduplicates and dead-letters, wrapping a dispatcher that only routes.
 //!
 //! Run with real deliveries forwarded by `gh webhook forward` (see the README):
 //!
@@ -8,7 +8,7 @@
 //!   cargo run --example dispatcher --features tower,octocrab
 //! ```
 //!
-//! [`Inbox`] is the `WebhookHandler` the receiver is built from. It stores
+//! [`Inbox`] is the `Handler<Envelope>` the receiver is built from. It stores
 //! every verified envelope, bytes included, before anything is routed;
 //! answers a redelivery of a delivery ID it already holds with success
 //! without routing it, so a redelivery from GitHub never runs the handlers
@@ -20,18 +20,20 @@
 //! is the store's to replay: a handler failure after that point is
 //! recovered from the store, not by asking GitHub to redeliver.
 //!
-//! Inside the dispatcher, both handler flavours appear, as structs and as a
-//! closure, every one returning the application error:
+//! Inside the dispatcher, handlers over three inputs appear, as structs and
+//! as a closure, every one returning the application error:
 //!
-//! - [`Auditor`] is a `WebhookHandler` in the `always` tier: it runs for
+//! - [`Auditor`] is a `Handler<Envelope>` in the `always` tier: it runs for
 //!   every delivery, reads the metadata off the envelope, and, with nothing
 //!   decoded on its behalf, runs even for a payload octocrab cannot represent.
-//! - [`Labeler`] is an `EventHandler` over octocrab's pull-request payload;
-//!   its kind comes from that type, so registering it names only the action
-//!   it wants, and other actions never reach it or decode for it.
-//! - The triage closure is an `EventHandler` over octocrab's decoded
-//!   `WebhookEvent`, registered with `on` for some pull-request actions; the
-//!   input type is what needs the `octocrab` feature, not the registration.
+//! - [`Labeler`] is a `Handler<Event<PullRequestWebhookEventPayload>>`: the
+//!   meta beside octocrab's pull-request payload. Its kind comes from that
+//!   type, so registering it names only the action it wants, and other
+//!   actions never reach it or decode for it.
+//! - The triage closure is a handler over `Event<WebhookEvent>`, octocrab's
+//!   decoded event with the meta, registered with `on` for some pull-request
+//!   actions; the input type is what needs the `octocrab` feature, not the
+//!   registration.
 //!
 //! The receiver is built with an `on_error` observer that logs every failed
 //! delivery, source chain included, since the receiver answers a handler
@@ -48,8 +50,8 @@ use std::{error::Error as _, sync::Mutex};
 use axum::{Router, routing::post_service};
 use octocrab::models::webhook_events::{WebhookEvent, payload::PullRequestWebhookEventPayload};
 use octoevents::{
-    Action, DecodeError, DispatchError, Dispatcher, Envelope, EventHandler, EventKind, EventMeta,
-    Match, Secret, Verifier, WebhookHandler, WebhookReceiverBuilder,
+    Action, DecodeError, DispatchError, Dispatcher, Envelope, Event, EventKind, EventMeta, Handler,
+    Match, Secret, Verifier, WebhookReceiverBuilder,
 };
 
 /// The application error every handler inside the dispatcher returns.
@@ -120,7 +122,7 @@ struct Inbox {
     dispatcher: Dispatcher<AppError>,
 }
 
-impl WebhookHandler for Inbox {
+impl Handler<Envelope> for Inbox {
     type Error = InboxError;
 
     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
@@ -163,7 +165,7 @@ impl WebhookHandler for Inbox {
 /// envelope.
 struct Auditor;
 
-impl WebhookHandler for Auditor {
+impl Handler<Envelope> for Auditor {
     type Error = AppError;
 
     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
@@ -179,19 +181,19 @@ impl WebhookHandler for Auditor {
     }
 }
 
-/// Labels a pull request. Receives the decoded payload and no raw bytes; which
-/// actions reach it is decided where it is registered, not here.
+/// Labels a pull request. Receives the meta and the decoded payload and no
+/// raw bytes; which actions reach it is decided where it is registered, not
+/// here.
 struct Labeler {
     label: String, // stands in for a GitHub API client
 }
 
-impl EventHandler<PullRequestWebhookEventPayload> for Labeler {
+impl Handler<Event<PullRequestWebhookEventPayload>> for Labeler {
     type Error = AppError;
 
     async fn handle(
         &self,
-        meta: EventMeta,
-        payload: PullRequestWebhookEventPayload,
+        Event { meta, payload }: Event<PullRequestWebhookEventPayload>,
     ) -> Result<(), Self::Error> {
         // A GitHub App acts on the API as the installation that delivered the
         // event, which `EventMeta` carries. A repository webhook (what
@@ -227,11 +229,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 EventKind::PullRequest,
                 [Action::Opened, Action::Synchronize, Action::Reopened],
             ),
-            |meta: EventMeta, event: WebhookEvent| async move {
+            |Event { meta, payload }: Event<WebhookEvent>| async move {
                 println!(
                     "triage {:?} on {}",
                     meta.action,
-                    event
+                    payload
                         .repository
                         .map_or_else(String::new, |repository| repository.name)
                 );

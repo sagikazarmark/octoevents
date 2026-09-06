@@ -11,8 +11,10 @@ use crate::{Action, EventKind, Payload, Verifier, VerifyError, header};
 /// The routing metadata of a webhook: everything in an [`Envelope`] except
 /// the payload bytes.
 ///
-/// Typed handlers receive this alongside a decoded payload, so the delivery
-/// ID and installation ID are available without going back to the envelope.
+/// A handler's input on its own, for one routed by kind and action that
+/// decodes nothing, and the first half of [`Event<P>`](crate::Event), so the
+/// delivery ID and installation ID travel beside a decoded payload without
+/// going back to the envelope.
 ///
 /// The crate produces this view and consumers only read it, so it is
 /// `#[non_exhaustive]`: GitHub can add a stable routing field (an enterprise
@@ -384,9 +386,10 @@ impl<'a> From<&'a http::HeaderMap> for HeaderView<'a> {
 ///
 /// An envelope is the composition of its routing metadata and the exact
 /// payload bytes: `meta` is everything a handler needs to route, deduplicate,
-/// and authenticate against GitHub, and `raw` is the signed input. Typed
-/// handlers receive only [`EventMeta`] with a decoded payload, so the metadata
-/// has one home rather than being duplicated onto every decoded view.
+/// and authenticate against GitHub, and `raw` is the signed input. A handler
+/// over a decoded payload receives [`EventMeta`] beside it, as
+/// [`Event<P>`](crate::Event), so the metadata has one home rather than being
+/// duplicated onto every decoded view.
 ///
 /// [`Envelope::from_signed`] is the only path in this crate that turns an
 /// untrusted request into an envelope, and it authenticates before it extracts.
@@ -505,11 +508,11 @@ impl Envelope {
     /// use std::collections::HashMap;
     ///
     /// use octoevents::{
-    ///     Bytes, DEFAULT_BODY_LIMIT, Envelope, EventKind, HeaderView, ReceiveError,
-    ///     ResponseStatus, Verifier, VerifyError, WebhookHandler, header,
+    ///     Bytes, DEFAULT_BODY_LIMIT, Envelope, EventKind, Handler, HeaderView, ReceiveError,
+    ///     ResponseStatus, Verifier, VerifyError, header,
     /// };
     ///
-    /// async fn receive<H: WebhookHandler>(
+    /// async fn receive<H: Handler<Envelope>>(
     ///     verifier: &Verifier,
     ///     received: &HashMap<String, String>,
     ///     body: Bytes,
@@ -634,11 +637,11 @@ impl Envelope {
     /// Decodes the payload as `P` after checking that the envelope is of
     /// `P`'s kind.
     ///
-    /// This is the decode of a single-purpose receiver: a
-    /// [`WebhookHandler`](crate::WebhookHandler) for one kind calls it
-    /// instead of matching on [`EventMeta::kind`] itself. The kind check
-    /// reports a wrong payload type at the kind, not as a missing field
-    /// somewhere in the JSON:
+    /// This is the decode of a single-purpose receiver: a handler over the
+    /// [`Envelope`] for one kind calls it instead of matching on
+    /// [`EventMeta::kind`] itself, and it is what a serde [`Payload`] decodes
+    /// through as a handler input. The kind check reports a wrong payload
+    /// type at the kind, not as a missing field somewhere in the JSON:
     ///
     /// ```
     /// use octoevents::{Bytes, DecodeError, Envelope, EventKind, EventMeta};
@@ -671,7 +674,9 @@ impl Envelope {
     /// Returns [`DecodeError::KindMismatch`] when [`EventMeta::kind`] is not
     /// [`P::KIND`](Payload::KIND), and [`DecodeError::Json`] when the payload
     /// does not fit `P`.
-    pub fn decode_payload<P: Payload>(&self) -> Result<P, DecodeError> {
+    pub fn decode_payload<P: Payload + serde::de::DeserializeOwned>(
+        &self,
+    ) -> Result<P, DecodeError> {
         if self.meta.kind != P::KIND {
             return Err(DecodeError::KindMismatch {
                 expected: P::KIND,
@@ -709,10 +714,10 @@ pub enum ReceiveError {
 ///
 /// The one error type of every decode path: [`Envelope::decode`],
 /// [`Envelope::decode_payload`], and `Envelope::decode_event` (`octocrab`
-/// feature) return it, and the dispatcher reports it for an event handler
-/// whose decode failed. A single `From<DecodeError>` impl is therefore the
-/// only conversion of a decode failure an application error needs, whichever
-/// path decoded.
+/// feature) return it, and the dispatcher reports it for a handler whose
+/// input could not be decoded. A single `From<DecodeError>` impl is therefore
+/// the only conversion of a decode failure an application error needs,
+/// whichever path decoded.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum DecodeError {

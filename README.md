@@ -39,8 +39,8 @@ struct Issue {
 octoevents::impl_payload!(IssueOpened => EventKind::Issues);
 
 /// Runs for `issues.opened`, with the payload decoded as `IssueOpened`.
-async fn label(meta: EventMeta, payload: IssueOpened) -> Result<(), AppError> {
-    println!("{}: label #{} '{}'", meta.delivery_id, payload.issue.number, payload.issue.title);
+async fn label(issue: IssueOpened) -> Result<(), AppError> {
+    println!("label #{} '{}'", issue.issue.number, issue.issue.title);
     Ok(())
 }
 
@@ -109,35 +109,42 @@ The serde error naming the field is one step further down the error's
 | `octocrab` | no | `FromEnvelope` for octocrab's decoded `WebhookEvent`, `Payload` for its per-kind payload structs, `Envelope::decode_event`. Makes octocrab's pre-1.0 types part of this crate's public API |
 | `tracing` | no | receive and dispatch spans at INFO and a verify span at DEBUG, one ERROR event per failed delivery, and the `trace_error` observer that adds the error's text; nothing secret-derived in any of them. The contract is on the crate's front page |
 
-The core (envelope, verification, both handler flavours, the dispatcher)
-depends on none of them and builds for `wasm32-unknown-unknown`.
+The core (envelope, verification, the handler trait and its inputs, the
+dispatcher) depends on none of them and builds for `wasm32-unknown-unknown`.
 
 ## Handlers
 
-A handler is an `async fn` that takes what it handles and returns
-`Result<(), E>`; the receiver and the dispatcher accept the function itself,
-as the dispatcher above does with `audit` and `label`. Two flavours, named by
-what they receive:
+A handler is an `async fn` that takes one input and returns `Result<(), E>`;
+the receiver and the dispatcher accept the function itself, as the dispatcher
+above does with `audit` and `label`. One trait, `Handler<I>`, and the input
+type `I` says what the handler receives and what is decoded for it:
 
-- A **webhook handler** receives the verified `Envelope`: the `EventMeta`
-  (delivery ID, kind, action, installation ID, repository, sender) and the
-  exact payload bytes. The receiver accepts one, and so do the dispatcher's
-  `always` and `fallback` tiers. `audit` is one.
-- An **event handler** receives the `EventMeta` and the envelope decoded as
-  some `P: FromEnvelope`. `label` is one, over the `IssueOpened` view;
-  `impl_payload!` declared which kind the view decodes, so
-  `on_payload_action` needed no kind and could not be given the wrong one.
-  `()` is an input too, for a handler routed by kind and action that
-  decodes nothing; octocrab's `WebhookEvent` is one with the `octocrab`
-  feature; and a view over fields several kinds share implements
-  `FromEnvelope` itself and is registered under those kinds with `on`.
+- `Envelope`: the `EventMeta` (delivery ID, kind, action, installation ID,
+  repository, sender) and the exact payload bytes, nothing decoded. What the
+  receiver and the dispatcher's `always` and `fallback` tiers take; `audit`
+  is one. `async fn audit(envelope: Envelope)`
+- `EventMeta`: the meta alone, for a handler routed by kind and action that
+  reads no payload. `async fn revoke(meta: EventMeta)`
+- A `Payload` view `P`: the payload decoded as `P`, kind checked. The kind
+  comes from the type: `impl_payload!` declared which kind `IssueOpened`
+  decodes, so `on_payload_action` needed none and could not be given the
+  wrong one. `label` is one. `async fn label(issue: IssueOpened)`
+- `Event<P>`: the meta beside the payload, in one parameter. Meta and payload
+  together is `Event<P>`, not two parameters; destructure it or read
+  `event.meta` and `event.payload`.
+  `async fn notify(Event { meta, payload }: Event<IssueOpened>)`
+
+A view over fields several kinds share (the sender, say) implements
+`FromEnvelope` itself with the kind-free `Envelope::decode` and is registered
+under those kinds with `on`. With the `octocrab` feature, octocrab's
+`WebhookEvent` is an input too, on its own or inside `Event`, and its per-kind
+payload structs are payloads.
 
 A handler with dependencies is a struct implementing the trait, the
-dependencies its fields, borrowed through `&self` on every delivery.
-`WebhookHandler` has the same shape with `handle(&self, envelope: Envelope)`:
+dependencies its fields, borrowed through `&self` on every delivery:
 
 ```rust
-use octoevents::{EventHandler, EventKind, EventMeta};
+use octoevents::{Event, EventKind, Handler};
 
 #[derive(serde::Deserialize)]
 struct IssueOpened { issue: Issue }
@@ -149,10 +156,10 @@ struct Labeler {
     label: String, // stands in for a GitHub API client
 }
 
-impl EventHandler<IssueOpened> for Labeler {
+impl Handler<Event<IssueOpened>> for Labeler {
     type Error = std::io::Error;
 
-    async fn handle(&self, meta: EventMeta, payload: IssueOpened) -> Result<(), Self::Error> {
+    async fn handle(&self, Event { meta, payload }: Event<IssueOpened>) -> Result<(), Self::Error> {
         println!("{}: label #{} {}", meta.delivery_id, payload.issue.number, self.label);
         Ok(())
     }
@@ -166,18 +173,18 @@ handler when `H` is, for sharing one struct between a route and a test that
 reads its state.
 
 Closures work too, with two annotations the `async fn` form does not need:
-name the type of each parameter the body uses (`|envelope: Envelope|`,
-`|meta: EventMeta, issue: IssueOpened|`) and state the error type
+name the parameter's type (`|envelope: Envelope|`, `|issue: IssueOpened|`,
+`|Event { meta, payload }: Event<IssueOpened>|`) and state the error type
 (`Ok::<_, AppError>(())`). Registration is bound on the handler trait, not on
 `Fn`, so rustc reads neither off the call.
 
 ## Routing
 
-A `Dispatcher` is itself a webhook handler: the receiver hands it every
-verified envelope, and it runs three tiers in order. `always` runs first,
-for every delivery, and receives the envelope. The routed handlers run next:
-those registered for the delivery's kind and action, then those for the kind.
-`fallback` runs only when no routed handler matched, and receives the
+A `Dispatcher` is itself a handler over the envelope: the receiver hands it
+every verified envelope, and it runs three tiers in order. `always` runs
+first, for every delivery, and receives the envelope. The routed handlers run
+next: those registered for the delivery's kind and action, then those for the
+kind. `fallback` runs only when no routed handler matched, and receives the
 envelope as `always` does. Within a tier, handlers run in registration order,
 and the first error fails the delivery.
 
@@ -186,25 +193,27 @@ Dispatcher::<AppError>::builder()
     .always(audit)                                             // every delivery, first
     .on_payload(notify)                                        // kind from the payload type, every action
     .on_payload_action([Action::Opened], label)                // kind from the payload type, these actions
-    .on((EventKind::Installation, Action::Deleted), revoke)    // over `()`: meta only, nothing decoded
+    .on((EventKind::Installation, Action::Deleted), revoke)    // over `EventMeta`: meta only, nothing decoded
+    .on(EventKind::Push, forward)                              // over `Envelope`: bytes included, for one kind
     .on([EventKind::Issues, EventKind::IssueComment], metrics) // over a consumer `FromEnvelope` view
     .on(EventKind::PullRequest, triage)                        // over octocrab's `WebhookEvent`
     .fallback(reject)                                          // only if nothing matched
     .build()
 ```
 
-`on_payload` and `on_payload_action` take the kind from the payload type;
-`on` takes a matcher (a kind, several kinds, a kind with actions, or
-kind/action pairs) and an event handler over any `FromEnvelope`. A routed
-handler decodes its input only when its route matched, and `always` and
-`fallback` decode nothing, so both run for a payload no handler can decode.
-Unmatched deliveries succeed unless a fallback fails them.
+`on_payload` and `on_payload_action` take the kind from the payload type, and
+accept a handler over the payload `P` or over `Event<P>`; `on` takes a matcher
+(a kind, several kinds, a kind with actions, or kind/action pairs) and a
+handler over any `FromEnvelope` input. A routed handler decodes its input only
+when its route matched, and `always` and `fallback` decode nothing, so both
+run for a payload no handler can decode. Unmatched deliveries succeed unless
+a fallback fails them.
 
 A failure is a `DispatchError`: the application error wrapped with the tier,
 the delivery's ID, kind and action, and the source location of the
 registration that put the failing handler there. `dispatch` also reports an
 `Outcome`, matched or unmatched with the kind known or unknown to the route
-table, for a webhook handler wrapping the dispatcher to act on; see
+table, for a handler wrapping the dispatcher to act on; see
 [Delivery semantics](#delivery-semantics).
 
 ## Testing without GitHub
@@ -283,13 +292,13 @@ async fn accepts_a_signed_delivery() {
 
 Change the secret on either side and the same request is answered 401.
 
-## One event, one webhook handler
+## One event, one handler
 
-A receiver for one kind and nothing else needs no dispatcher. A webhook
-handler decodes its own view with `decode_payload`, which refuses a delivery
-of any other kind at the kind rather than at a missing field, so a webhook
-subscribed to the wrong events fails loudly. Without the `tower` feature, the
-receiver mounts on axum as a plain handler calling `receive`:
+A receiver for one kind and nothing else needs no dispatcher. A handler over
+the envelope decodes its own view with `decode_payload`, which refuses a
+delivery of any other kind at the kind rather than at a missing field, so a
+webhook subscribed to the wrong events fails loudly. Without the `tower`
+feature, the receiver mounts on axum as a plain handler calling `receive`:
 
 ```rust,no_run
 use axum::{Router, extract::Request, routing::post};
@@ -298,19 +307,19 @@ use octoevents::{
 };
 
 #[derive(serde::Deserialize)]
-struct ReleasePublished { release: Release, repository: Repository }
+struct ReleasePublished { release: Release }
 #[derive(serde::Deserialize)]
 struct Release { tag_name: String }
-#[derive(serde::Deserialize)]
-struct Repository { full_name: String }
 octoevents::impl_payload!(ReleasePublished => EventKind::Release);
 
 async fn announce(envelope: Envelope) -> Result<(), DecodeError> {
     if envelope.meta.action != Some(Action::Published) {
         return Ok(());
     }
+    // The repository is already on the meta; only the tag needs the payload.
+    let repository = envelope.meta.repository.as_ref().map_or("?", |r| r.full_name.as_str());
     let payload = envelope.decode_payload::<ReleasePublished>()?;
-    println!("{} released {}", payload.repository.full_name, payload.release.tag_name);
+    println!("{repository} released {}", payload.release.tag_name);
     Ok(())
 }
 
@@ -360,7 +369,7 @@ GitHub signs no timestamp, so the crate provides no replay protection: treat
 GitHub does not retry a failed delivery on its own, and it abandons a request
 after 10 seconds (30 on GitHub Enterprise Server). Persist or forward an
 envelope before returning and process it afterwards. With a dispatcher, that
-policy lives in a webhook handler wrapping `dispatch`: it stores the envelope,
+policy lives in a handler wrapping `dispatch`: it stores the envelope,
 bytes included, before anything is routed; answers a redelivery of a stored
 delivery ID with success without routing it; and reads the `Outcome` to
 dead-letter a kind the route table does not know while tolerating an action
@@ -407,8 +416,8 @@ personal access token, grant the "Webhooks" repository permission (read and
 write).
 
 The `dispatcher` example is the production shape behind a receiver: a
-persisting, deduplicating, dead-lettering webhook handler wrapping a
-dispatcher that routes octocrab's payloads. Run it the same way and forward
+persisting, deduplicating, dead-lettering handler wrapping a dispatcher that
+routes octocrab's payloads. Run it the same way and forward
 `pull_request` events:
 
 ```console
