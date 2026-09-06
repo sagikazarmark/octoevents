@@ -499,7 +499,7 @@ Sources: [octocrab `webhook_events.rs`](https://github.com/XAMPPRocky/octocrab/b
 
 ### What the ecosystem has converged on
 
-| Concern | Convergence | `octoevents` (0.1) |
+| Concern | Convergence | `octoevents` |
 |---|---|---|
 | **Both `kind` and `kind.action` routes fire**, action-specific first | octokit, gidgethub, Probot | same |
 | **Dotted `issues.opened` name** | octokit, Probot; gidgethub uses `("issues", action="opened")`; no Rust crate routes by action | typed tuple; no string form |
@@ -512,7 +512,7 @@ Sources: [octocrab `webhook_events.rs`](https://github.com/XAMPPRocky/octocrab/b
 | **Kind from header, not body shape** | everyone except `octoapp` | yes |
 | **Verify before anything else** | octokit, go-github, gidgethub | yes |
 | **Payload size bound** | go-github (25 MB) | yes |
-| **`onError` observer separate from the result** | octokit, Probot | no (partially `tracing`) |
+| **`onError` observer separate from the result** | octokit, Probot | yes: `WebhookReceiverBuilder::on_error`, called with the `EventMeta` and the handler's error before the 500 is answered |
 | **Run-all vs fail-fast** | **Not converged.** JS: parallel, aggregate. Python, Rust, PHP: sequential fail-fast | sequential fail-fast |
 | **10-second response deadline** | octokit (9 s race → 202); tide-github (spawn + return) | not addressed |
 | **Installation-scoped API client per event** | Probot `transform`, octoapp, octofer | out of scope by design |
@@ -520,7 +520,7 @@ Sources: [octocrab `webhook_events.rs`](https://github.com/XAMPPRocky/octocrab/b
 ### Ranked: the most transferable ideas
 
 1. **`on_error` observer** (octokit, Probot). The one converged feature the
-   crate lacks.
+   crate lacked at 0.1; `WebhookReceiverBuilder::on_error` since 0.2.
 2. **Public, explicitly-unverified `Envelope` constructor for tests** plus a
    fixture helper.
 3. **Route introspection / dry-run** (gidgethub `fetch`, Symfony
