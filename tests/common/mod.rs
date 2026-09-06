@@ -47,8 +47,18 @@ impl<'a> MakeWriter<'a> for Capture {
 /// call returned.
 ///
 /// Both events are logged so a test can tell what a span carried when it
-/// opened from what it had recorded by the time it closed.
+/// opened from what it had recorded by the time it closed. Everything down
+/// to TRACE is captured; [`traced_at`] is the same subscriber with a ceiling.
 pub fn traced<F, T>(call: F) -> (String, T)
+where
+    F: Future<Output = T>,
+{
+    traced_at(tracing::Level::TRACE, call)
+}
+
+/// [`traced`] with the subscriber's maximum level set to `level`, so a test
+/// can see what an operator filtering at that level would see.
+pub fn traced_at<F, T>(level: tracing::Level, call: F) -> (String, T)
 where
     F: Future<Output = T>,
 {
@@ -57,7 +67,7 @@ where
         .with_writer(capture.clone())
         .with_ansi(false)
         .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
-        .with_max_level(tracing::Level::TRACE)
+        .with_max_level(level)
         .finish();
 
     // A current-thread runtime keeps the whole call on the thread that holds

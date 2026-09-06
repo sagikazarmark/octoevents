@@ -118,6 +118,7 @@ impl Verifier {
         feature = "tracing",
         tracing::instrument(
             name = "octoevents.verify",
+            level = "debug",
             skip_all,
             fields(secret_count = self.secrets.len(), body_len = body.len(), outcome = tracing::field::Empty)
         )

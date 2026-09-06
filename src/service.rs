@@ -132,6 +132,16 @@ impl<E> WebhookReceiverBuilder<E> {
     /// [`handle_ping`](Self::handle_ping) reaches no handler; neither calls
     /// it.
     ///
+    /// With the `tracing` feature, a failed delivery already emits one ERROR
+    /// event naming the delivery, observer or not; the error's text is what
+    /// it lacks. The one-line way to get the text is the crate's
+    /// `trace_error` observer, which exists with the feature and emits a
+    /// second ERROR event with the error and its source chain:
+    /// `.on_error(octoevents::trace_error)`. It asks `E: Error + 'static`,
+    /// which a `Box<dyn Error + Send + Sync>` does not satisfy; a closure
+    /// that formats the error, as the crate front page's example does,
+    /// observes one. The contract is under [Tracing](crate#tracing).
+    ///
     /// With a [`Dispatcher`](crate::Dispatcher) as the handler, the error is
     /// a [`DispatchError`](crate::DispatchError) naming the tier, the
     /// delivery, and the line that registered the failing handler; its source
@@ -352,19 +362,25 @@ where
             return record_outcome(ResponseStatus::NoContent);
         }
 
-        // The handler takes the envelope by value, so the meta the observer
-        // reports is cloned beforehand, and only when there is an observer to
-        // report to: the pair travels together.
-        let observing = observer
-            .as_ref()
-            .map(|observer| (observer, envelope.meta.clone()));
+        // The handler takes the envelope by value, so the meta a failure is
+        // reported with, to the observer and to the tracing event, is cloned
+        // beforehand, and only when there is something to report to.
+        let reporting = observer.is_some() || trace::ENABLED;
+        let meta = reporting.then(|| envelope.meta.clone());
         match self.handler.handle(envelope).await {
             Ok(()) => record_outcome(ResponseStatus::NoContent),
             Err(error) => {
-                if let Some((observer, meta)) = &observing {
-                    observer(meta, &error);
+                // The outcome goes on the span first, so the event and the
+                // observer run inside a span that already says how the
+                // delivery ended.
+                let status = record_outcome(ResponseStatus::InternalServerError);
+                if let Some(meta) = &meta {
+                    trace::handler_failed(meta, status.as_u16());
+                    if let Some(observer) = observer {
+                        observer(meta, &error);
+                    }
                 }
-                record_outcome(ResponseStatus::InternalServerError)
+                status
             }
         }
     }

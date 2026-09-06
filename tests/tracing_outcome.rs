@@ -315,6 +315,39 @@ fn the_span_opens_with_the_delivery_id_and_event_and_the_action_and_installation
     }
 }
 
+/// The receiver under test on the `http` paths: the dispatcher above behind
+/// one secret, and a signed `pull_request.opened` request for installation
+/// 42 that it accepts.
+#[cfg(feature = "http")]
+mod receiving {
+    use bytes::Bytes;
+    use octoevents::{Dispatcher, Secret, Verifier, WebhookReceiver, WebhookReceiverBuilder};
+
+    use super::{AppError, common};
+
+    const SECRET: &str = "It's a Secret to Everybody";
+    const BODY: &[u8] = br#"{"action":"opened","installation":{"id":42}}"#;
+
+    pub(super) fn receiver(
+        dispatcher: Dispatcher<AppError>,
+    ) -> WebhookReceiver<Dispatcher<AppError>> {
+        WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET))).build(dispatcher)
+    }
+
+    pub(super) fn signed_request() -> http::Request<http_body_util::Full<Bytes>> {
+        http::Request::builder()
+            .header("content-type", "application/json")
+            .header("x-github-delivery", "delivery")
+            .header("x-github-event", "pull_request")
+            .header(
+                "x-hub-signature-256",
+                common::signature(SECRET.as_bytes(), BODY),
+            )
+            .body(http_body_util::Full::new(Bytes::from_static(BODY)))
+            .unwrap()
+    }
+}
+
 /// A field recorded on more than one span is the same field to a dashboard
 /// only if every span records it in the same form: the receive span learns
 /// the delivery ID and event from the headers, the dispatch span from the
@@ -324,25 +357,8 @@ fn the_span_opens_with_the_delivery_id_and_event_and_the_action_and_installation
 #[cfg(feature = "http")]
 #[test]
 fn the_receive_and_dispatch_spans_record_their_shared_fields_in_the_same_form() {
-    use octoevents::{Secret, Verifier, WebhookReceiverBuilder};
-
-    const SECRET: &str = "It's a Secret to Everybody";
-    const BODY: &[u8] = br#"{"action":"opened","installation":{"id":42}}"#;
-
-    let request = http::Request::builder()
-        .header("content-type", "application/json")
-        .header("x-github-delivery", "delivery")
-        .header("x-github-event", "pull_request")
-        .header(
-            "x-hub-signature-256",
-            common::signature(SECRET.as_bytes(), BODY),
-        )
-        .body(http_body_util::Full::new(Bytes::from_static(BODY)))
-        .unwrap();
-
-    let receiver =
-        WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET))).build(dispatcher());
-    let (log, response) = common::traced(receiver.receive(request));
+    let receiver = receiving::receiver(dispatcher());
+    let (log, response) = common::traced(receiver.receive(receiving::signed_request()));
     assert_eq!(response.status(), 204);
 
     let receive = span_fields(&log, "octoevents.receive", "close");
@@ -361,4 +377,36 @@ fn the_receive_and_dispatch_spans_record_their_shared_fields_in_the_same_form() 
     assert_eq!(receive.rendered("outcome"), Some("\"ok\""));
     assert_eq!(dispatch.rendered("outcome"), Some("\"ok\""));
     assert_eq!(receive.rendered("status"), Some("204"));
+}
+
+/// The receive and dispatch spans are one per delivery and carry the fields
+/// an operator filters on, so they open at INFO. The verify span is the
+/// detail behind the receive span's `unauthorized` and `bad_request`
+/// outcomes, one more span per delivery at scale, so it opens at DEBUG: a
+/// subscriber at INFO never sees it, and one at DEBUG sees all three.
+#[cfg(feature = "http")]
+#[test]
+fn the_verify_span_opens_at_debug_and_the_receive_and_dispatch_spans_at_info() {
+    let receiver = receiving::receiver(dispatcher());
+
+    let (log, _) = common::traced_at(
+        tracing::Level::INFO,
+        receiver.receive(receiving::signed_request()),
+    );
+    assert!(log.contains("octoevents.receive"), "{log}");
+    assert!(log.contains("octoevents.dispatch"), "{log}");
+    assert!(!log.contains("octoevents.verify"), "{log}");
+
+    let (log, _) = common::traced_at(
+        tracing::Level::DEBUG,
+        receiver.receive(receiving::signed_request()),
+    );
+    let verify_lines: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains(": octoevents::verify: "))
+        .collect();
+    assert!(!verify_lines.is_empty(), "{log}");
+    for line in verify_lines {
+        assert!(line.contains(" DEBUG "), "{line}");
+    }
 }
