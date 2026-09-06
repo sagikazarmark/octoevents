@@ -1,9 +1,13 @@
 //! Minimal Tower service mounted on an Axum route.
 
-use std::convert::Infallible;
-
 use axum::{Router, routing::post_service};
 use octoevents::{Envelope, Secret, Verifier, WebhookHandler, WebhookReceiverBuilder};
+
+/// The application error the handler returns; the receiver answers it with a
+/// 500. A real one wraps what the handler's dependencies fail with.
+#[derive(Debug, thiserror::Error)]
+#[error("the delivery could not be announced")]
+struct AppError;
 
 /// A handler is a struct whose fields are its dependencies. This one has
 /// none yet; a database pool or API client would go here and be borrowed
@@ -11,7 +15,7 @@ use octoevents::{Envelope, Secret, Verifier, WebhookHandler, WebhookReceiverBuil
 struct Announce;
 
 impl WebhookHandler for Announce {
-    type Error = Infallible;
+    type Error = AppError;
 
     // A real handler awaits its dependencies here.
     #[allow(clippy::unused_async_trait_impl)]

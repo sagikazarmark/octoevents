@@ -9,16 +9,14 @@
 // which is what a real `async fn handle` would do.
 #![allow(clippy::unused_async_trait_impl)]
 
-use std::convert::Infallible;
-
 use octoevents::{
     DecodeError, Dispatcher, Envelope, EventHandler, EventKind, EventMeta, Secret, Verifier,
     WebhookHandler, WebhookReceiverBuilder,
 };
 use worker::{Context, Env, Fetch, HttpRequest, Method, Request, RequestInit, console_log, event};
 
-/// The application error every handler's error converts into: the
-/// dispatcher's payload decodes, the forwarder's serialization, and its fetch.
+/// The application error every handler returns: the dispatcher's payload
+/// decodes, the forwarder's serialization, and its fetch.
 #[derive(Debug, thiserror::Error)]
 enum AppError {
     #[error(transparent)]
@@ -27,12 +25,6 @@ enum AppError {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Worker(#[from] worker::Error),
-}
-
-impl From<Infallible> for AppError {
-    fn from(never: Infallible) -> Self {
-        match never {}
-    }
 }
 
 /// Forwards the raw envelope to the Restate ingress. Registered in the
@@ -97,7 +89,7 @@ octoevents::impl_payload!(InstallationView => EventKind::Installation);
 struct InstallationLog;
 
 impl EventHandler<InstallationView> for InstallationLog {
-    type Error = Infallible;
+    type Error = AppError;
 
     async fn handle(&self, meta: EventMeta, payload: InstallationView) -> Result<(), Self::Error> {
         console_log!(

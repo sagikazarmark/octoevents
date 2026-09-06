@@ -30,8 +30,7 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// Every chain is sequential, in registration order, and stops at the first
 /// error. `always` and `fallback` never count as a match, and an empty
 /// fallback chain succeeds, so unmatched kinds are green in GitHub until you
-/// decide otherwise. Each handler keeps its own error type; the dispatcher
-/// converts them into `E` through `From` at registration.
+/// decide otherwise.
 ///
 /// There are no priorities and no propagation control: a handler cannot be
 /// moved ahead of one registered earlier, and cannot stop the chain or
@@ -121,9 +120,10 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// ```
 ///
 /// Handlers written against `E` itself, as above, need nothing further. A
-/// handler with its own error type registers once `E: From` of it; for a
-/// closure or struct whose error is [`Infallible`](std::convert::Infallible),
-/// that impl is the one-line `match never {}`.
+/// handler keeps its own error type, and the dispatcher converts it into `E`
+/// through `From` at registration: a reusable struct with an error of its
+/// own, or one whose error is [`Infallible`](std::convert::Infallible),
+/// registers once `E: From<H::Error>` holds.
 ///
 /// `on` routes an event handler over any [`FromEnvelope`] input for the
 /// kinds and actions a matcher selects. `()` decodes nothing, so a handler

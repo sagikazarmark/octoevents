@@ -179,7 +179,9 @@ ambiguous (E0283) once the application error has two `From` impls. The
 alternative, `H::Error = E`, removes both at the cost of the reusable-handler
 case. The decision is deferred: writing handlers as `async fn` items
 returning `Result<(), AppError>` needs neither the `Infallible` impl nor the
-annotation, and the README now leads with that shape. Re-evaluate once
-`on_error` and the README rewrite have been in a release, by checking whether
-new users still hit the `From<Infallible>` ritual or the ambiguous-`From`
-error.
+annotation, the README leads with that shape, and no shipped example or
+rustdoc example declares `Infallible` any more. Re-evaluate at the next
+persona review ([`../review/`](../review/)). With no crate-taught
+`Infallible` left, a `From<Infallible>` or ambiguous-`From` hit that a
+persona reports traces to a shape the user chose, and that is the data the
+decision needs.
