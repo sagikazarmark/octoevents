@@ -38,8 +38,8 @@
 //! The receiver is built with an `on_error` observer that logs every failed
 //! delivery, source chain included, since the receiver answers a handler
 //! error with a bare 500 and says nothing else: the dispatcher's
-//! `DispatchError` names the tier, the delivery, and the line that registered
-//! the failing handler.
+//! `DispatchError` names the tier, the delivery, the failing handler and the
+//! line that registered it.
 
 // The handlers here print instead of awaiting a database or the GitHub API,
 // which is what a real `async fn handle` would do.
@@ -98,7 +98,7 @@ impl Store {
 }
 
 /// Everything the wrapper can fail with: its own store, or whatever the
-/// dispatcher reports, tier and registration site included.
+/// dispatcher reports, tier, handler and registration site included.
 #[derive(Debug, thiserror::Error)]
 enum InboxError {
     #[error(transparent)]
@@ -251,7 +251,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The receiver answers a handler error with a bare 500 (the response is
     // GitHub's delivery record, not a log), so the observer is where an
     // operator learns why a delivery failed. A dispatch error names the tier,
-    // the delivery, and the line that registered the failing handler; its
+    // the delivery, the failing handler and the line that registered it; its
     // source is the application error.
     let webhook = WebhookReceiverBuilder::new(verifier)
         .on_error(|_: &EventMeta, error: &InboxError| {

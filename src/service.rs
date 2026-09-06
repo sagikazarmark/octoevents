@@ -144,8 +144,8 @@ impl<E> WebhookReceiverBuilder<E> {
     ///
     /// With a [`Dispatcher`](crate::Dispatcher) as the handler, the error is
     /// a [`DispatchError`](crate::DispatchError) naming the tier, the
-    /// delivery, and the line that registered the failing handler; its source
-    /// is the application error:
+    /// delivery, the failing handler (by type name; a closure's, here) and
+    /// the line that registered it; its source is the application error:
     ///
     /// ```
     /// use std::error::Error as _;
@@ -167,7 +167,7 @@ impl<E> WebhookReceiverBuilder<E> {
     ///     .build();
     ///
     /// // A failed delivery logs, before the 500:
-    /// //   delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (issues.opened) failed in the always tier at the handler registered at src/main.rs:12:6
+    /// //   delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (issues.opened) failed in the always tier at the handler `app::main::{{closure}}` registered at src/main.rs:12:6
     /// //     caused by: database is down
     /// let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("current secret")))
     ///     .on_error(|_: &EventMeta, error: &DispatchError<AppError>| {
@@ -1093,9 +1093,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_dispatch_error_is_still_a_bare_internal_server_error() {
-        // The dispatcher's error names the tier and the registration site;
-        // none of it reaches the response, which stays GitHub's delivery
-        // record. The `on_error` observer is where a consumer reads it.
+        // The dispatcher's error names the tier, the handler and the
+        // registration site; none of it reaches the response, which stays
+        // GitHub's delivery record. The `on_error` observer is where a
+        // consumer reads it.
         let dispatcher = Dispatcher::<AppError>::builder()
             .always(|_: Envelope| async { Err::<(), _>("audit") })
             .build();

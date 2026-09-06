@@ -77,15 +77,26 @@ _Avoid_: Stage, phase (kept for decode versus handle inside one handler), layer 
 **Registration site**:
 The source location of the call that registered a handler (`always`, `on`,
 `on_payload`, `on_payload_action`, `fallback`), captured at compile time
-through `#[track_caller]`. What a dispatch error points an operator at.
+through `#[track_caller]`. What a dispatch error points an operator at,
+beside the handler name.
 _Avoid_: Call site (ambiguous with the handler's own calls), origin, registered at (reads as a time in code; fine in prose)
+
+**Handler name**:
+The type name of a registered handler, `std::any::type_name` of what the
+registration method received, recorded beside the registration site: a
+function path for an `async fn` item or a struct, a `{{closure}}` path for a
+closure. For an operator to read, not for code to match on; `type_name`
+promises no stable string. The `handler` field of a dispatch error and of
+the dispatch span.
+_Avoid_: Handler ID, handler label, type name alone (says the mechanism, not what it names)
 
 **Dispatch error**:
 What a failed dispatch reports: the application error wrapped with the tier,
-the delivery's ID, kind and action, and the registration site of the failing
-handler. Says where, not why; why is its source, the application error. A
-decode failure is reported at the handler that needed the decode. What the
-error observer receives when a dispatcher is the receiver's handler.
+the delivery's ID, kind and action, the handler name and the registration
+site of the failing handler. Says where, not why; why is its source, the
+application error. A decode failure is reported at the handler that needed
+the decode. What the error observer receives when a dispatcher is the
+receiver's handler.
 _Avoid_: Handler error (the application error inside it), failure (prose for the event, not the type)
 
 **Error observer**:
