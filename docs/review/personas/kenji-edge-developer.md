@@ -25,18 +25,17 @@ A receiver that verifies the signature, forwards every verified envelope as JSON
 - **Sans-I/O verdict**: compile iterations, friction, documentation adequacy, wire-format assessment.
 - **Three shapes comparison**: lines and clarity per shape, with the code of the shortest.
 
-## Baseline (2026-09-05)
+## Baseline (2026-09-06, `705e82c`)
 
-Unique crates: 30 no-default / 35 default / 319 with octocrab. No-default builds clean for `wasm32` in about five seconds cold; the crate added about 69 KB of wasm over a serde-only baseline, the dispatcher about 16 KB more. Shapes: plain handler 26 lines, adapted typed handler 47, dispatcher 43.
+Unique crates: 30 no-default / 35 default / 163 with octocrab (previous run's 319 was a different counting method). No-default builds clean for `wasm32` in about five seconds cold; the crate adds about 61 KB of wasm over a serde-only baseline, the dispatcher about 14.5 KB more. Shapes: plain handler 23 lines, typed handler with a hand-written forward-then adapter 51, dispatcher 28. Every program compiled first time. Previous run: 9 resolved, 2 persist, 0 regressed.
 
-- The sans-I/O path silently lacked the receiver's ping short-circuit, body limit and header-only pre-rejection; a `ping` was forwarded to the queue. Undocumented.
-- No public header-name constants; header-name case handling undocumented.
-- `Bytes` required but not re-exported.
-- The dispatcher required a decode-error conversion and an `Infallible` conversion on the application error even for one event.
-- No combinator to sequence two envelope handlers; hand-written wrapper needed.
-- Handing a typed handler straight to the receiver answered 500 for every other kind; a forward-everything receiver needed a wrapper that swallowed the kind mismatch.
-- README had no sans-I/O or Lambda section; the one pointer was in the response-status rustdoc.
-- Wire format had no example document, no field table, explicit nulls for absent fields.
-- The worker example's comment claimed a `default-features = false` build excludes octocrab, which was never a default.
-- The platform-conditional bounds were invisible; a `std::sync::Mutex` handler compiled natively and for `wasm32` unchanged.
-- The payload-declaring macro expands to a three-line impl; judged marginal but fine, kept for hygiene and its diagnostic.
+- Driving the async `dispatch` from a sync entry point is undocumented; wrote a noop-waker poll.
+- Building the header view from a string map is six per-constant lookups, twenty lines, with no constructor from a lookup or an iterator.
+- The header-name case sentence lives in rustdoc, not in the README's sans-I/O paragraph.
+- The three receiver-only behaviours are listed in prose on the signed constructor with no code snippet.
+- No combinator sequences two webhook handlers.
+- The worker example still carries `impl From<Infallible>`; a handler returning the application error needs none.
+- Base64 inflation (~35% on a small payload) is undocumented as a cost.
+- The README's `EventMeta` field list omits organization, target type and target ID.
+- README dependency snippet says `version = "0.2"` while the manifest says `0.1.0`.
+- The payload-declaring macro expands to a three-line impl; judged marginal but fine, kept for hygiene, zero proc-macro cost, and its diagnostic.

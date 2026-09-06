@@ -35,19 +35,18 @@ app.onError(async (err) => { log(err) })
 - **Wrong things**: one row per attempt — what the compiler said, whether it helped.
 - **Docs orientation verdict**: first-screen answer yes or no, and the first thing you would change.
 
-## Baseline (2026-09-05)
+## Baseline (2026-09-06, `705e82c`)
 
-Attempts: four rounds on the first registration through the octocrab event path, then one round each on the typed-payload path; the `onError` equivalent took about ten minutes to find.
+All five registrations compiled in one round with serde views and no octocrab, about 2.5 minutes from opening the README; the octocrab path took three rounds, both failures inside octocrab's model. The `onError` equivalent was found in under a minute. Previous run: 8 resolved, 4 persist, 0 regressed.
 
-- The handler-flavour taxonomy was the single largest cognitive load; understanding it and the five error types required reading source.
-- A print-only app still needed an application error type with a decode-error conversion.
-- A boxed `dyn Error` as the application error compiled the dispatcher but broke the error-logging wrapper recipe, with a misleading "is not a webhook handler" headline and the real cause twenty lines down.
-- Bare `Ok(())` produced E0283 four times; the compiler suggested a literal `E`.
-- `From<Infallible>` was required only because every example returned `Infallible`; `Ok::<_, AppError>(())` needed no such impl and was shown nowhere.
-- A closure over a serde type that never declared its kind got "closure is not a payload handler", drowning the good macro hint that fires for struct handlers.
-- Strict octocrab decode answered 500 for a payload with one drifted field; the consumer-view alternative was argued only under "Deliberately left out".
-- `"pull_request.opened".parse()` silently produced an unknown kind.
-- `async fn` items registered with zero annotations, zero turbofish, zero `Infallible`; undocumented.
-- No `onError` equivalent; the wrapper recipe lived under "Delivery semantics".
-- The README's first screen was badges, a feature table and an octocrab caveat; the first `.on(` was a non-compiling fragment with seven undefined types.
-- `onAny` mapped to `always`, whose name does not say "any", which fails the delivery on error, and which never sees `ping`.
+- `issues.opened` is spelled across three places (the kind on the payload type, a doc comment, the action at the registration); the registration line never says `issues`.
+- Ceremony before the first handler for a print-only app: a thiserror derive, `#[error(transparent)]`, `#[from]`, a serde derive and a macro; the README never says a boxed `dyn Error` works as the application error, though it does.
+- octocrab's `installation` payload struct has no `installation` field, and its `EventInstallation` is an enum; the README's Features row gives no hint. Strict octocrab decode answered 500 for a real fixture with one drifted field.
+- Fail-fast on the first handler error is stated but never contrasted with Probot's run-all.
+- `always` never sees `ping` by default; `handle_ping(true)` is not in the README; nothing maps `onAny` to `always`.
+- Two rustdoc examples (`FromEnvelope` on the payload page, the event-handler page) compile only through hidden `From<Infallible>` lines; copying the visible lines fails E0277. The dispatcher prose still teaches `match never {}`.
+- Registering a payload view under the wrong kind through `on` is a runtime kind mismatch ("expected a issues event"), not a compile error.
+- `"pull_request.opened".parse::<EventKind>()` is silently an unknown kind.
+- Bare `Ok(())` in a closure: E0283 with an unusable `E` suggestion; anticipated by the README.
+- `RepositoryRef` is all-or-nothing on a partial `repository` object.
+- README dependency snippet says `version = "0.2"` while the manifest says `0.1.0`; the survey table still says the crate has no `onError` observer.

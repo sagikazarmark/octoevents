@@ -24,19 +24,19 @@ A tiny bot: when a pull request is **opened**, print its number and title and pr
 8. Judge the flavours: which did you need, which did you only read about, was the conversion between them obvious?
 9. Judge the docs: where did you want a five-line hello world, and what did you get instead?
 
-## Baseline (2026-09-05)
+## Baseline (2026-09-06, `705e82c`)
 
-Compile iterations: manual handler 2; dispatcher 1 with a single-`From` error, 4 with a realistic error, 2 with struct handlers; e2e 1. About 25 minutes of reading before the first line of code.
+Compile iterations: manual handler 1; dispatcher 1 with `async fn` items and a single-`From` error, 2 with a closure and a realistic error, 2 with struct handlers; tests 1; e2e 1; axum without `tower` 1. About 20 minutes of reading before the first line of code. Previous run: 8 resolved, 4 persist, 0 regressed.
 
-- README's first code block is three handler impls with no receiver; "Quick start" is at the bottom and has no Rust.
-- Crate front-page "Quick start" asserts a verification *failure* and reads as "how not to do it".
-- The `tower` feature looked required for axum; `receive` inside a `post` closure worked first try and is undocumented.
-- README lines ~97–117 are one 21-line paragraph on outcomes, decode rules and dead-lettering that the task never needed.
-- Bare `Ok(())` in a closure: E0283 once the application error has two `From` impls; docs over-state it as "always".
-- `From<Infallible>` boilerplate hit twice, once from a struct with `type Error = Infallible` copied from the README; absent from the README.
-- A failing handler answered 500 with nothing on the console; the fix was a pasted twenty-line wrapper.
-- The front-page headline example (a typed handler adapted straight into the receiver) answered 500 on the second event kind.
-- No public recipe for signing a test request or for the four headers a synthetic request needs.
-- Building an envelope by hand is documented on the `EventMeta` page, not where a tester looks.
-- Adding octocrab as a direct dependency and needing complete fixture payloads for its structs was undocumented.
-- Vocabulary wall (envelope, meta, tier, raw, always, fallback, outcome, match, registration site) arrives before the reader knows whether they need a dispatcher.
+- The README's "One event, one webhook handler" block, copied verbatim, answered a decode failure with a silent 500: that block has no error observer.
+- The README's headline error observer prints "payload could not be decoded" without the serde field; the field appears only after walking `source()`, which the README shows only in the long example.
+- `From<Infallible>` hit once, from a struct handler with `type Error = Infallible` as taught by the axum example; the README has no `Infallible`, the fix lives only in the dispatcher example.
+- Bare `Ok(())` in a closure: E0283, anticipated by the README; rustc suggests a literal `E`.
+- The no-`tower` axum wiring is documented but filed under the "One event, one webhook handler" heading.
+- Vocabulary (tier, "route tier", observer, view) still arrives before the Handlers section; the event-handler bullet tails into `()`, octocrab and cross-kind views the task never needed.
+- A view used only through a hand-written `match` and `decode_payload` still needs `impl_payload!`.
+- Every event handler carries a dead `_meta` parameter; there is no payload-only shape.
+- Handing an event handler straight to the receiver is E0593 arity, not a hint to wrap it in a dispatcher.
+- Adding octocrab as a direct dependency and needing complete fixture payloads for its structs is still undocumented.
+- README dependency snippet says `version = "0.2"` while the manifest says `0.1.0`; `hmac`/`sha2` dev-dependencies are unversioned in the README.
+- Wanted a ≤15-line hello world above the 60-line complete program; none exists.

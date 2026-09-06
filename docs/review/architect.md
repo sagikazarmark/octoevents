@@ -24,17 +24,20 @@ All writes go under the scratch directory named in your prompt. The repository i
 
 Your report is your only message back: one section per item above, then a **Baseline diff** marking each baseline item *resolved* / *persists* / *regressed* with evidence, and *new* findings.
 
-## Baseline (2026-09-05)
+## Baseline (2026-09-06, `705e82c`)
 
-35 public items (33 without octocrab), 27 glossary terms, of which eight named the flavour-by-tier grid. Doc-to-code 1.47 in the handler module, 4.9 on the crate root; test-to-code 2.84 in the dispatcher module. Repeated across modules: the octocrab pre-1.0 caveat (4×), the `&H`/`Box<H>` paragraph (4×), the closure error-annotation advice (5×), pointers to "Deliberately left out" (6×).
+32 public items at the crate root (30 without `http`; octocrab adds none), plus six header constants; 24 glossary terms, five naming the flavour-by-tier grid. Doc-to-code 3.87 in the handler module (adapters left, prose stayed), 6.37 on the crate root; test-to-code 3.52 in the dispatcher module. Repetition: the "never skip / wrap the dispatcher" advice about twelve times across four files; the octocrab pre-1.0 caveat in three. Previous run: 14 resolved, 2 persist, 0 regressed.
 
-Verdict: over-building concentrated downstream of "four flavours, each with its own error type". Essential and kept: envelope and signed constructor, payload with kind-from-type, receiver, outcome and match, dispatch error with registration site, header view and response status, platform-conditional bounds, event matcher. Findings that became #18:
+Verdict: the four-flavour grid, raw tier, adapters and matcher gating are gone and every persona compiled with zero or one crate-caused failure; residual over-building is a `fallback` tier nobody used, prose repeating a policy the types leave to a wrapper, and shipped examples still teaching a ritual the README avoids. Kept as justified: two flavours over an open decode bound, decode-at-route with registration site, outcome and match, `always`, the matcher's tuple catalogue, `E: From<DecodeError>` on the type, no bound on the observer's error, the platform-conditional bounds. Findings and probe results:
 
-- Two of four flavours (meta, octocrab event) mergeable; three adapters, the adapter error type and the flavour conversion unused by any persona outside tests.
-- The raw tier expressed nothing the `always` tier could not once `always` takes the envelope; the shipped example answered 500 on redelivery.
-- The dispatch span's outcome label was a two-by-two of matched and ok, mislabelling an `always` failure on an unrouted kind.
-- The matcher was exported from the core with no core consumer.
-- The registration bound `E: From<H::Error>` caused both the `Infallible` boilerplate and E0283 on bare `Ok(())`; no coherent blanket removes it (probed, E0119). Decision deferred.
-- A single generic handler trait with the input as a trait parameter is coherent (probed) but degrades struct impls to tuple arguments; two traits over a shared decode bound chosen instead.
-- `TryFrom<Envelope>` as that bound is forbidden for the payload blanket by the orphan rule (probed, E0210).
-- `Arc<H>` was a handler for one flavour only; two receiver-builder spellings; the sans-I/O path lacked the receiver's ping and body-limit behaviours.
+- A marker parameter `EventHandler<P, Args = (EventMeta, P)>` is coherent (probed): admits a payload-only `Fn(P)` blanket, keeps struct impls unchanged, forwards through `Arc<H>`, and turns the E0593 arity error into the crate's own E0277 message. Deferred by the synthesizer as a second type parameter on the headline trait; `impl FromEnvelope for EventMeta` recommended instead.
+- Recording the error's `Display` inside the crate without a bound on `E` is not expressible (probed: autoref specialization resolves against the generic). Bound-free event without text, or an opt-in `Display`-bounded observer fn, are the options.
+- `Box<dyn Error + Send + Sync>` is the zero-ceremony application error today (probed) and is undocumented; `DispatchError` over it is not itself `Error`.
+- Moving `E: From<DecodeError>` off the type frees only a route-less dispatcher (probed); an infallible `()` through an associated error moves the `Infallible` ritual onto every `()` route (probed). Keep the bound where it is.
+- `H::Error = E` in place of `E: From<H::Error>` (probed): bare `Ok(())` infers, an `Infallible` struct becomes a one-token fix, a reusable handler with a foreign error is lost. Every `Infallible` hit this run traces to a crate-taught shape; fix the four sites, then re-measure.
+- The handler module carries a migration note and `compile_fail` for an octocrab-only trait that `v0.1.0` never shipped.
+- `fallback` cannot see the match; 0/4 used it. Synthesizer's call: keep, re-documented as "log unrouted / strict".
+- `Envelope::from_signed_headers` is a duplicate spelling called only by two internal tests.
+- `always` is glossed "every delivery" while the receiver short-circuits `ping` before it by default.
+- `DecodeError::Json`'s `Display` leaves the serde message to `source()`; the README's headline observer therefore prints a fieldless reason.
+- Release hygiene: manifest `0.1.0`, README `0.2`, no changelog, survey table stale, README `EventMeta` list incomplete.
