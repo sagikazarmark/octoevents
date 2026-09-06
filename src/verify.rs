@@ -44,8 +44,7 @@ pub enum VerifyError {
 /// `X-Hub-Signature` beside it, and a request carrying only that header is
 /// [`VerifyError::MissingSignature`]: the SHA-256 header is always there to
 /// verify, so falling back to the SHA-1 one would protect no delivery and
-/// would let a sender choose the weaker algorithm. The crate docs record this
-/// under [Deliberately left out](crate#deliberately-left-out).
+/// would let a sender choose the weaker algorithm.
 ///
 /// ```
 /// use octoevents::{Secret, Verifier};

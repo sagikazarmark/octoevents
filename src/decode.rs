@@ -135,10 +135,6 @@ impl Envelope {
     /// Decodes [`Envelope::raw`] on every call. Bind the result rather than
     /// calling it repeatedly: a delivery can carry megabytes of JSON.
     ///
-    /// Enabling the `octocrab` feature makes octocrab's pre-1.0 version part
-    /// of this crate's public API: [`WebhookEvent`] is octocrab's type, so an
-    /// octocrab major bump here is a breaking change for this method.
-    ///
     /// [`WebhookEventPayload::Unknown`]: octocrab::models::webhook_events::WebhookEventPayload::Unknown
     /// [`EventHandler`]: crate::EventHandler
     /// [`WebhookHandler`]: crate::WebhookHandler

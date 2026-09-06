@@ -441,8 +441,7 @@ impl Envelope {
     /// other setting, `application/x-www-form-urlencoded`, wraps the JSON in a
     /// `payload` form parameter and signs the form body, which would make
     /// [`Envelope::raw`] the signed input but no longer the payload every
-    /// decode reads. The crate docs record this under
-    /// [Deliberately left out](crate#deliberately-left-out).
+    /// decode reads.
     ///
     /// # What the receiver adds
     ///

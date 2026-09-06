@@ -38,10 +38,10 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// declare a delivery "not mine" so that a later handler takes it. The tiers
 /// plus registration order cover what a webhook receiver needs, and matching
 /// decided by handlers at run time would leave the route table unable to say
-/// what it routes; the crate docs record the designs this was weighed
-/// against under [Deliberately left out](crate#deliberately-left-out). A
-/// handler that decides whether routing happens at all wraps the dispatcher
-/// instead.
+/// what it routes; the designs this was weighed against are recorded in the
+/// repository's design notes, linked from the crate docs under
+/// [Design](crate#design). A handler that decides whether routing happens at
+/// all wraps the dispatcher instead.
 ///
 /// [`dispatch`](Self::dispatch) reports an [`Outcome`]: whether the delivery
 /// was matched, and if not, whether its kind was known to the route table,
@@ -78,13 +78,12 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// ```
 /// use octoevents::{Action, DecodeError, Dispatcher, Envelope, EventKind, EventMeta};
 ///
+/// /// The application error every handler converts into. `From<DecodeError>`
+/// /// is required: the dispatcher decodes on the handlers' behalf.
 /// #[derive(Debug)]
 /// enum AppError { Decode(DecodeError), Unhandled(EventKind) }
 /// impl From<DecodeError> for AppError {
 ///     fn from(error: DecodeError) -> Self { Self::Decode(error) }
-/// }
-/// impl From<std::convert::Infallible> for AppError {
-///     fn from(never: std::convert::Infallible) -> Self { match never {} }
 /// }
 ///
 /// // A consumer view over the pull-request payload; the kind it declares is
@@ -93,30 +92,38 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// struct PullRequestNumber { number: u64 }
 /// octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
 ///
+/// async fn forward(envelope: Envelope) -> Result<(), AppError> {
+///     println!("forward {} ({} bytes)", envelope.meta.delivery_id, envelope.raw.len());
+///     Ok(())
+/// }
+///
+/// async fn notify(meta: EventMeta, pr: PullRequestNumber) -> Result<(), AppError> {
+///     println!("PR #{} {:?} for installation {:?}", pr.number, meta.action, meta.installation_id);
+///     Ok(())
+/// }
+///
+/// async fn label(_: EventMeta, pr: PullRequestNumber) -> Result<(), AppError> {
+///     println!("label PR #{}", pr.number);
+///     Ok(())
+/// }
+///
+/// async fn reject(envelope: Envelope) -> Result<(), AppError> {
+///     Err(AppError::Unhandled(envelope.meta.kind))
+/// }
+///
 /// let dispatcher = Dispatcher::<AppError>::builder()
-///     .always(|envelope: Envelope| async move {
-///         println!("forward {} ({} bytes)", envelope.meta.delivery_id, envelope.raw.len());
-///         Ok::<_, std::convert::Infallible>(())
-///     })
-///     .on_payload(|meta: EventMeta, pr: PullRequestNumber| async move {
-///         println!("PR #{} {:?} for installation {:?}", pr.number, meta.action, meta.installation_id);
-///         Ok::<_, std::convert::Infallible>(())
-///     })
-///     .on_payload_action([Action::Opened, Action::Reopened], |_: EventMeta, pr: PullRequestNumber| async move {
-///         println!("label PR #{}", pr.number);
-///         Ok::<_, std::convert::Infallible>(())
-///     })
-///     .fallback(|envelope: Envelope| async move {
-///         Err::<(), _>(AppError::Unhandled(envelope.meta.kind))
-///     })
+///     .always(forward)
+///     .on_payload(notify)
+///     .on_payload_action([Action::Opened, Action::Reopened], label)
+///     .fallback(reject)
 ///     .build();
 /// # let _ = dispatcher;
 /// ```
 ///
-/// `E` must implement `From` of every registered handler's error, including
-/// [`Infallible`](std::convert::Infallible) for handlers that cannot fail;
-/// that impl is the one-line `match never {}` above. Handlers written against
-/// `E` itself need nothing further.
+/// Handlers written against `E` itself, as above, need nothing further. A
+/// handler with its own error type registers once `E: From` of it; for a
+/// closure or struct whose error is [`Infallible`](std::convert::Infallible),
+/// that impl is the one-line `match never {}`.
 ///
 /// `on` routes an event handler over any [`FromEnvelope`] input for the
 /// kinds and actions a matcher selects. `()` decodes nothing, so a handler
@@ -129,15 +136,14 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// # use octoevents::DecodeError;
 /// # struct AppError;
 /// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
-/// # impl From<std::convert::Infallible> for AppError {
-/// #     fn from(never: std::convert::Infallible) -> Self { match never {} }
-/// # }
+///
+/// async fn revoke(meta: EventMeta, (): ()) -> Result<(), AppError> {
+///     println!("revoke tokens for installation {:?}", meta.installation_id);
+///     Ok(())
+/// }
 ///
 /// let dispatcher = Dispatcher::<AppError>::builder()
-///     .on((EventKind::Installation, Action::Deleted), |meta: EventMeta, (): ()| async move {
-///         println!("revoke tokens for installation {:?}", meta.installation_id);
-///         Ok::<_, std::convert::Infallible>(())
-///     })
+///     .on((EventKind::Installation, Action::Deleted), revoke)
 ///     .build();
 /// # let _ = dispatcher;
 /// ```
@@ -152,15 +158,14 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// # use octoevents::DecodeError;
 /// # struct AppError;
 /// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
-/// # impl From<std::convert::Infallible> for AppError {
-/// #     fn from(never: std::convert::Infallible) -> Self { match never {} }
-/// # }
+///
+/// async fn triage(meta: EventMeta, event: WebhookEvent) -> Result<(), AppError> {
+///     println!("triage {:?} for {:?}", meta.action, event.repository.map(|repository| repository.name));
+///     Ok(())
+/// }
 ///
 /// let dispatcher = Dispatcher::<AppError>::builder()
-///     .on((EventKind::PullRequest, [Action::Opened, Action::Synchronize]), |meta: EventMeta, event: WebhookEvent| async move {
-///         println!("triage {:?} for {:?}", meta.action, event.repository.map(|repository| repository.name));
-///         Ok::<_, std::convert::Infallible>(())
-///     })
+///     .on((EventKind::PullRequest, [Action::Opened, Action::Synchronize]), triage)
 ///     .build();
 /// # let _ = dispatcher;
 /// # }
@@ -176,11 +181,6 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// dead-letter or forward an unmatched delivery, bytes still in hand,
 /// without a strict `fallback` turning it into an error. The dispatcher only
 /// routes. The `dispatcher` example shows the wrapper.
-///
-/// Enabling the `octocrab` feature makes octocrab's pre-1.0 version part of
-/// this crate's public API: an octocrab major bump is a breaking change for
-/// handlers over its `WebhookEvent` and per-kind payload structs, not for
-/// this type or its registration methods.
 pub struct Dispatcher<E> {
     routes: Arc<Routes<E>>,
 }
@@ -598,7 +598,7 @@ where
     /// routing.
     ///
     /// It receives the verified [`Envelope`], bytes included, and nothing is
-    /// decoded on its behalf, so it runs even for a payload no typed handler
+    /// decoded on its behalf, so it runs even for a payload no event handler
     /// can decode: the tier for audit, metrics, and forwarding. Its failure
     /// fails the delivery, and it never counts as a match, so a strict
     /// fallback still rejects kinds nothing else handles. It cannot skip: a

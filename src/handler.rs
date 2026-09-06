@@ -5,10 +5,29 @@ use crate::{Envelope, EventMeta, MaybeSend};
 /// Consumer-owned code that handles one verified [`Envelope`].
 ///
 /// This is the handler flavour the receiver accepts, and the one the
-/// dispatcher's `always` and `fallback` tiers accept. Implement it on a
-/// struct whose fields are its dependencies and write a plain
-/// `async fn handle`; the future borrows `&self`, so nothing is cloned per
-/// delivery:
+/// dispatcher's `always` and `fallback` tiers accept. It receives the
+/// envelope as verified: the [`EventMeta`] and the exact payload bytes, with
+/// nothing decoded on its behalf, so it runs for every delivery, including
+/// one whose payload nothing can decode.
+///
+/// The simplest handler is an `async fn` taking the envelope and returning
+/// `Result<(), E>`; the receiver and the dispatcher accept the function
+/// itself:
+///
+/// ```
+/// use octoevents::{Envelope, WebhookHandler};
+///
+/// async fn audit(envelope: Envelope) -> Result<(), std::io::Error> {
+///     println!("{} {} ({} bytes)", envelope.meta.delivery_id, envelope.meta.kind, envelope.raw.len());
+///     Ok(())
+/// }
+/// # fn assert_handler<H: WebhookHandler>(_: H) {}
+/// # assert_handler(audit);
+/// ```
+///
+/// A handler with dependencies is a struct implementing the trait, the
+/// dependencies its fields, with a plain `async fn handle`; the future
+/// borrows `&self`, so nothing is cloned per delivery:
 ///
 /// ```
 /// use octoevents::{Envelope, WebhookHandler};
@@ -27,17 +46,23 @@ use crate::{Envelope, EventMeta, MaybeSend};
 /// }
 /// ```
 ///
-/// Closures implement the trait too. Annotate the parameter type and state
-/// the error type (`Ok::<_, E>(())`): neither the receiver nor a dispatcher
-/// can infer it from a bare `Ok(())`.
+/// Closures implement the trait too, with two annotations the `async fn`
+/// form does not need: name the type of each parameter the body uses
+/// (`|envelope: Envelope|`; one the body ignores may stay `_`) and state the
+/// error type (`Ok::<_, E>(())`). Registration is bound on the handler
+/// trait rather than on `Fn`, so rustc reads neither off the call: a bare
+/// `Ok(())` is E0282 on the receiver path, where nothing constrains it, and
+/// E0283 on the dispatcher path, where every error type the application
+/// error has a `From` for would fit. This holds for [`EventHandler`]
+/// closures alike.
 ///
 /// ```
 /// use octoevents::{Envelope, WebhookHandler};
 ///
-/// fn log() -> impl WebhookHandler<Error = std::convert::Infallible> {
+/// fn log() -> impl WebhookHandler<Error = std::io::Error> {
 ///     |envelope: Envelope| async move {
 ///         println!("{} {}", envelope.meta.delivery_id, envelope.meta.kind);
-///         Ok::<_, std::convert::Infallible>(())
+///         Ok::<_, std::io::Error>(())
 ///     }
 /// }
 /// ```
@@ -50,40 +75,19 @@ use crate::{Envelope, EventMeta, MaybeSend};
 /// For one kind and nothing else, no dispatcher is needed: a webhook handler
 /// decodes its own view with [`Envelope::decode_payload`], whose kind check
 /// refuses a delivery of another kind at the kind, so a misconfigured webhook
-/// fails loudly rather than at a missing field. The handler's error type
-/// absorbs the [`DecodeError`](crate::DecodeError) through `From`, here by
-/// being it:
-///
-/// ```
-/// use octoevents::{DecodeError, Envelope, EventKind, WebhookHandler};
-///
-/// #[derive(serde::Deserialize)]
-/// struct PullRequestNumber { number: u64 }
-/// octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
-///
-/// struct Labeler { /* GitHub API client */ }
-///
-/// impl WebhookHandler for Labeler {
-///     type Error = DecodeError;
-///
-///     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
-///         let pr = envelope.decode_payload::<PullRequestNumber>()?;
-///         println!("{}: label PR #{}", envelope.meta.delivery_id, pr.number);
-///         Ok(())
-///     }
-/// }
-/// ```
-///
-/// The alternative is a `Dispatcher` with one route (`on_payload`, or
+/// fails loudly rather than at a missing field. The crate docs show one under
+/// [One event, one webhook handler](crate#one-event-one-webhook-handler). The
+/// alternative is a `Dispatcher` with one route (`on_payload`, or
 /// `on_payload_action` for some of the kind's actions), which takes an
 /// [`EventHandler`] over the view and answers a delivery of any other kind
 /// with success rather than failure.
 ///
-/// `Arc<H>` is a webhook handler when `H` is, so one handler struct can be
-/// shared between the receiver and a test that reads its state. `&H` and
-/// `Box<H>` are not: std implements `Fn` for both, so those impls would
-/// overlap the closure blanket. The receiver holds its handler behind its
-/// own `Arc`, so it is `Clone` for any `H` without one.
+/// `Arc<H>` is a handler of either flavour when `H` is, so one handler
+/// struct can be shared between the receiver or a route and a test that
+/// reads its state. `&H` and `Box<H>` are not: std implements `Fn` for both,
+/// so those impls would overlap the closure blanket. Neither the receiver
+/// nor the dispatcher needs the caller's `Arc`: each holds its handlers
+/// behind its own, so the receiver is `Clone` for any `H` without one.
 ///
 /// Passing something that is not a handler names the flavour and its shape
 /// rather than the `Fn` bound behind it. For a struct with no impl, rustc
@@ -173,6 +177,35 @@ impl<H: WebhookHandler> WebhookHandler for Arc<H> {
 /// `P::KIND` is the only kind whose deliveries reach `handle`, so a handler
 /// over `PullRequestWebhookEventPayload` cannot be registered under `issues`.
 ///
+/// The simplest handler is an `async fn` taking the meta and the input and
+/// returning `Result<(), E>`; the dispatcher accepts the function itself, and
+/// the input's type is what fixes `P`:
+///
+/// ```
+/// use octoevents::{EventHandler, EventKind, EventMeta};
+///
+/// #[derive(serde::Deserialize)]
+/// struct PullRequestNumber { number: u64 }
+/// octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
+///
+/// async fn log(meta: EventMeta, pr: PullRequestNumber) -> Result<(), std::io::Error> {
+///     println!("{}: PR #{}", meta.delivery_id, pr.number);
+///     Ok(())
+/// }
+///
+/// // Routed by kind and action alone; nothing is decoded for it.
+/// async fn revoke(meta: EventMeta, (): ()) -> Result<(), std::io::Error> {
+///     println!("revoke tokens for installation {:?}", meta.installation_id);
+///     Ok(())
+/// }
+/// # fn assert_handler<P, H: EventHandler<P>>(_: H) {}
+/// # assert_handler(log);
+/// # assert_handler(revoke);
+/// ```
+///
+/// A handler with dependencies is a struct implementing the trait, the
+/// dependencies its fields borrowed through `&self`:
+///
 /// ```
 /// use octoevents::{EventHandler, EventKind, EventMeta};
 ///
@@ -192,32 +225,10 @@ impl<H: WebhookHandler> WebhookHandler for Arc<H> {
 /// }
 /// ```
 ///
-/// A closure `Fn(EventMeta, P) -> Fut` is an event handler too. Annotate
-/// the parameters it uses (the input type is also what fixes `P`) and state
-/// its error type (`Ok::<_, E>(())`):
-///
-/// ```
-/// use octoevents::{EventHandler, EventKind, EventMeta};
-///
-/// #[derive(serde::Deserialize)]
-/// struct PullRequestNumber { number: u64 }
-/// octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
-///
-/// fn log() -> impl EventHandler<PullRequestNumber, Error = std::convert::Infallible> {
-///     |meta: EventMeta, pr: PullRequestNumber| async move {
-///         println!("{}: PR #{}", meta.delivery_id, pr.number);
-///         Ok::<_, std::convert::Infallible>(())
-///     }
-/// }
-///
-/// // Routed by kind and action alone; nothing is decoded for it.
-/// fn revoke() -> impl EventHandler<(), Error = std::convert::Infallible> {
-///     |meta: EventMeta, (): ()| async move {
-///         println!("revoke tokens for installation {:?}", meta.installation_id);
-///         Ok::<_, std::convert::Infallible>(())
-///     }
-/// }
-/// ```
+/// A closure `Fn(EventMeta, P) -> Fut` is an event handler too, with the
+/// annotations [`WebhookHandler`] describes: the parameters the body uses
+/// typed (`|meta: EventMeta, pr: PullRequestNumber|`) and the error type
+/// stated.
 ///
 /// Register one on a `Dispatcher` with `on_payload` for every action of a
 /// payload's kind, `on_payload_action` for some, or `on` with a matcher for
@@ -229,8 +240,8 @@ impl<H: WebhookHandler> WebhookHandler for Arc<H> {
 /// The trait is generic over the input, so one struct can implement it for
 /// several input types. Registration then needs a turbofish, because the
 /// struct alone no longer says which input is meant:
-/// `dispatcher.on_payload::<PullRequestNumber, _>(labeler)`. A closure fixes
-/// the input by its parameter type and needs no turbofish.
+/// `dispatcher.on_payload::<PullRequestNumber, _>(labeler)`. An `async fn`
+/// or a closure fixes the input by its parameter type and needs no turbofish.
 ///
 /// The type parameter is required: `impl EventHandler for X` without one is
 /// a missing-generics error, not a handler over some default input. An impl
@@ -254,11 +265,9 @@ impl<H: WebhookHandler> WebhookHandler for Arc<H> {
 /// }
 /// ```
 ///
-/// `Arc<H>` is an event handler when `H` is, so one handler struct can be
-/// shared between a route and a test that reads its state. `&H` and `Box<H>`
-/// are not: std implements `Fn` for both, so those impls would overlap the
-/// closure blanket. The dispatcher wraps every registered handler in its own
-/// `Arc`, so sharing needs nothing from the caller.
+/// `Arc<H>` is an event handler when `H` is, under the rule [`WebhookHandler`]
+/// states for both flavours; the dispatcher wraps every registered handler in
+/// its own `Arc`, so sharing needs nothing from the caller.
 ///
 /// A value that is not an event handler is reported as such, naming the
 /// input and the shape expected:

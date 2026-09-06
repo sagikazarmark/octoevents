@@ -122,9 +122,7 @@ impl FromEnvelope for () {
 /// the kind's full model uses octocrab's struct for the kind, which is a
 /// payload like any other, though those structs mostly leave the top-level
 /// `installation`, `sender`, `repository` and `organization` objects to
-/// octocrab's `WebhookEvent`; each impl's docs say where to find them. The
-/// crate docs record this under
-/// [Deliberately left out](crate#deliberately-left-out).
+/// octocrab's `WebhookEvent`; each impl's docs say where to find them.
 ///
 /// ```
 /// use octoevents::{EventKind, Payload};

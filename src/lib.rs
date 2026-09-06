@@ -1,190 +1,228 @@
 //! Receive and verify GitHub webhook events.
 //!
 //! `octoevents` is the receiving edge of a GitHub App: it turns an untrusted
-//! HTTP request into a verified, routable [`Envelope`] and hands it to your
-//! handlers. The core is sans-I/O and wasm-safe; one receiver over `http`
-//! types serves Axum, Cloudflare Workers, and anything else that can hand
-//! over a request.
+//! HTTP request into a verified [`Envelope`] and hands it to your handlers.
+//! The core is sans-I/O and wasm-safe; one receiver over `http` types serves
+//! Axum, Cloudflare Workers, and anything else that can hand over a request.
 //!
-//! # Quick start
+//! A complete receiver that labels every opened issue and audits every
+//! delivery, mounted on Axum with the `tower` feature:
+//!
+//! ```no_run
+//! use octoevents::{
+//!     Action, DecodeError, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, Secret,
+//!     Verifier,
+//! };
+//! # #[cfg(feature = "http")]
+//! use octoevents::WebhookReceiverBuilder;
+//!
+//! /// The one error every handler returns. The dispatcher decodes payloads on
+//! /// the handlers' behalf and reports a payload that does not fit through it.
+//! #[derive(Debug, thiserror::Error)]
+//! enum AppError {
+//!     #[error(transparent)]
+//!     Decode(#[from] DecodeError),
+//! }
+//!
+//! /// The fields this bot reads off an `issues` payload, and nothing else.
+//! #[derive(serde::Deserialize)]
+//! struct IssueOpened {
+//!     issue: Issue,
+//! }
+//!
+//! #[derive(serde::Deserialize)]
+//! struct Issue {
+//!     number: u64,
+//!     title: String,
+//! }
+//!
+//! octoevents::impl_payload!(IssueOpened => EventKind::Issues);
+//!
+//! /// Runs for `issues.opened`, with the payload decoded as `IssueOpened`.
+//! async fn label(meta: EventMeta, payload: IssueOpened) -> Result<(), AppError> {
+//!     println!("{}: label #{} '{}'", meta.delivery_id, payload.issue.number, payload.issue.title);
+//!     Ok(())
+//! }
+//!
+//! /// Runs for every verified delivery, bytes included.
+//! async fn audit(envelope: Envelope) -> Result<(), AppError> {
+//!     println!("{} {} ({} bytes)", envelope.meta.delivery_id, envelope.meta.kind, envelope.raw.len());
+//!     Ok(())
+//! }
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let secret = std::env::var("GITHUB_WEBHOOK_SECRET")?;
+//!
+//!     let dispatcher = Dispatcher::<AppError>::builder()
+//!         .always(audit)
+//!         .on_payload_action([Action::Opened], label)
+//!         .build();
+//!
+//! #   #[cfg(feature = "http")] {
+//!     let webhook = WebhookReceiverBuilder::new(Verifier::new(Secret::new(secret)))
+//!         .on_error(|_: &EventMeta, error: &DispatchError<AppError>| {
+//!             eprintln!("{error}: {}", error.source);
+//!         })
+//!         .build(dispatcher);
+//!
+//! #   #[cfg(feature = "tower")] {
+//!     let app = axum::Router::new().route("/webhook", axum::routing::post_service(webhook));
+//!     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
+//!     axum::serve(listener, app).await?;
+//! #   }
+//! #   }
+//!     Ok(())
+//! }
+//! ```
+//!
+//! The receiver verifies `X-Hub-Signature-256` against the exact body bytes
+//! with the secret (refusing an unsigned request before it reads the body)
+//! and answers GitHub with a bare status: 204 when the handler succeeded,
+//! 500 when it failed, 401, 400 or 413 for a request that never reached one.
+//! The dispatcher routes each verified envelope by kind and action:
+//! `audit` runs for every delivery, `label` for `issues.opened` only, with
+//! the payload decoded as the view it asked for. The `on_error` observer is
+//! where a failure becomes visible; without it a failed delivery is a silent
+//! 500. It prints where (the tier and the line that registered the failing
+//! handler) and why (the handler's own error).
 //!
 //! Always pass the exact request bytes. Parsing, re-encoding, or normalizing
 //! the body before verification invalidates GitHub's signature.
 //!
-//! ```
-//! use octoevents::{Bytes, Envelope, HeaderView, Secret, Verifier};
-//!
-//! let body = Bytes::from_static(br#"{"action":"opened"}"#);
-//! let headers = HeaderView::new()
-//!     .signature("sha256=...")
-//!     .delivery_id("72d3162e-cc78-11e3-81ab-4c9367dc0958")
-//!     .event_name("pull_request")
-//!     .content_type("application/json");
-//! let verifier = Verifier::new(Secret::new("current secret"));
-//!
-//! // The placeholder signature above fails, as it should.
-//! assert!(Envelope::from_signed(&verifier, &headers, body).is_err());
-//! ```
-//!
-//! [`Envelope::from_signed`] is the only path in this crate that turns an
-//! untrusted request into an envelope, and it authenticates before it
-//! extracts. On the `http` feature (default), `WebhookReceiver` applies the
-//! same construction to a whole `http::Request` and answers with the response
-//! contract GitHub expects; the `tower` feature adds a
-//! `tower_service::Service` impl.
-//!
 //! # Handlers
 //!
-//! Handlers are structs whose fields are their dependencies, with a plain
-//! `async fn handle(&self, ..)` and their own error type. Two flavours differ
-//! by what they receive:
+//! A handler is an `async fn` that takes what it handles and returns
+//! `Result<(), E>`; the receiver and the dispatcher accept the function
+//! itself, as the dispatcher above does with `audit` and `label`. Two
+//! flavours, named by what they receive:
 //!
-//! - A [`WebhookHandler`] receives the verified [`Envelope`]: metadata plus
-//!   the raw payload bytes. This is what the receiver accepts, and what the
-//!   dispatcher's `always` and `fallback` tiers accept. For audit, metrics,
-//!   persistence and forwarding.
+//! - A [`WebhookHandler`] receives the verified [`Envelope`]: the
+//!   [`EventMeta`] and the exact payload bytes. The receiver accepts one,
+//!   and so do the dispatcher's `always` and `fallback` tiers. `audit` is
+//!   one.
 //! - An [`EventHandler`] receives the [`EventMeta`] and the envelope decoded
-//!   as a type implementing [`FromEnvelope`]. A [`Payload`] is one such type,
-//!   declaring the kind it decodes: implement it for your own serde view with
-//!   [`impl_payload!`], or use octocrab's per-kind payload structs with the
-//!   `octocrab` feature. `()` is another, decoding nothing, for a handler
-//!   routed by kind and action that needs only the meta; octocrab's
-//!   `WebhookEvent` (`octocrab` feature) is a third, for logic that spans
-//!   kinds; and a consumer view over fields several kinds share implements
-//!   `FromEnvelope` itself.
+//!   as some `P: `[`FromEnvelope`]. `label` is one, over the `IssueOpened`
+//!   view; [`impl_payload!`] declared which kind the view decodes, so
+//!   `on_payload_action` needed no kind and could not be given the wrong
+//!   one. `()` is an input too, for a handler routed by kind and action that
+//!   decodes nothing; octocrab's `WebhookEvent` is one with the `octocrab`
+//!   feature; and a view over fields several kinds share implements
+//!   `FromEnvelope` itself and is registered under those kinds with `on`.
 //!
-//! For one kind and nothing else, no dispatcher is needed: a webhook handler
-//! decodes its own view with [`Envelope::decode_payload`], which refuses a
-//! delivery of any other kind at the kind:
+//! A handler with dependencies is a struct implementing the trait, the
+//! dependencies its fields borrowed through `&self`; each trait's docs show
+//! one, and `Arc<H>` is a handler when `H` is. Closures work too, with the
+//! annotations [`WebhookHandler`] describes. A struct keeps its own error
+//! type; the dispatcher converts it into the application error through
+//! `From`.
+//!
+//! # Routing
+//!
+//! A [`Dispatcher`] is itself a webhook handler that runs three tiers in
+//! order: `always`, for every delivery, receiving the envelope; the routed
+//! event handlers registered for the delivery's kind and action, then for the
+//! kind, by the payload type (`on_payload`, `on_payload_action`) or by an
+//! [`EventMatcher`] over any `FromEnvelope` input (`on`); and `fallback`,
+//! only when nothing routed matched, receiving the envelope. A routed handler
+//! decodes its input only when its route matched; `always` and `fallback`
+//! decode nothing. Unmatched deliveries succeed unless a fallback fails them.
+//!
+//! A failure is a [`DispatchError`]: the application error wrapped with the
+//! [`Tier`], the delivery's ID, kind and action, and the source location of
+//! the registration that put the failing handler there. `dispatch` also
+//! reports an [`Outcome`], matched or unmatched with the kind known or
+//! unknown to the route table, for a webhook handler wrapping the dispatcher
+//! to act on.
+//!
+//! # Testing without GitHub
+//!
+//! A handler is tested through [`Dispatcher::dispatch`] with an envelope
+//! built by hand, [`EventMeta::new`] for the delivery and the payload bytes
+//! as a literal; nothing is verified on that path, so nothing is signed. The
+//! receiver is tested through [`WebhookReceiver::receive`] with a synthetic
+//! request carrying the four headers under [`header`] and a signature of
+//! `sha256=` plus the lowercase hex HMAC-SHA256 of the body under the secret.
+//! The README shows both as `#[tokio::test]` functions.
+//!
+//! # One event, one webhook handler
+//!
+//! A receiver for one kind and nothing else needs no dispatcher: a webhook
+//! handler decodes its own view with [`Envelope::decode_payload`], which
+//! refuses a delivery of any other kind at the kind. Without the `tower`
+//! feature, the receiver mounts on Axum as a plain handler calling
+//! [`WebhookReceiver::receive`]; the README shows the wiring.
 //!
 //! ```
-//! use octoevents::{DecodeError, Envelope, EventKind, WebhookHandler};
+//! use octoevents::{Action, DecodeError, Envelope, EventKind};
 //!
 //! #[derive(serde::Deserialize)]
-//! struct PullRequestNumber { number: u64 }
-//! octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
+//! struct ReleasePublished { release: Release }
+//! #[derive(serde::Deserialize)]
+//! struct Release { tag_name: String }
+//! octoevents::impl_payload!(ReleasePublished => EventKind::Release);
 //!
-//! struct Labeler { /* GitHub API client */ }
-//!
-//! impl WebhookHandler for Labeler {
-//!     type Error = DecodeError;
-//!
-//!     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
-//!         let pr = envelope.decode_payload::<PullRequestNumber>()?;
-//!         println!("{}: label PR #{} for installation {:?}", envelope.meta.delivery_id, pr.number, envelope.meta.installation_id);
-//!         Ok(())
+//! async fn announce(envelope: Envelope) -> Result<(), DecodeError> {
+//!     if envelope.meta.action != Some(Action::Published) {
+//!         return Ok(());
 //!     }
+//!     let payload = envelope.decode_payload::<ReleasePublished>()?;
+//!     println!("{}: released {}", envelope.meta.delivery_id, payload.release.tag_name);
+//!     Ok(())
 //! }
 //!
 //! # #[cfg(feature = "http")] {
 //! use octoevents::{Secret, Verifier, WebhookReceiverBuilder};
 //!
-//! let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("current secret")))
-//!     .build(Labeler {});
-//! # let _ = receiver;
+//! let webhook = WebhookReceiverBuilder::new(Verifier::new(Secret::new("current secret")))
+//!     .build(announce);
+//! # let _ = webhook;
 //! # }
 //! ```
 //!
-//! Event handlers reach the receiver through a [`Dispatcher`], which
-//! routes handlers by [`EventKind`] and [`Action`]: webhook handlers in its
-//! `always` and `fallback` tiers, event handlers by the kind their payload
-//! type declares (`on_payload`, or `on_payload_action` for some of its
-//! actions) or by matcher for any `FromEnvelope` input (`on`). A dispatcher
-//! with one `on_payload` route is the alternative to the handler above: it
-//! takes an [`EventHandler`] over the same view and answers a delivery of
-//! any other kind with success rather than failure. The
-//! dispatcher converts each handler's error into one application error via
-//! `From`, and reports a failure as a [`DispatchError`] wrapping that error
-//! with the [`Tier`] it came from, the delivery's ID, kind and action, and
-//! the source location that registered the failing handler. Its `dispatch`
-//! reports an [`Outcome`]: whether the delivery matched, and if not, whether
-//! its kind was known to the route table, beside the handlers' result. As a
-//! `WebhookHandler` it keeps only the result, so the receiver sees an
-//! unmatched delivery as a success unless a fallback failed it.
+//! The alternative is a dispatcher with one `on_payload` route, which answers
+//! a delivery of any other kind with success rather than failure.
 //!
-//! Closures implement both flavours too, and `Arc<H>` is a handler of either
-//! flavour when `H` is. Annotate the parameters a closure's body uses
-//! (`|envelope: Envelope|`, `|meta: EventMeta, pr: PullRequestNumber|`):
-//! registration is bound on the handler trait rather than on `Fn`, so rustc
-//! does not read their types off the call, though a parameter the body
-//! ignores may stay a bare `_`. Always state the error type
-//! (`Ok::<_, E>(())`): a bare `Ok(())` fails with E0282 on the receiver
-//! path, where nothing constrains it, and with E0283 on the dispatcher path,
-//! where every error type the application error has a `From` for would fit.
+//! # Without the `http` feature
+//!
+//! [`Envelope::from_signed`] is the sans-I/O entry point and the only path
+//! that turns an untrusted request into an envelope; it authenticates before
+//! it extracts. A transport with no `http::Request` builds a [`HeaderView`]
+//! from the values under the names in [`header`], calls it with the body as
+//! [`Bytes`], and answers with [`ResponseStatus`]. Its docs list the three
+//! things the receiver does that this path does not: refusing an unsigned
+//! request before reading the body, bounding the body, and short-circuiting
+//! `ping`. [`Envelope`] serializes with serde for forwarding, bytes in
+//! base64; its docs show the document.
 //!
 //! # Delivery semantics
 //!
-//! The crate deliberately provides no replay protection: GitHub signs no
-//! timestamp, so consumers must treat [`EventMeta::delivery_id`] as an
-//! idempotency key.
+//! The crate provides no replay protection: GitHub signs no timestamp, so
+//! treat [`EventMeta::delivery_id`] as an idempotency key.
 //!
-//! GitHub does not automatically retry failed webhook deliveries. Keep
-//! handlers below GitHub's timeout (10 seconds on github.com and 30 seconds
-//! on GitHub Enterprise Server) by persisting or forwarding an event before
-//! returning. With a dispatcher, that work belongs in a webhook handler that
-//! wraps `dispatch`: it stores the envelope, bytes included, before anything
-//! is routed, answers a redelivery of a delivery ID it already holds with
-//! success without routing it, and reads the [`Outcome`] to dead-letter a
-//! kind the route table does not know. A tier can continue or fail but never
-//! skip, so the wrapper is where that policy lives; the `dispatcher` example
-//! shows it. A forwarder that never needs to skip fits the `always` tier,
-//! which receives the same envelope before routing.
+//! GitHub does not retry a failed delivery on its own, and it abandons a
+//! request after 10 seconds (30 on GitHub Enterprise Server). Persist or
+//! forward an envelope before returning and process it afterwards. With a
+//! dispatcher, that policy lives in a webhook handler wrapping `dispatch`: it
+//! stores the envelope, bytes included, before anything is routed; answers a
+//! redelivery of a stored delivery ID with success without routing it; and
+//! reads the [`Outcome`] to dead-letter a kind the route table does not
+//! know. A tier can continue or fail but never skip, which is why that
+//! wrapper, and not `always`, is the place; the `dispatcher` example shows
+//! it. A forwarder that never needs to skip fits `always`.
 //!
-//! The receiver answers a failed delivery with a bare 500: the response is
-//! GitHub's delivery record, not a log. To see why a delivery failed, register
-//! an observer with `WebhookReceiverBuilder::on_error`; it receives the
-//! [`EventMeta`] and the handler's error, with no bound on the error type, so
-//! it can log or count a boxed `dyn Error` as readily as a named enum. For a
-//! dispatcher the error is the [`DispatchError`] naming the tier, the
-//! delivery, and the line that registered the failing handler, with the
-//! application error as its source.
+//! The receiver answers a failed delivery with a bare 500 and never reads the
+//! error: the response is GitHub's delivery record, not a log. The observer
+//! registered with `WebhookReceiverBuilder::on_error` receives the
+//! [`EventMeta`] and the handler's error before the 500 is answered, with no
+//! bound on the error type. It runs only when a handler ran and failed.
 //!
-//! # Deliberately left out
+//! # Design
 //!
-//! Some requests come up in every webhook library and are declined here on
-//! purpose. The evidence is in the repository's
-//! [`docs/research/`](https://github.com/sagikazarmark/octoevents/tree/main/docs/research),
-//! a survey of GitHub-webhook receivers in other ecosystems and of dispatcher
-//! designs in Rust; each item below is also recorded on the type where the
-//! request would land.
+//! What this crate declines on purpose, and why, is recorded in the
+//! repository under [`docs/design/deliberately-left-out.md`][left-out].
 //!
-//! - **No SHA-1 fallback.** Only `X-Hub-Signature-256` is verified. GitHub
-//!   sends the SHA-1 `X-Hub-Signature` beside it, and go-github falls back to
-//!   that header when the SHA-256 one is absent; here a request carrying only
-//!   the SHA-1 header is refused as unsigned, with
-//!   [`VerifyError::MissingSignature`]. The stronger header is always present
-//!   to verify, so the fallback would only let a sender choose the weaker
-//!   algorithm. See [`Verifier`].
-//! - **No form-urlencoded body.** The webhook must deliver `application/json`;
-//!   anything else is [`ReceiveError::UnsupportedContentType`]. go-github
-//!   also accepts `application/x-www-form-urlencoded`, JSON under a `payload`
-//!   form parameter with the signature over the form body. Here
-//!   [`Envelope::raw`] is both the signed input and the payload, and a form
-//!   body would make it one but not the other. See [`Envelope::from_signed`].
-//! - **Kind from the header, not the payload's shape.** [`EventMeta::kind`] is
-//!   parsed from `X-GitHub-Event`, and a name this crate does not know is
-//!   [`EventKind::Unknown`], never a failure. Inferring the kind from the
-//!   payload's shape (octoapp's `#[serde(untagged)]` event enum) mis-resolves
-//!   when kinds share a shape and has no answer for a kind it was not built
-//!   with; every other library surveyed reads the header. See [`EventKind`].
-//! - **Consumer-defined views, not one blessed struct per kind.** A
-//!   [`Payload`] is any serde type that declares its kind with
-//!   [`impl_payload!`], so a handler names the fields it reads and nothing
-//!   else. go-playground/webhooks ships one hand-written struct per kind, and
-//!   its issue tracker is a record of fields those structs lack and per-action
-//!   variance they cannot follow. octocrab's per-kind structs are available
-//!   as payloads behind the `octocrab` feature for handlers that want the
-//!   kind's full model; they mostly leave the top-level `installation`,
-//!   `sender`, `repository` and `organization` objects to octocrab's
-//!   `WebhookEvent`. See [`Payload`].
-//! - **No priorities or propagation control.** Handlers run in tier order,
-//!   then registration order, and each can only continue or fail: none can be
-//!   moved ahead of an earlier registration, stop the chain, or pass a
-//!   delivery on as "not mine". Symfony's numeric priorities and
-//!   `stopPropagation`, and dptree's `ControlFlow::Continue`, were surveyed
-//!   and left out: the tiers cover what a webhook receiver needs, and matching
-//!   decided by handlers at run time would make the route table unable to say
-//!   what it routes. See [`Dispatcher`].
+//! [left-out]: https://github.com/sagikazarmark/octoevents/blob/main/docs/design/deliberately-left-out.md
 //!
 //! # Feature caveats
 //!
@@ -244,3 +282,12 @@ pub use bytes::Bytes;
 
 /// GitHub's maximum delivered payload size: 25 MiB.
 pub const DEFAULT_BODY_LIMIT: usize = 25 * 1024 * 1024;
+
+// The README's Rust blocks compile as doctests, so its programs cannot drift
+// from the API. Its first program mounts the receiver with `post_service`,
+// which the `tower` feature provides, so the blocks are checked under that
+// feature; blocks that continue the program rather than stand alone are
+// marked `ignore` in the README itself.
+#[cfg(all(doctest, feature = "tower"))]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

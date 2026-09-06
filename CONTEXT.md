@@ -15,8 +15,9 @@ _Avoid_: Delivery (reserved for the outbound `octodelivery` project), event, mes
 
 **EventMeta**:
 The envelope's routing metadata without the payload bytes: delivery ID, kind,
-action, installation ID, repository, organization, sender, target. What typed
-handlers receive alongside a decoded payload.
+action, installation ID, repository, organization, sender, target. What event
+handlers receive alongside their decoded input, and what the error observer
+receives alongside the handler's error.
 _Avoid_: Common (the former nested group; its name carried no meaning), header (it also holds probed payload fields), delivery (reserved for `octodelivery`), receipt (reads as acknowledgement, and sits too close to Receiver), context (implies ambient services; this is plain data), routing (delivery ID and sender are not routing)
 
 **Receiver**:
@@ -25,83 +26,72 @@ owning no routing of paths or methods.
 _Avoid_: Service (names the optional Tower impl, not the concept), endpoint, listener
 
 **Handler**:
-Consumer-owned code that handles one verified delivery. Handlers *handle*;
-the receiver *receives*. Four flavours are distinguished by what they
-receive: a *webhook handler* receives the envelope, a *meta handler* receives
-only the metadata, an *event handler* receives the metadata plus octocrab's
-decoded event, a *payload handler* receives the metadata plus one kind's
-decoded payload. "Handler" alone means any of them. Event and payload
-handlers are the *typed* handlers: the ones that need a decode.
-_Avoid_: Callback, subscriber
-
-**Webhook handler**:
-A handler that receives the verified envelope, raw bytes included. The only
-flavour the receiver accepts, and the only flavour the raw tier accepts;
-other flavours reach the receiver through an explicit
-`into_webhook_handler()` conversion.
-_Avoid_: Raw handler (raw names the tier and the bytes, not the flavour)
-
-**Meta handler**:
-A handler that receives only the `EventMeta`: no bytes, no decode, so it can
-run for a payload nothing can decode. What the always and fallback tiers
-accept.
-_Avoid_: Metadata handler, header handler (meta also holds probed payload fields)
+Consumer-owned code that handles one verified delivery: an `async fn` item,
+a struct implementing the trait, or a closure. Handlers *handle*; the
+receiver *receives*. Two flavours are distinguished by what they receive: a
+*webhook handler* receives the envelope, raw bytes included, and is what the
+receiver and the always and fallback tiers accept; an *event handler*
+receives the metadata plus the envelope decoded as its input type. "Handler"
+alone means either. The event handler is the *typed* flavour: the one that
+needs a decode.
+_Avoid_: Callback, subscriber, raw handler (raw named a removed tier), meta handler (removed; an event handler over `()` receives only the metadata)
 
 **Event handler**:
-A handler that receives the `EventMeta` and octocrab's decoded `WebhookEvent`
-for any kind. For logic that spans kinds.
-_Avoid_: WebhookEventHandler (collides with "webhook handler")
-
-**Payload handler**:
-A handler that receives the `EventMeta` and one kind's decoded payload. Bound
-to that kind by its payload type, so registering it needs no matcher and
-cannot disagree with the type.
-_Avoid_: Typed handler (event handlers are typed too)
+A handler that receives the `EventMeta` and the envelope decoded as a type
+implementing `FromEnvelope`: a `Payload` view over one kind, bound to that
+kind by its type so registering it needs no matcher and cannot disagree with
+the type; `()` for a handler routed by kind and action that decodes nothing;
+octocrab's `WebhookEvent` for logic over octocrab's model; or a consumer view
+over fields several kinds share.
+_Avoid_: Payload handler (the former name; survives only in `on_payload` and `on_payload_action`, which register an event handler whose payload type fixes the kind), typed handler, WebhookEventHandler (collides with "webhook handler")
 
 **Dispatcher**:
 A handler that routes envelopes to other handlers by kind and action, in
-tiers: the *raw* tier, the *always* tier, the matched routes, then the
-*fallback* chain. Produces an *outcome*. Part of the crate's core: only
-registering an event handler needs the `octocrab` feature.
+tiers: the *always* tier, the matched routes, then the *fallback* chain.
+Produces an *outcome*. Part of the crate's core with every registration
+method; only octocrab's input types need the `octocrab` feature. A policy the
+tiers cannot express (skip a duplicate, dead-letter an unmatched delivery)
+lives in a webhook handler wrapping `dispatch`, the *policy seam*.
 _Avoid_: Router (implies path/method routing, which stays with the caller)
 
-**Raw**:
-The dispatcher tier that runs first for every delivery and receives the
-envelope, bytes included. Where persist-before-route lives. Its failure fails
-the delivery; it never counts as a match.
-_Avoid_: Pre-tier, before hook
-
 **Always**:
-The dispatcher tier that runs for every delivery after the raw tier and
-before routing, receiving only the metadata. Its failure fails the delivery;
-it never counts as a match, so a strict fallback still rejects kinds nothing
-else handles.
-_Avoid_: Global handler, middleware
+The dispatcher tier that runs first, for every delivery, before routing,
+receiving the envelope, bytes included. Its failure fails the delivery; it
+never counts as a match, so a strict fallback still rejects kinds nothing
+else handles. It can continue or fail but never skip.
+_Avoid_: Global handler, middleware, raw (the removed tier that once ran before it)
 
 **Fallback**:
 The dispatcher chain that runs only when no routed handler matched,
-receiving only the metadata. Empty by default, so unmatched deliveries
-succeed.
+receiving the envelope as the always tier does. Empty by default, so
+unmatched deliveries succeed.
 
 **Tier**:
-One of the four steps a dispatcher runs a delivery through, in order: raw,
+One of the three steps a dispatcher runs a delivery through, in order:
 always, route (the matched routes, action-specific then kind-wide), fallback.
 A *dispatch error* names the tier its failing handler ran in.
 _Avoid_: Stage, phase (kept for decode versus handle inside one handler), layer (middleware vocabulary)
 
 **Registration site**:
-The source location of the call that registered a handler (`always_raw`,
-`always`, `on`, `on_payload`, `on_payload_action`, `fallback`), captured at
-compile time through `#[track_caller]`. What a dispatch error points an
-operator at.
+The source location of the call that registered a handler (`always`, `on`,
+`on_payload`, `on_payload_action`, `fallback`), captured at compile time
+through `#[track_caller]`. What a dispatch error points an operator at.
 _Avoid_: Call site (ambiguous with the handler's own calls), origin, registered at (reads as a time in code; fine in prose)
 
 **Dispatch error**:
 What a failed dispatch reports: the application error wrapped with the tier,
 the delivery's ID, kind and action, and the registration site of the failing
 handler. Says where, not why; why is its source, the application error. A
-decode failure is reported at the handler that needed the decode.
+decode failure is reported at the handler that needed the decode. What the
+error observer receives when a dispatcher is the receiver's handler.
 _Avoid_: Handler error (the application error inside it), failure (prose for the event, not the type)
+
+**Error observer**:
+The callback registered with `on_error` on the receiver builder, called with
+the event meta and a reference to the handler's error after a handler fails
+and before the 500 is answered. Synchronous, with no bound on the error type,
+and never called for a receive failure or a short-circuited ping.
+_Avoid_: Error handler (it handles nothing; the response is unchanged), hook, middleware
 
 **Outcome**:
 What one dispatch reports: whether the delivery was matched, and if not,
@@ -112,7 +102,7 @@ _Avoid_: Status (reserved for HTTP), result (the Rust type)
 **Match**:
 A delivery matches when at least one routed handler is registered for its
 kind, or its kind and action. Matching is decided by the route table, never
-by a handler; the raw and always tiers do not match.
+by a handler; the always and fallback tiers do not match.
 _Avoid_: Hit, handled (a matched delivery may still fail)
 
 **EventMatcher**:
@@ -161,8 +151,10 @@ consumer-defined serde views are payloads, octocrab's `WebhookEvent` is not.
 _Avoid_: Body (reserved for the HTTP transport layer)
 
 **Decode**:
-Turning an envelope's payload bytes into a typed handler's input: octocrab's
-`WebhookEvent` for an event handler, a `Payload` type for a payload handler.
-A decode failure fails the delivery at the position of the handler that
-needed it.
+Turning an envelope into an event handler's input, through `FromEnvelope`:
+a `Payload` type checks the kind and then decodes the bytes
+(`Envelope::decode_payload`), `()` decodes nothing, octocrab's `WebhookEvent`
+decodes into octocrab's model (`Envelope::decode_event`), and a consumer view
+over several kinds decodes as it sees fit (`Envelope::decode`). A decode
+failure fails the delivery at the position of the handler that needed it.
 _Avoid_: Parse (kept for the header-to-kind and probe steps), deserialize (the serde mechanism, not the concept)

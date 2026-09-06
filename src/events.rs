@@ -87,8 +87,6 @@ string_enum! {
     /// was not built with. The header names the kind outright, and a name
     /// this crate does not know arrives as [`Unknown`](Self::Unknown) with
     /// the wire value intact, so it can still be routed, logged, or rejected.
-    /// The crate docs record this under
-    /// [Deliberately left out](crate#deliberately-left-out).
     pub enum EventKind {
         BranchProtectionConfiguration => "branch_protection_configuration",
         BranchProtectionRule => "branch_protection_rule",
