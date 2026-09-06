@@ -83,10 +83,11 @@
 //! The dispatcher routes each verified envelope by kind and action:
 //! `audit` runs for every delivery, `label` for `issues.opened` only, with
 //! the payload decoded as the view it asked for. The `on_error` observer is
-//! where a failure's cause becomes visible: it prints where (the tier and
-//! the line that registered the failing handler) and why (the handler's own
-//! error). Without it a failed delivery is a bare 500 and, with the `tracing`
-//! feature, one ERROR event naming the delivery; see [Tracing](#tracing).
+//! where a failure's cause becomes visible: it prints where (the tier, the
+//! failing handler's name and the line that registered it) and why (the
+//! handler's own error). Without it a failed delivery is a bare 500 and, with
+//! the `tracing` feature, one ERROR event naming the delivery; see
+//! [Tracing](#tracing).
 //!
 //! Always pass the exact request bytes. Parsing, re-encoding, or normalizing
 //! the body before verification invalidates GitHub's signature.
@@ -162,11 +163,11 @@
 //! decode nothing. Unmatched deliveries succeed unless a fallback fails them.
 //!
 //! A failure is a [`DispatchError`]: the application error wrapped with the
-//! [`Tier`], the delivery's ID, kind and action, and the source location of
-//! the registration that put the failing handler there. `dispatch` also
-//! reports an [`Outcome`], matched or unmatched with the kind known or
-//! unknown to the route table, for a handler wrapping the dispatcher to act
-//! on.
+//! [`Tier`], the delivery's ID, kind and action, the failing handler's name,
+//! and the source location of the registration that put it there.
+//! `dispatch` also reports an [`Outcome`], matched or unmatched with the kind
+//! known or unknown to the route table, for a handler wrapping the dispatcher
+//! to act on.
 //!
 //! # Testing without GitHub
 //!
@@ -274,8 +275,8 @@
 //!   records `delivery_id`, `event` and, when the delivery has them, `action`
 //!   and `installation_id` on open; on the way out `outcome`, one of `ok`,
 //!   `handler_error`, `unmatched_ok` and `unmatched_error`, and when a
-//!   handler failed the [`Tier`] it ran in as `tier` and its registration
-//!   site as `registration_site`.
+//!   handler failed the [`Tier`] it ran in as `tier`, its name as `handler`
+//!   and its registration site as `registration_site`.
 //!
 //! A field recorded in more than one place is recorded in one form
 //! everywhere: `delivery_id`, `event` and `action` as strings,

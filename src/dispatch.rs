@@ -1,4 +1,4 @@
-use std::{collections::HashMap, error::Error, fmt, panic::Location, sync::Arc};
+use std::{any::type_name, collections::HashMap, error::Error, fmt, panic::Location, sync::Arc};
 
 use crate::{
     Action, DecodeError, Envelope, EventKind, EventMatcher, EventMeta, FromEnvelope, Handler,
@@ -58,10 +58,11 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 ///
 /// A failure is reported as a [`DispatchError`]: the application error `E`
 /// wrapped with the [`Tier`] the failing handler ran in, the delivery's ID,
-/// kind and action, and the source location of the registration that put the
-/// handler there. Every registration method records its caller's location,
-/// so an operator reading "delivery X failed" can go to the line of code that
-/// registered the handler.
+/// kind and action, the handler's name, and the source location of the
+/// registration that put the handler there. Every registration method records
+/// its handler's name and its caller's location, so an operator reading
+/// "delivery X failed" knows which handler and can go to the line of code
+/// that registered it.
 ///
 /// The decode rule: `always` and `fallback` receive the bytes as they were
 /// verified and nothing is decoded on their behalf; each routed handler
@@ -240,11 +241,11 @@ where
     /// The outcome carries the match the route table decided and the result
     /// of the handlers that ran: the first handler error, or the decode error
     /// of the first handler whose input could not be decoded, each wrapped in
-    /// a [`DispatchError`] naming the tier it came from, the delivery, and
-    /// where the handler was registered. The two are independent: a matched
-    /// delivery can fail, and an unmatched one succeeds unless a fallback
-    /// fails it. [`Handler::handle`] on the dispatcher keeps only the
-    /// result.
+    /// a [`DispatchError`] naming the tier it came from, the delivery, the
+    /// handler, and where it was registered. The two are independent: a
+    /// matched delivery can fail, and an unmatched one succeeds unless a
+    /// fallback fails it. [`Handler::handle`] on the dispatcher keeps only
+    /// the result.
     ///
     /// With the `tracing` feature, the call runs in an `octoevents.dispatch`
     /// span that records `delivery_id`, `event`, and, when the delivery has
@@ -253,7 +254,7 @@ where
     /// succeeded), `handler_error` (matched, a handler failed),
     /// `unmatched_ok` (nothing routed matched, no fallback failed) and
     /// `unmatched_error` (nothing routed matched, a handler failed, in
-    /// whichever tier). On failure it also records `tier` and
+    /// whichever tier). On failure it also records `tier`, `handler` and
     /// `registration_site`, the [`DispatchError`]'s, so the span alone says
     /// which handler failed the delivery. The crate's tracing contract as a
     /// whole is under [Tracing](crate#tracing).
@@ -269,6 +270,7 @@ where
                 installation_id = envelope.meta.installation_id,
                 outcome = tracing::field::Empty,
                 tier = tracing::field::Empty,
+                handler = tracing::field::Empty,
                 registration_site = tracing::field::Empty,
             )
         )
@@ -280,6 +282,7 @@ where
         trace::record("outcome", outcome.label());
         if let Err(error) = &outcome.result {
             trace::record("tier", error.tier.as_str());
+            trace::record("handler", error.handler);
             trace::record_display("registration_site", error.registration_site);
         }
         outcome
@@ -310,8 +313,8 @@ where
 }
 
 /// Runs one chain in order, stopping at the first error and wrapping it with
-/// the tier, the delivery, and where the failing route was registered. The
-/// clones for the error happen only on that path.
+/// the tier, the delivery, and the failing route's handler name and
+/// registration site. The clones for the error happen only on that path.
 async fn run_chain<E>(
     envelope: &Envelope,
     tier: Tier,
@@ -322,6 +325,7 @@ async fn run_chain<E>(
             let meta = &envelope.meta;
             return Err(DispatchError {
                 tier,
+                handler: route.handler_name,
                 registration_site: route.registration_site,
                 delivery_id: meta.delivery_id.clone(),
                 kind: meta.kind.clone(),
@@ -354,9 +358,9 @@ where
 /// never by a handler, so it is known even when the `always` tier failed
 /// before routing began. `result` is `Ok` when every handler that ran
 /// succeeded, and otherwise the first error, whichever tier it came from,
-/// wrapped in a [`DispatchError`] that names the tier, the delivery, and
-/// where the failing handler was registered. A matched delivery can fail; an
-/// unmatched one succeeds unless a fallback fails it.
+/// wrapped in a [`DispatchError`] that names the tier, the delivery, the
+/// failing handler and where it was registered. A matched delivery can fail;
+/// an unmatched one succeeds unless a fallback fails it.
 ///
 /// A handler wrapping a [`Dispatcher`] reads both to set policy the tiers
 /// cannot: forward or dead-letter an unmatched delivery, bytes included,
@@ -378,8 +382,8 @@ where
 ///
 /// The label says whether the delivery matched and whether it failed, not
 /// which tier failed it: an `always` handler failing an unrouted kind is
-/// `unmatched_error` with no fallback registered. The tier and the
-/// registration site are fields of their own on the same span.
+/// `unmatched_error` with no fallback registered. The tier, the handler and
+/// the registration site are fields of their own on the same span.
 ///
 /// ```
 /// use octoevents::{DispatchError, Dispatcher, Envelope, Handler, Match};
@@ -394,7 +398,7 @@ where
 /// }
 ///
 /// impl Handler<Envelope> for DeadLetter {
-///     // The dispatcher's error passes through, tier and registration site included.
+///     // The dispatcher's error passes through, tier, handler and registration site included.
 ///     type Error = DispatchError<AppError>;
 ///
 ///     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
@@ -420,7 +424,7 @@ pub struct Outcome<E> {
     /// knew the kind.
     pub matched: Match,
     /// `Ok` when every handler that ran succeeded; otherwise the first error,
-    /// with the tier and registration site it came from.
+    /// with the tier, handler and registration site it came from.
     pub result: Result<(), DispatchError<E>>,
 }
 
@@ -465,36 +469,48 @@ pub enum Match {
 ///
 /// The dispatcher wraps the error of the handler that failed the delivery
 /// with what it knew and the handler did not: the [`Tier`] the handler ran
-/// in, the delivery's ID, kind and action, and the source location of the
-/// registration (`always`, `on`, `on_payload`, `on_payload_action` or
-/// `fallback`) that put the handler there. Every registration method records
-/// its caller's location at compile time, so the cost is one static
-/// reference per registration, on `wasm32` as anywhere. A decode failure is
-/// reported at the handler that needed the decode: its tier, its
-/// registration site, and `E::from` of the [`DecodeError`].
+/// in, the delivery's ID, kind and action, the handler's name, and the
+/// source location of the registration (`always`, `on`, `on_payload`,
+/// `on_payload_action` or `fallback`) that put the handler there. Every
+/// registration method records its caller's location and its handler's name
+/// at compile time, so each costs one static reference per registration, on
+/// `wasm32` as anywhere. A decode failure is reported at the handler that
+/// needed the decode: its tier, its name, its registration site, and
+/// `E::from` of the [`DecodeError`].
+///
+/// The handler name is [`type_name`]'s output for the type the registration
+/// method received: the function's path for an `async fn` item
+/// (`app::revoke`), the struct's path for a struct handler
+/// (`app::Revoker`), and the enclosing function's path with a `{{closure}}`
+/// suffix for a closure (`app::main::{{closure}}`), so a closure is found by
+/// its registration site, a named handler by its name. `type_name` gives no
+/// stability guarantee, so the string is for an operator to read, not for
+/// code to match on; a policy that keys on the failing handler compares
+/// [`registration_site`](Self::registration_site).
 ///
 /// [`Display`](fmt::Display) names where, not why: the tier, the delivery,
-/// and the registration site. Why is the [`source`](Error::source), the
-/// application error, so a reporter that walks the chain prints both, and
-/// [`into_source`](Self::into_source) drops the wrapping for code that wants
-/// the application error alone. The [`Error`] impl asks `Error + 'static` of
-/// `E`, what any source in a chain must be; for an `E` that is not one,
-/// `Box<dyn Error + Send + Sync>` included, the dispatcher still builds, the
-/// error still displays, and `into_source` returns the boxed error, which is
-/// one.
+/// the handler, and the registration site. Why is the
+/// [`source`](Error::source), the application error, so a reporter that walks
+/// the chain prints both, and [`into_source`](Self::into_source) drops the
+/// wrapping for code that wants the application error alone. The [`Error`]
+/// impl asks `Error + 'static` of `E`, what any source in a chain must be;
+/// for an `E` that is not one, `Box<dyn Error + Send + Sync>` included, the
+/// dispatcher still builds, the error still displays, and `into_source`
+/// returns the boxed error, which is one.
 ///
 /// A wrapping handler that passes the dispatcher's result through keeps the
-/// tier and registration site by making this its error type; the receiver
-/// accepts it as it does any error, and hands it to the observer registered
-/// with `WebhookReceiverBuilder::on_error` before answering 500.
+/// tier, handler name and registration site by making this its error type;
+/// the receiver accepts it as it does any error, and hands it to the
+/// observer registered with `WebhookReceiverBuilder::on_error` before
+/// answering 500.
 ///
 /// The dispatcher produces this and consumers only read it, so it is
-/// `#[non_exhaustive]`: another field (the handler's type name, say) can be
-/// added without that becoming a breaking change here. A test that needs one
-/// dispatches to a handler that fails.
+/// `#[non_exhaustive]`: another field can be added without that becoming a
+/// breaking change here. A test that needs one dispatches to a handler that
+/// fails.
 ///
 /// ```text
-/// delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (pull_request.opened) failed in the route tier at the handler registered at src/main.rs:42:10
+/// delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (pull_request.opened) failed in the route tier at the handler `app::label` registered at src/main.rs:42:10
 ///   caused by: database is down
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -502,6 +518,9 @@ pub enum Match {
 pub struct DispatchError<E> {
     /// The tier the failing handler ran in.
     pub tier: Tier,
+    /// The failing handler's name: [`type_name`] of the handler the
+    /// registration method received, as the docs on this type describe.
+    pub handler: &'static str,
     /// Where the failing handler was registered: the call to the registration
     /// method in the consumer's source.
     pub registration_site: &'static Location<'static>,
@@ -541,8 +560,8 @@ impl<E> fmt::Display for DispatchError<E> {
         }
         write!(
             formatter,
-            ") failed in the {} tier at the handler registered at {}",
-            self.tier, self.registration_site
+            ") failed in the {} tier at the handler `{}` registered at {}",
+            self.tier, self.handler, self.registration_site
         )
     }
 }
@@ -631,8 +650,9 @@ where
     /// redelivery of a stored delivery ID with success, say) wraps the
     /// dispatcher instead.
     ///
-    /// Like every registration method, this records where it was called so a
-    /// [`DispatchError`] can point back at the registration.
+    /// Like every registration method, this records the handler's name and
+    /// where it was called so a [`DispatchError`] can point back at the
+    /// registration.
     ///
     /// ```
     /// use octoevents::{Dispatcher, Envelope};
@@ -655,9 +675,7 @@ where
         H: Handler<Envelope> + MaybeSend + MaybeSync + 'static,
         E: From<H::Error>,
     {
-        self.routes
-            .always
-            .push(Route::registered(erase_envelope(handler)));
+        self.routes.always.push(Route::over_envelope(handler));
         self
     }
 
@@ -756,7 +774,7 @@ where
         H: Handler<I> + MaybeSend + MaybeSync + 'static,
         E: From<H::Error>,
     {
-        let route = Route::registered(erase(handler));
+        let route = Route::routed(handler);
         self.insert_each(matcher.into().into_slots(), &route);
         self
     }
@@ -844,7 +862,7 @@ where
         H: Handler<I> + MaybeSend + MaybeSync + 'static,
         E: From<H::Error>,
     {
-        let route = Route::registered(erase(handler));
+        let route = Route::routed(handler);
         self.insert(Slot::any_action(I::KIND), route);
         self
     }
@@ -904,7 +922,7 @@ where
         H: Handler<I> + MaybeSend + MaybeSync + 'static,
         E: From<H::Error>,
     {
-        let route = Route::registered(erase(handler));
+        let route = Route::routed(handler);
         let slots = actions
             .into_iter()
             .map(|action| Slot::action(I::KIND, action));
@@ -945,9 +963,7 @@ where
         H: Handler<Envelope> + MaybeSend + MaybeSync + 'static,
         E: From<H::Error>,
     {
-        self.routes
-            .fallback
-            .push(Route::registered(erase_envelope(handler)));
+        self.routes.fallback.push(Route::over_envelope(handler));
         self
     }
 
@@ -977,61 +993,86 @@ where
     }
 }
 
-/// Erases a routed handler behind its input's decode: the route decodes `I`
-/// from the envelope when it runs, so a route that never matches never
-/// decodes, and a decode failure is this route's failure.
-fn erase<E, I, H>(handler: H) -> EnvelopeFn<E>
-where
-    E: From<DecodeError> + From<H::Error> + 'static,
-    I: FromEnvelope + 'static,
-    H: Handler<I> + MaybeSend + MaybeSync + 'static,
-{
-    let handler = Arc::new(handler);
-    Arc::new(move |envelope: Envelope| {
-        let handler = Arc::clone(&handler);
-        Box::pin(async move {
-            let input = I::from_envelope(&envelope).map_err(E::from)?;
-            handler.handle(input).await.map_err(E::from)
-        })
-    })
-}
-
-/// Erases a handler over the envelope for the `always` and `fallback` tiers,
-/// whose input is known to be the envelope: it is moved in rather than
-/// cloned through `Envelope::from_envelope`. A performance detail of those
-/// two tiers, not a second kind of handler.
-fn erase_envelope<E, H>(handler: H) -> EnvelopeFn<E>
-where
-    E: From<H::Error> + 'static,
-    H: Handler<Envelope> + MaybeSend + MaybeSync + 'static,
-{
-    let handler = Arc::new(handler);
-    Arc::new(move |envelope: Envelope| {
-        let handler = Arc::clone(&handler);
-        Box::pin(async move { handler.handle(envelope).await.map_err(E::from) })
-    })
-}
-
-/// One registered handler and where it was registered.
+/// One registered handler, its name, and where it was registered.
 ///
 /// A handler registered under several slots is one route cloned per slot:
 /// the erased handler is shared, and every clone points at the same
 /// registration.
+///
+/// The two constructors take the handler itself, not an erased one, so the
+/// handler name is always that of the handler erased: neither can be
+/// recorded without the other.
 struct Route<E> {
     handler: EnvelopeFn<E>,
+    /// [`type_name`] of the handler before erasure: a static string, on
+    /// `wasm32` as anywhere.
+    handler_name: &'static str,
     /// The call to the registration method, captured through
     /// `#[track_caller]`: a static reference, on `wasm32` as anywhere.
     registration_site: &'static Location<'static>,
 }
 
-impl<E> Route<E> {
-    /// Pairs an erased handler with the location of the registration method
-    /// that is being called. `#[track_caller]` here and on that method makes
-    /// the location the consumer's, two frames up, not this one.
+impl<E> Route<E>
+where
+    E: 'static,
+{
+    /// A routed handler, erased behind its input's decode: the route decodes
+    /// `I` from the envelope when it runs, so a route that never matches
+    /// never decodes, and a decode failure is this route's failure.
+    ///
+    /// `#[track_caller]` here, on [`registered`](Self::registered) below and
+    /// on the registration method calling this makes the location the
+    /// consumer's call to that method, not any frame of this chain.
     #[track_caller]
-    fn registered(handler: EnvelopeFn<E>) -> Self {
+    fn routed<I, H>(handler: H) -> Self
+    where
+        E: From<DecodeError> + From<H::Error>,
+        I: FromEnvelope + 'static,
+        H: Handler<I> + MaybeSend + MaybeSync + 'static,
+    {
+        let handler = Arc::new(handler);
+        Self::registered(
+            Arc::new(move |envelope: Envelope| {
+                let handler = Arc::clone(&handler);
+                Box::pin(async move {
+                    let input = I::from_envelope(&envelope).map_err(E::from)?;
+                    handler.handle(input).await.map_err(E::from)
+                })
+            }),
+            type_name::<H>(),
+        )
+    }
+
+    /// A handler over the envelope for the `always` and `fallback` tiers,
+    /// whose input is known to be the envelope: it is moved in rather than
+    /// cloned through `Envelope::from_envelope`. A performance detail of
+    /// those two tiers, not a second kind of handler.
+    ///
+    /// `#[track_caller]` as on [`routed`](Self::routed).
+    #[track_caller]
+    fn over_envelope<H>(handler: H) -> Self
+    where
+        E: From<H::Error>,
+        H: Handler<Envelope> + MaybeSend + MaybeSync + 'static,
+    {
+        let handler = Arc::new(handler);
+        Self::registered(
+            Arc::new(move |envelope: Envelope| {
+                let handler = Arc::clone(&handler);
+                Box::pin(async move { handler.handle(envelope).await.map_err(E::from) })
+            }),
+            type_name::<H>(),
+        )
+    }
+
+    /// Pairs an erased handler and its name with the location
+    /// `#[track_caller]` resolves to: the consumer's call to the registration
+    /// method, through the constructor above and that method.
+    #[track_caller]
+    fn registered(handler: EnvelopeFn<E>, handler_name: &'static str) -> Self {
         Self {
             handler,
+            handler_name,
             registration_site: Location::caller(),
         }
     }
@@ -1041,20 +1082,22 @@ impl<E> Clone for Route<E> {
     fn clone(&self) -> Self {
         Self {
             handler: Arc::clone(&self.handler),
+            handler_name: self.handler_name,
             registration_site: self.registration_site,
         }
     }
 }
 
-// The erased handler is never `Debug`; where it was registered is what an
-// operator reading the route table wants, so a route prints as
-// `Route(src/main.rs:12:10, ..)`, the `..` standing for the elided handler
-// as in `WebhookReceiver`'s `Debug`. No bound on `E`: the dispatcher is
-// `Debug` for any error type, as it is `Clone` for any.
+// The erased handler is never `Debug`; its name and where it was registered
+// are what an operator reading the route table wants, so a route prints as
+// `Route(app::revoke, src/main.rs:12:10, ..)`, the `..` standing for the
+// elided handler as in `WebhookReceiver`'s `Debug`. No bound on `E`: the
+// dispatcher is `Debug` for any error type, as it is `Clone` for any.
 impl<E> fmt::Debug for Route<E> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_tuple("Route")
+            .field(&format_args!("{}", self.handler_name))
             .field(&format_args!("{}", self.registration_site))
             .finish_non_exhaustive()
     }
@@ -1742,6 +1785,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_failure_names_the_handler_by_its_type_name() {
+        use std::any::{type_name, type_name_of_val};
+
+        /// An `async fn` item: its type is the function's path.
+        async fn revoke(_: EventMeta) -> Result<(), &'static str> {
+            Err("revoke")
+        }
+
+        /// A struct handler: its type is the struct's path.
+        struct Revoker {
+            calls: Calls,
+        }
+
+        impl Handler<EventMeta> for Revoker {
+            type Error = &'static str;
+
+            async fn handle(&self, _: EventMeta) -> Result<(), Self::Error> {
+                self.calls.lock().await.push("revoker");
+                Err("revoker")
+            }
+        }
+
+        // The name is `type_name`'s output for the registered handler, so an
+        // operator reading the error finds the function or struct by name
+        // without opening the registration site. The equality pins the exact
+        // string; `ends_with` pins its shape, a path ending in the item's
+        // name, independently of how `type_name` spells the prefix.
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .on(EventKind::Installation, revoke)
+            .build();
+        let error = dispatcher
+            .dispatch(installation_created())
+            .await
+            .result
+            .unwrap_err();
+        assert_eq!(error.handler, type_name_of_val(&revoke));
+        assert!(error.handler.ends_with("::revoke"), "{}", error.handler);
+        assert_eq!(error.source, AppError::Handler("revoke"));
+
+        let calls = Calls::default();
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .on(
+                EventKind::Installation,
+                Revoker {
+                    calls: Arc::clone(&calls),
+                },
+            )
+            .build();
+        let error = dispatcher
+            .dispatch(installation_created())
+            .await
+            .result
+            .unwrap_err();
+        assert_eq!(error.handler, type_name::<Revoker>());
+        assert!(error.handler.ends_with("::Revoker"), "{}", error.handler);
+        assert_eq!(error.source, AppError::Handler("revoker"));
+        assert_eq!(calls.lock().await.as_slice(), ["revoker"]);
+    }
+
+    #[tokio::test]
     async fn a_decode_failure_is_reported_at_the_handler_that_needed_the_decode() {
         fn needs_number(_: Number) -> Recorded<AppError> {
             Box::pin(async { Ok(()) })
@@ -1797,9 +1900,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn display_names_the_tier_and_the_registration_site_and_source_yields_the_application_error()
+    async fn display_names_the_tier_the_handler_and_the_registration_site_and_source_yields_the_application_error()
      {
-        use std::error::Error as _;
+        use std::{any::type_name_of_val, error::Error as _};
 
         #[derive(Debug, thiserror::Error)]
         enum ServiceError {
@@ -1830,7 +1933,8 @@ mod tests {
             error.to_string(),
             format!(
                 "delivery delivery (pull_request.opened) failed in the route tier at the handler \
-                 registered at {}",
+                 `{}` registered at {}",
+                type_name_of_val(&database_down),
                 error.registration_site
             )
         );
@@ -1888,7 +1992,7 @@ mod tests {
         }
 
         impl Handler<Envelope> for DeadLetter {
-            // The dispatcher's error passes through, tier and registration site included.
+            // The dispatcher's error passes through, tier, handler and registration site included.
             type Error = DispatchError<AppError>;
 
             async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {

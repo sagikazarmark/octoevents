@@ -1,7 +1,7 @@
 //! The `octoevents.dispatch` span records what happened to one delivery: an
 //! `outcome` label derived from the [`Outcome`] the dispatcher returns, the
-//! tier and registration site of the handler that failed it, and the
-//! `EventMeta` fields it ran with (`delivery_id`, `event`, `action`,
+//! tier, handler name and registration site of the handler that failed it,
+//! and the `EventMeta` fields it ran with (`delivery_id`, `event`, `action`,
 //! `installation_id`).
 //!
 //! The four labels are a contract dashboards filter on: `ok` and
@@ -93,16 +93,25 @@ impl SpanFields {
 /// An event line reads `<ancestors>:<span>{<fields>}: <target>: <event> ...`,
 /// each ancestor with its own fields, so the span the line is about is the
 /// last one in the scope prefix: a line on which the named span is only an
-/// ancestor shows what it had recorded so far, not what the event saw.
+/// ancestor shows what it had recorded so far, not what the event saw. The
+/// span's name anchors the search for its fields, since a field value can
+/// hold braces of its own: a closure's handler name ends in `{{closure}}`.
 fn span_fields(log: &str, span: &str, event: &str) -> SpanFields {
+    let opening = format!("{span}{{");
     let fields = log
         .lines()
         .filter(|line| line.contains(&format!(": {event}")))
         .find_map(|line| {
             let (scope, _) = line.rsplit_once("}: ")?;
-            let (path, fields) = scope.rsplit_once('{')?;
-            let closing = path.rsplit([' ', ':']).next()?;
-            (closing == span).then(|| fields.to_owned())
+            let start = scope.rfind(&opening)?;
+            let at_name_boundary = scope[..start].ends_with([' ', ':']);
+            let fields = &scope[start + opening.len()..];
+            // A span that is only an ancestor on this line is followed by a
+            // child span's name and fields. The child's name is in the needle
+            // because a bare `}:` also occurs inside a handler name of nested
+            // closures (`{{closure}}::{{closure}}`).
+            let is_last = !fields.contains("}:octoevents.");
+            (at_name_boundary && is_last).then(|| fields.to_owned())
         })
         .unwrap_or_else(|| panic!("no {span} span {event} event: {log}"));
     SpanFields(fields)
@@ -247,7 +256,7 @@ async fn fail_check_run(envelope: Envelope) -> Result<(), &'static str> {
 }
 
 #[test]
-fn a_failure_records_the_tier_and_the_registration_site_of_the_failing_handler() {
+fn a_failure_records_the_tier_the_handler_and_the_registration_site_of_the_failing_handler() {
     // The location is that of the registration method's name, so the failing
     // handler is registered on the line after `line!()`.
     let builder = Dispatcher::<AppError>::builder();
@@ -259,7 +268,18 @@ fn a_failure_records_the_tier_and_the_registration_site_of_the_failing_handler()
     assert_eq!(fields.text("outcome"), Some("unmatched_error"));
     assert_eq!(fields.text("tier"), Some("fallback"));
     assert_registered_on(&fields, registration_line);
+    // The handler is named as the error names it: `type_name` of the
+    // registered handler, here the `async fn` item's path.
+    assert_eq!(
+        fields.text("handler"),
+        Some(std::any::type_name_of_val(&fail_check_run))
+    );
     let error = outcome.result.unwrap_err();
+    assert_eq!(
+        fields.text("handler"),
+        Some(error.handler),
+        "the span and the error name the same handler"
+    );
     assert_eq!(
         fields.text("registration_site"),
         Some(error.registration_site.to_string().as_str()),
@@ -271,6 +291,7 @@ fn a_failure_records_the_tier_and_the_registration_site_of_the_failing_handler()
         traced(dispatcher.dispatch(envelope(EventKind::PullRequest, Some(Action::Opened))));
     assert_eq!(fields.text("outcome"), Some("unmatched_ok"));
     assert_eq!(fields.rendered("tier"), None);
+    assert_eq!(fields.rendered("handler"), None);
     assert_eq!(fields.rendered("registration_site"), None);
 }
 

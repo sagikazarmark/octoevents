@@ -90,11 +90,12 @@ every delivery, `label` for `issues.opened` only, with the payload decoded
 as the view it asked for. The `on_error` observer is where a failure's cause
 becomes visible; without it a failed delivery is a bare 500 (and, with the
 `tracing` feature, one ERROR event naming the delivery). The observer prints
-where (the tier and the line that registered the failing handler) and why
-(the handler's own error); for a payload that does not fit the view, that is:
+where (the tier, the failing handler's name and the line that registered it)
+and why (the handler's own error); for a payload that does not fit the view,
+that is:
 
 ```text
-delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (issues.opened) failed in the route tier at the handler registered at src/main.rs:47:10: payload could not be decoded
+delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (issues.opened) failed in the route tier at the handler `app::label` registered at src/main.rs:47:10: payload could not be decoded
 ```
 
 The serde error naming the field is one step further down the error's
@@ -210,10 +211,10 @@ run for a payload no handler can decode. Unmatched deliveries succeed unless
 a fallback fails them.
 
 A failure is a `DispatchError`: the application error wrapped with the tier,
-the delivery's ID, kind and action, and the source location of the
-registration that put the failing handler there. `dispatch` also reports an
-`Outcome`, matched or unmatched with the kind known or unknown to the route
-table, for a handler wrapping the dispatcher to act on; see
+the delivery's ID, kind and action, the failing handler's name, and the
+source location of the registration that put it there. `dispatch` also
+reports an `Outcome`, matched or unmatched with the kind known or unknown to
+the route table, for a handler wrapping the dispatcher to act on; see
 [Delivery semantics](#delivery-semantics).
 
 ## Testing without GitHub

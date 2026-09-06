@@ -89,8 +89,8 @@ pub(crate) const ENABLED: bool = cfg!(feature = "tracing");
 /// [`source`](std::error::Error::source) itself (the `fmt` subscriber prints
 /// `error=<text> error.sources=[<cause>, ..]`). With a
 /// [`Dispatcher`](crate::Dispatcher) as the handler the text says where (the
-/// tier and the registration site) and the first source is the application
-/// error, which says why.
+/// tier, the handler and the registration site) and the first source is the
+/// application error, which says why.
 ///
 /// `E` must implement [`Error`](std::error::Error): the source chain is
 /// read through it. A `thiserror` enum qualifies, and so does a
