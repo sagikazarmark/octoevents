@@ -2,9 +2,9 @@ use serde::de::DeserializeOwned;
 
 use crate::{DecodeError, Envelope, EventKind};
 
-/// A payload handler's input, decoded from an [`Envelope`].
+/// An event handler's input, decoded from an [`Envelope`].
 ///
-/// This is the bound on what a [`PayloadHandler`](crate::PayloadHandler)
+/// This is the bound on what an [`EventHandler`](crate::EventHandler)
 /// receives beside the [`EventMeta`](crate::EventMeta), and what
 /// `Dispatcher::on` accepts a handler over. The decode sees the whole
 /// envelope, kind included, so an input can check the kind, read the
@@ -103,7 +103,7 @@ impl FromEnvelope for () {
 /// One event kind's decoded payload.
 ///
 /// A `Payload` type declares the kind it belongs to, so a
-/// [`PayloadHandler`](crate::PayloadHandler) over it is bound to that kind by
+/// [`EventHandler`](crate::EventHandler) over it is bound to that kind by
 /// its type: registering it with `on_payload` needs no matcher, and it cannot
 /// be registered under the wrong kind. The whole JSON document GitHub sends
 /// is decoded into the type, so a payload type is free to name only the

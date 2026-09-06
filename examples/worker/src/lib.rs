@@ -2,8 +2,8 @@
 //! virtual object from the dispatcher's `always` tier, then routes it.
 //!
 //! Built without the `octocrab` feature (which is never on by default), so
-//! the dispatcher routes webhook and payload handlers only, and the payload
-//! handler decodes a consumer-defined view of the `installation` payload.
+//! the event handler decodes a consumer-defined view of the `installation`
+//! payload rather than octocrab's model.
 
 // The handlers here log instead of awaiting a database or the GitHub API,
 // which is what a real `async fn handle` would do.
@@ -12,7 +12,7 @@
 use std::convert::Infallible;
 
 use octoevents::{
-    DecodeError, Dispatcher, Envelope, EventKind, EventMeta, PayloadHandler, Secret, Verifier,
+    DecodeError, Dispatcher, Envelope, EventHandler, EventKind, EventMeta, Secret, Verifier,
     WebhookHandler, WebhookReceiverBuilder,
 };
 use worker::{Context, Env, Fetch, HttpRequest, Method, Request, RequestInit, console_log, event};
@@ -96,7 +96,7 @@ octoevents::impl_payload!(InstallationView => EventKind::Installation);
 /// bytes; other kinds never reach it.
 struct InstallationLog;
 
-impl PayloadHandler<InstallationView> for InstallationLog {
+impl EventHandler<InstallationView> for InstallationLog {
     type Error = Infallible;
 
     async fn handle(&self, meta: EventMeta, payload: InstallationView) -> Result<(), Self::Error> {

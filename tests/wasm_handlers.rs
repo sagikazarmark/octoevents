@@ -133,13 +133,13 @@ fn the_tower_service_impl_accepts_single_threaded_handler_state() {
     assert_service(&receiver);
 }
 
-/// A payload handler over `()` reaches the dispatcher through `on` with no
+/// An event handler over `()` reaches the dispatcher through `on` with no
 /// feature enabled, and the erasure keeps the relaxed bound.
 #[cfg(feature = "http")]
 #[test]
 fn the_dispatcher_accepts_a_single_threaded_handler_over_unit() {
     use octoevents::{
-        Action, Dispatcher, EventKind, EventMeta, PayloadHandler, Secret, Verifier,
+        Action, Dispatcher, EventHandler, EventKind, EventMeta, Secret, Verifier,
         WebhookReceiverBuilder,
     };
 
@@ -147,7 +147,7 @@ fn the_dispatcher_accepts_a_single_threaded_handler_over_unit() {
         calls: Rc<Cell<u32>>,
     }
 
-    impl PayloadHandler<()> for Revoker {
+    impl EventHandler<()> for Revoker {
         type Error = std::convert::Infallible;
 
         async fn handle(&self, _meta: EventMeta, (): ()) -> Result<(), Self::Error> {
@@ -181,13 +181,13 @@ fn the_dispatcher_accepts_a_single_threaded_handler_over_unit() {
 #[test]
 fn the_dispatcher_accepts_single_threaded_handler_state_of_both_flavours() {
     use octocrab::models::webhook_events::{WebhookEvent, payload::PullRequestWebhookEventPayload};
-    use octoevents::{Action, Dispatcher, EventKind, EventMeta, PayloadHandler};
+    use octoevents::{Action, Dispatcher, EventHandler, EventKind, EventMeta};
 
     struct Auditor {
         calls: Rc<Cell<u32>>,
     }
 
-    impl PayloadHandler<WebhookEvent> for Auditor {
+    impl EventHandler<WebhookEvent> for Auditor {
         type Error = std::convert::Infallible;
 
         async fn handle(&self, _meta: EventMeta, _event: WebhookEvent) -> Result<(), Self::Error> {
@@ -200,7 +200,7 @@ fn the_dispatcher_accepts_single_threaded_handler_state_of_both_flavours() {
         calls: Rc<Cell<u32>>,
     }
 
-    impl PayloadHandler<PullRequestWebhookEventPayload> for Labeler {
+    impl EventHandler<PullRequestWebhookEventPayload> for Labeler {
         type Error = std::convert::Infallible;
 
         async fn handle(

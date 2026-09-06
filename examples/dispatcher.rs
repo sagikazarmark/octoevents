@@ -26,10 +26,10 @@
 //! - [`Auditor`] is a `WebhookHandler` in the `always` tier: it runs for
 //!   every delivery, reads the metadata off the envelope, and, with nothing
 //!   decoded on its behalf, runs even for a payload octocrab cannot represent.
-//! - [`Labeler`] is a `PayloadHandler` over octocrab's pull-request payload;
+//! - [`Labeler`] is an `EventHandler` over octocrab's pull-request payload;
 //!   its kind comes from that type, so registering it names only the action
 //!   it wants, and other actions never reach it or decode for it.
-//! - The triage closure is a `PayloadHandler` over octocrab's decoded
+//! - The triage closure is an `EventHandler` over octocrab's decoded
 //!   `WebhookEvent`, registered with `on` for some pull-request actions; the
 //!   input type is what needs the `octocrab` feature, not the registration.
 //!
@@ -48,8 +48,8 @@ use std::{convert::Infallible, error::Error as _, sync::Mutex};
 use axum::{Router, routing::post_service};
 use octocrab::models::webhook_events::{WebhookEvent, payload::PullRequestWebhookEventPayload};
 use octoevents::{
-    Action, DecodeError, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, Match,
-    PayloadHandler, Secret, Verifier, WebhookHandler, WebhookReceiverBuilder,
+    Action, DecodeError, DispatchError, Dispatcher, Envelope, EventHandler, EventKind, EventMeta,
+    Match, Secret, Verifier, WebhookHandler, WebhookReceiverBuilder,
 };
 
 /// The application error every handler inside the dispatcher converts into.
@@ -191,7 +191,7 @@ struct Labeler {
     label: String, // stands in for a GitHub API client
 }
 
-impl PayloadHandler<PullRequestWebhookEventPayload> for Labeler {
+impl EventHandler<PullRequestWebhookEventPayload> for Labeler {
     type Error = Infallible;
 
     async fn handle(

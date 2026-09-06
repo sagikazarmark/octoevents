@@ -27,7 +27,7 @@ A handler is a struct whose fields are its dependencies, with a plain
 what they receive:
 
 ```rust
-use octoevents::{Envelope, EventKind, EventMeta, PayloadHandler, WebhookHandler};
+use octoevents::{Envelope, EventHandler, EventKind, EventMeta, WebhookHandler};
 
 // The verified envelope: routing metadata plus the exact payload bytes.
 // Nothing is decoded, so it runs for every verified delivery, including one
@@ -54,7 +54,7 @@ octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
 
 struct Labeler { /* GitHub API client */ }
 
-impl PayloadHandler<PullRequestNumber> for Labeler {
+impl EventHandler<PullRequestNumber> for Labeler {
     type Error = std::io::Error;
 
     async fn handle(&self, meta: EventMeta, pr: PullRequestNumber) -> Result<(), Self::Error> {
@@ -64,15 +64,15 @@ impl PayloadHandler<PullRequestNumber> for Labeler {
 }
 ```
 
-The receiver accepts a `WebhookHandler`; payload handlers reach it through
+The receiver accepts a `WebhookHandler`; event handlers reach it through
 a `Dispatcher`. A receiver for one kind and nothing else needs no dispatcher:
 a `WebhookHandler` that calls `envelope.decode_payload::<PullRequestNumber>()`
 decodes its own view and refuses a delivery of any other kind at the kind.
 
 A `Dispatcher` routes handlers by kind and action through three tiers:
-webhook handlers in its `always` and `fallback` tiers, payload handlers by
+webhook handlers in its `always` and `fallback` tiers, event handlers by
 the kind their payload type declares (and, if wanted, some of its actions),
-and payload handlers over any `FromEnvelope` input for the kinds and actions
+and event handlers over any `FromEnvelope` input for the kinds and actions
 a matcher selects through `on`:
 
 ```rust,ignore
@@ -96,7 +96,7 @@ straight to the line of code. Nothing is decoded on behalf of `always` or
 runs, so `always`, routes over consumer views or `()`, and a strict
 `fallback` all run for a payload octocrab cannot represent; only a handler
 over `WebhookEvent` fails on it. A routed handler decodes only when its route
-matches, so a payload handler registered for some actions decodes nothing for
+matches, so an event handler registered for some actions decodes nothing for
 a delivery carrying another. Unmatched deliveries succeed unless a fallback says
 otherwise. `dispatch` reports an `Outcome` beside the handlers' result:
 matched, or unmatched with the kind known or unknown to the route table. The
@@ -107,7 +107,7 @@ it handles. A tier can continue or fail but never skip, so a handler that
 decides whether a delivery is routed at all (persist first, answer a
 redelivery of a stored delivery ID with success) is that same wrapper. The
 `dispatcher` example shows the whole shape behind a receiver; the `worker`
-example forwards each envelope from the `always` tier and routes a payload
+example forwards each envelope from the `always` tier and routes an event
 handler without octocrab on Cloudflare Workers.
 
 Closures work for both flavours, and `Arc<H>` is a handler of either flavour

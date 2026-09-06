@@ -7,7 +7,7 @@ use octocrab::models::webhook_events::{WebhookEvent, payload};
 use crate::{DecodeError, Envelope, EventKind, FromEnvelope};
 
 // Every per-kind payload struct octocrab models, bound to its event kind so
-// each can drive a `PayloadHandler`. The structs carry no
+// each can drive an `EventHandler`. The structs carry no
 // `deny_unknown_fields`, and octocrab itself builds them from the same
 // flattened JSON object, so decoding the whole payload into one works.
 // `ScheduleWebhookEventPayload` is deliberately absent: `schedule` is a
@@ -120,7 +120,7 @@ impl Envelope {
     /// Decodes the payload as octocrab's [`WebhookEvent`] for the envelope's
     /// kind.
     ///
-    /// This is what a [`PayloadHandler`] over `WebhookEvent` receives, through
+    /// This is what an [`EventHandler`] over `WebhookEvent` receives, through
     /// `WebhookEvent`'s [`FromEnvelope`] impl; call it directly from a
     /// [`WebhookHandler`] that needs octocrab's models alongside the raw bytes.
     ///
@@ -140,7 +140,7 @@ impl Envelope {
     /// octocrab major bump here is a breaking change for this method.
     ///
     /// [`WebhookEventPayload::Unknown`]: octocrab::models::webhook_events::WebhookEventPayload::Unknown
-    /// [`PayloadHandler`]: crate::PayloadHandler
+    /// [`EventHandler`]: crate::EventHandler
     /// [`WebhookHandler`]: crate::WebhookHandler
     ///
     /// # Errors

@@ -1,12 +1,12 @@
 use std::{collections::HashMap, error::Error, fmt, panic::Location, sync::Arc};
 
 use crate::{
-    Action, DecodeError, Envelope, EventKind, EventMatcher, EventMeta, FromEnvelope, MaybeSend,
-    MaybeSync, Payload, PayloadHandler, WebhookHandler, matcher::Slot, runtime::BoxFuture, trace,
+    Action, DecodeError, Envelope, EventHandler, EventKind, EventMatcher, EventMeta, FromEnvelope,
+    MaybeSend, MaybeSync, Payload, WebhookHandler, matcher::Slot, runtime::BoxFuture, trace,
 };
 
 // The erased handler: every flavour is registered as a function of the
-// envelope, a payload handler's decode folded in. A trait object admits only
+// envelope, an event handler's decode folded in. A trait object admits only
 // one non-auto trait, so this cannot be written as
 // `dyn Fn(..) + MaybeSend + MaybeSync` and carries the platform split by
 // hand; see `runtime` for the rationale.
@@ -22,7 +22,7 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// them. The `always` chain runs first, for every delivery, and receives the
 /// verified [`Envelope`], bytes included. The routed chains run next: the
 /// chain for the envelope's kind and action, then the kind-wide chain. Every
-/// routed handler is a [`PayloadHandler`] over some [`FromEnvelope`] input:
+/// routed handler is an [`EventHandler`] over some [`FromEnvelope`] input:
 /// `on_payload` and `on_payload_action` route one by the kind its [`Payload`]
 /// type declares, and `on` routes one over any input for the kinds and
 /// actions a matcher selects. The `fallback` chain runs only if neither
@@ -72,7 +72,7 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// with its own error rather than a decode error; the delivery fails only at
 /// the first handler over octocrab's `WebhookEvent`, and the
 /// [`DispatchError`] names that registration. A routed handler decodes only
-/// when its route matches: a payload handler registered for some actions
+/// when its route matches: an event handler registered for some actions
 /// decodes nothing for a delivery carrying another.
 ///
 /// ```
@@ -118,7 +118,7 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// that impl is the one-line `match never {}` above. Handlers written against
 /// `E` itself need nothing further.
 ///
-/// `on` routes a payload handler over any [`FromEnvelope`] input for the
+/// `on` routes an event handler over any [`FromEnvelope`] input for the
 /// kinds and actions a matcher selects. `()` decodes nothing, so a handler
 /// over it is routed by kind and action and receives only the [`EventMeta`];
 /// a consumer type implementing `FromEnvelope` itself is a view over fields
@@ -541,7 +541,7 @@ pub enum Tier {
     /// The `always` chain: webhook handlers over the envelope, bytes
     /// included, that run for every delivery before routing.
     Always,
-    /// The routed chains: the payload handlers `on`, `on_payload` and
+    /// The routed chains: the event handlers `on`, `on_payload` and
     /// `on_payload_action` registered for the delivery's kind and action.
     Route,
     /// The `fallback` chain: webhook handlers that run only when no routed
@@ -621,7 +621,7 @@ where
         self
     }
 
-    /// Registers a payload handler for the kinds and actions the matcher
+    /// Registers an event handler for the kinds and actions the matcher
     /// selects.
     ///
     /// The handler's input is any [`FromEnvelope`], whose docs list the
@@ -635,22 +635,22 @@ where
     ///
     /// A handler registered under several slots is shared, not duplicated.
     /// `P` is inferred from a closure's parameter type or from a struct that
-    /// implements [`PayloadHandler`] for one input; a struct that implements
+    /// implements [`EventHandler`] for one input; a struct that implements
     /// it for several names the input: `on::<Sender, _>(matcher, auditor)`.
     #[must_use]
     #[track_caller]
     pub fn on<P, H>(mut self, matcher: impl Into<EventMatcher>, handler: H) -> Self
     where
         P: FromEnvelope + 'static,
-        H: PayloadHandler<P> + MaybeSend + MaybeSync + 'static,
+        H: EventHandler<P> + MaybeSend + MaybeSync + 'static,
         E: From<H::Error>,
     {
-        let route = Route::registered(payload_handler(handler));
+        let route = Route::registered(event_handler(handler));
         self.insert_each(matcher.into().into_slots(), &route);
         self
     }
 
-    /// Registers a payload handler for every action of the kind its payload
+    /// Registers an event handler for every action of the kind its payload
     /// type declares.
     ///
     /// No matcher is needed, and none is accepted: the kind is `P::KIND`, so a
@@ -664,7 +664,7 @@ where
     /// type built on them cannot decode an action they do not know.
     ///
     /// `P` is inferred from a closure's parameter type or from a struct that
-    /// implements [`PayloadHandler`] for one payload. A struct that
+    /// implements [`EventHandler`] for one payload. A struct that
     /// implements it for several needs the payload named:
     /// `on_payload::<PullRequestNumber, _>(labeler)`.
     #[must_use]
@@ -672,15 +672,15 @@ where
     pub fn on_payload<P, H>(mut self, handler: H) -> Self
     where
         P: Payload + 'static,
-        H: PayloadHandler<P> + MaybeSend + MaybeSync + 'static,
+        H: EventHandler<P> + MaybeSend + MaybeSync + 'static,
         E: From<H::Error>,
     {
-        let route = Route::registered(payload_handler(handler));
+        let route = Route::registered(event_handler(handler));
         self.insert(Slot::any_action(P::KIND), route);
         self
     }
 
-    /// Registers a payload handler for the given actions of the kind its
+    /// Registers an event handler for the given actions of the kind its
     /// payload type declares.
     ///
     /// The route is `P::KIND` with each action in turn, so this mirrors
@@ -695,7 +695,7 @@ where
     ///
     /// Any collection of [`Action`]s is accepted; an array literal is the
     /// usual shape, and an empty one registers nothing. `P` is inferred as
-    /// for `on_payload`, and a struct that implements [`PayloadHandler`] for
+    /// for `on_payload`, and a struct that implements [`EventHandler`] for
     /// several payloads names it the same way:
     /// `on_payload_action::<PullRequestNumber, _>([Action::Opened], labeler)`.
     #[must_use]
@@ -707,10 +707,10 @@ where
     ) -> Self
     where
         P: Payload + 'static,
-        H: PayloadHandler<P> + MaybeSend + MaybeSync + 'static,
+        H: EventHandler<P> + MaybeSend + MaybeSync + 'static,
         E: From<H::Error>,
     {
-        let route = Route::registered(payload_handler(handler));
+        let route = Route::registered(event_handler(handler));
         let slots = actions
             .into_iter()
             .map(|action| Slot::action(P::KIND, action));
@@ -780,14 +780,14 @@ where
     })
 }
 
-/// Erases a payload handler behind its decode: the route decodes `P` from
+/// Erases an event handler behind its decode: the route decodes `P` from
 /// the envelope when it runs, so a route that never matches never decodes,
 /// and a decode failure is this route's failure.
-fn payload_handler<E, P, H>(handler: H) -> EnvelopeFn<E>
+fn event_handler<E, P, H>(handler: H) -> EnvelopeFn<E>
 where
     E: From<DecodeError> + From<H::Error> + 'static,
     P: FromEnvelope + 'static,
-    H: PayloadHandler<P> + MaybeSend + MaybeSync + 'static,
+    H: EventHandler<P> + MaybeSend + MaybeSync + 'static,
 {
     let handler = Arc::new(handler);
     Arc::new(move |envelope: Envelope| {
@@ -995,7 +995,7 @@ mod tests {
         }
     }
 
-    /// A payload handler over [`AnyPullRequest`] that appends `value` to the
+    /// An event handler over [`AnyPullRequest`] that appends `value` to the
     /// shared log.
     fn record_payload(
         calls: &Calls,
@@ -1011,7 +1011,7 @@ mod tests {
         }
     }
 
-    /// A payload handler over [`AnyPullRequest`] that appends `value` to the
+    /// An event handler over [`AnyPullRequest`] that appends `value` to the
     /// shared log and then fails.
     fn fail_payload(
         calls: &Calls,
@@ -1027,7 +1027,7 @@ mod tests {
         }
     }
 
-    /// A payload handler over `()` that appends `value` to the shared log:
+    /// An event handler over `()` that appends `value` to the shared log:
     /// routed by kind and action, with nothing decoded.
     fn record_meta(
         calls: &Calls,
@@ -1043,7 +1043,7 @@ mod tests {
         }
     }
 
-    /// A payload handler over `()` that appends `value` to the shared log
+    /// An event handler over `()` that appends `value` to the shared log
     /// and then fails.
     fn fail_meta(
         calls: &Calls,
@@ -1059,7 +1059,7 @@ mod tests {
         }
     }
 
-    /// A payload handler over octocrab's `WebhookEvent` that appends `value`
+    /// An event handler over octocrab's `WebhookEvent` that appends `value`
     /// to the shared log.
     #[cfg(feature = "octocrab")]
     fn record_event(
@@ -1540,7 +1540,7 @@ mod tests {
         }
 
         // The handlers before it never decode, so the failure is attributed to
-        // the payload handler's own registration, not the first one.
+        // the event handler's own registration, not the first one.
         let calls = Calls::default();
         let builder = Dispatcher::<AppError>::builder().always(record(&calls, "always"));
         let registration_site = line!() + 1;
@@ -1745,7 +1745,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_payload_handler_registered_for_some_actions_matches_only_those() {
+    async fn an_event_handler_registered_for_some_actions_matches_only_those() {
         let calls = Calls::default();
         let dispatcher = Dispatcher::<AppError>::builder()
             .on_payload_action(
@@ -2020,14 +2020,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_arc_shared_payload_handler_is_registered_as_itself() {
-        use crate::PayloadHandler;
+    async fn an_arc_shared_event_handler_is_registered_as_itself() {
+        use crate::EventHandler;
 
         struct Labeler {
             seen: Mutex<Vec<(Option<Action>, &'static str)>>,
         }
 
-        impl PayloadHandler<AnyPullRequest> for Labeler {
+        impl EventHandler<AnyPullRequest> for Labeler {
             type Error = std::convert::Infallible;
 
             async fn handle(&self, meta: EventMeta, _: AnyPullRequest) -> Result<(), Self::Error> {
@@ -2036,7 +2036,7 @@ mod tests {
             }
         }
 
-        impl PayloadHandler<()> for Labeler {
+        impl EventHandler<()> for Labeler {
             type Error = std::convert::Infallible;
 
             async fn handle(&self, meta: EventMeta, (): ()) -> Result<(), Self::Error> {
@@ -2217,7 +2217,7 @@ mod tests {
 
     #[cfg(feature = "octocrab")]
     #[tokio::test]
-    async fn on_payload_routes_a_payload_handler_by_its_payload_type() {
+    async fn on_payload_routes_an_event_handler_by_its_payload_type() {
         use octocrab::models::webhook_events::payload::{
             PullRequestWebhookEventAction, PullRequestWebhookEventPayload,
         };
@@ -2226,7 +2226,7 @@ mod tests {
             seen: Arc<Mutex<Vec<(String, u64, PullRequestWebhookEventAction)>>>,
         }
 
-        impl crate::PayloadHandler<PullRequestWebhookEventPayload> for Labeler {
+        impl crate::EventHandler<PullRequestWebhookEventPayload> for Labeler {
             type Error = std::convert::Infallible;
 
             async fn handle(
@@ -2387,7 +2387,7 @@ mod tests {
     #[cfg(feature = "octocrab")]
     #[tokio::test]
     async fn an_event_decode_failure_stops_the_delivery_at_the_first_handler_over_webhook_event() {
-        // The always tier and payload handlers over a consumer view sit either
+        // The always tier and event handlers over a consumer view sit either
         // side of the handlers over `WebhookEvent`, so the log shows exactly
         // where the chain stopped: each `WebhookEvent` route decodes its own
         // input when it runs, and nothing before the first one needed octocrab.
@@ -2409,7 +2409,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_delivery_with_only_webhook_and_payload_handlers_never_decodes_the_event() {
+    async fn a_delivery_with_no_handler_over_webhook_event_never_needs_octocrab() {
         // The same unrepresentable payload succeeds when no handler over
         // `WebhookEvent` needs octocrab's decoding: the always and fallback
         // tiers see the envelope as verified, and a consumer view over the
@@ -2485,7 +2485,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_struct_handling_two_payloads_is_registered_with_a_turbofish() {
-        use crate::PayloadHandler;
+        use crate::EventHandler;
 
         #[derive(serde::Deserialize)]
         struct AnyCheckRun {}
@@ -2495,7 +2495,7 @@ mod tests {
             calls: Calls,
         }
 
-        impl PayloadHandler<AnyPullRequest> for Labeler {
+        impl EventHandler<AnyPullRequest> for Labeler {
             type Error = AppError;
 
             async fn handle(&self, _: EventMeta, _: AnyPullRequest) -> Result<(), AppError> {
@@ -2504,7 +2504,7 @@ mod tests {
             }
         }
 
-        impl PayloadHandler<AnyCheckRun> for Labeler {
+        impl EventHandler<AnyCheckRun> for Labeler {
             type Error = AppError;
 
             async fn handle(&self, _: EventMeta, _: AnyCheckRun) -> Result<(), AppError> {

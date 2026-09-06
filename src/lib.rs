@@ -43,7 +43,7 @@
 //!   the raw payload bytes. This is what the receiver accepts, and what the
 //!   dispatcher's `always` and `fallback` tiers accept. For audit, metrics,
 //!   persistence and forwarding.
-//! - A [`PayloadHandler`] receives the [`EventMeta`] and the envelope decoded
+//! - An [`EventHandler`] receives the [`EventMeta`] and the envelope decoded
 //!   as a type implementing [`FromEnvelope`]. A [`Payload`] is one such type,
 //!   declaring the kind it decodes: implement it for your own serde view with
 //!   [`impl_payload!`], or use octocrab's per-kind payload structs with the
@@ -85,13 +85,13 @@
 //! # }
 //! ```
 //!
-//! Payload handlers reach the receiver through a [`Dispatcher`], which
+//! Event handlers reach the receiver through a [`Dispatcher`], which
 //! routes handlers by [`EventKind`] and [`Action`]: webhook handlers in its
-//! `always` and `fallback` tiers, payload handlers by the kind their payload
+//! `always` and `fallback` tiers, event handlers by the kind their payload
 //! type declares (`on_payload`, or `on_payload_action` for some of its
 //! actions) or by matcher for any `FromEnvelope` input (`on`). A dispatcher
 //! with one `on_payload` route is the alternative to the handler above: it
-//! takes a [`PayloadHandler`] over the same view and answers a delivery of
+//! takes an [`EventHandler`] over the same view and answers a delivery of
 //! any other kind with success rather than failure. The
 //! dispatcher converts each handler's error into one application error via
 //! `From`, and reports a failure as a [`DispatchError`] wrapping that error
@@ -224,7 +224,7 @@ pub use envelope::{
     DecodeError, Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef, TargetType,
 };
 pub use events::{Action, EventKind};
-pub use handler::{PayloadHandler, WebhookHandler};
+pub use handler::{EventHandler, WebhookHandler};
 pub use matcher::EventMatcher;
 pub use payload::{FromEnvelope, Payload};
 pub use respond::ResponseStatus;

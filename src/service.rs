@@ -800,11 +800,11 @@ mod tests {
 
     #[cfg(feature = "octocrab")]
     #[tokio::test]
-    async fn a_payload_handler_over_webhook_event_receives_octocrabs_decoded_event_with_the_metadata()
+    async fn an_event_handler_over_webhook_event_receives_octocrabs_decoded_event_with_the_metadata()
      {
         use octocrab::models::webhook_events::{WebhookEvent, WebhookEventPayload};
 
-        use crate::PayloadHandler;
+        use crate::EventHandler;
 
         type Seen = Arc<std::sync::Mutex<Vec<(String, Option<u64>, u64)>>>;
 
@@ -812,7 +812,7 @@ mod tests {
             seen: Seen,
         }
 
-        impl PayloadHandler<WebhookEvent> for EventRecorder {
+        impl EventHandler<WebhookEvent> for EventRecorder {
             type Error = std::convert::Infallible;
 
             #[allow(clippy::unused_async_trait_impl)]
@@ -861,7 +861,7 @@ mod tests {
 
     #[cfg(feature = "octocrab")]
     #[tokio::test]
-    async fn a_payload_handler_receives_octocrabs_payload_for_its_kind() {
+    async fn an_event_handler_over_octocrabs_payload_receives_it_for_its_kind() {
         use octocrab::models::webhook_events::payload::{
             PullRequestWebhookEventAction, PullRequestWebhookEventPayload,
         };
