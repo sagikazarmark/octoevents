@@ -183,9 +183,10 @@ impl FromStr for TargetType {
 /// The headers needed to authenticate and route a GitHub webhook.
 ///
 /// Use [`From`] with an `http::HeaderMap` when the `http` feature is enabled.
-/// Otherwise look each header up in your transport's map by the names in
-/// [`header`](crate::header) and pass the value to the setter of the same
-/// name; the module docs show the shape.
+/// Otherwise [`HeaderView::from_lookup`] asks your transport's map for each
+/// header by the names in [`header`](crate::header), in one call; the
+/// setters build a view one header at a time, for a test or a transport that
+/// has the values in hand.
 ///
 /// Header-name case is the caller's concern. The view holds values, and
 /// which header a value came from is fixed by the setter that received it,
@@ -249,6 +250,63 @@ impl<'a> HeaderView<'a> {
         Self::default()
     }
 
+    /// Builds a view by asking `lookup` for each header this crate reads.
+    ///
+    /// The one-call constructor for a transport that receives its headers as
+    /// a string map. `lookup` is called once per header with the constant
+    /// from [`header`](crate::header) that names it, always lowercase
+    /// (`x-github-delivery`, not `X-GitHub-Delivery`); a header it answers
+    /// `None` for is left unset, exactly as if its setter had not been called.
+    /// A value may be borrowed from the map or owned, as with the setters.
+    ///
+    /// Matching the case of your map's keys is your concern: the lookup
+    /// receives the lowercase name and the view compares nothing itself. A
+    /// map that kept the sender's casing (HTTP/1.1 does) is lowercased
+    /// first, or asked case-insensitively; see the type docs for which hops
+    /// do what.
+    ///
+    /// A string map cannot hold a header whose bytes are not a string, so
+    /// this constructor never marks the signature malformed the way the
+    /// `From<&http::HeaderMap>` conversion (`http` feature) does for a
+    /// header value that is not visible ASCII. A signature that is present
+    /// but not `sha256=` followed by 64 hexadecimal characters is still
+    /// [`VerifyError::MalformedSignature`], from the verifier.
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    ///
+    /// use octoevents::HeaderView;
+    ///
+    /// // What an HTTP/1.1 hop hands over: names as GitHub wrote them.
+    /// let received: HashMap<String, String> = [
+    ///     ("X-Hub-Signature-256", "sha256=..."),
+    ///     ("X-GitHub-Delivery", "72d3162e-cc78-11e3-81ab-4c9367dc0958"),
+    ///     ("X-GitHub-Event", "pull_request"),
+    ///     ("Content-Type", "application/json"),
+    /// ]
+    /// .into_iter()
+    /// .map(|(name, value)| (name.to_ascii_lowercase(), value.to_owned()))
+    /// .collect();
+    ///
+    /// let headers = HeaderView::from_lookup(|name| received.get(name).map(String::as_str));
+    /// # let _ = headers;
+    /// ```
+    #[must_use]
+    pub fn from_lookup<S>(mut lookup: impl FnMut(&str) -> Option<S>) -> Self
+    where
+        S: Into<Cow<'a, str>>,
+    {
+        Self {
+            signature: lookup(header::SIGNATURE).map(Into::into),
+            delivery_id: lookup(header::DELIVERY_ID).map(Into::into),
+            event_name: lookup(header::EVENT_NAME).map(Into::into),
+            content_type: lookup(header::CONTENT_TYPE).map(Into::into),
+            target_type: lookup(header::TARGET_TYPE).map(Into::into),
+            target_id: lookup(header::TARGET_ID).map(Into::into),
+            malformed_signature: false,
+        }
+    }
+
     /// Sets the `X-Hub-Signature-256` value.
     #[must_use]
     pub fn signature(mut self, value: impl Into<Cow<'a, str>>) -> Self {
@@ -310,24 +368,15 @@ impl<'a> HeaderView<'a> {
 #[cfg(feature = "http")]
 impl<'a> From<&'a http::HeaderMap> for HeaderView<'a> {
     fn from(headers: &'a http::HeaderMap) -> Self {
-        fn value<'a>(headers: &'a http::HeaderMap, name: &'static str) -> Option<Cow<'a, str>> {
-            headers
-                .get(name)
-                .and_then(|value| value.to_str().ok())
-                .map(Cow::Borrowed)
-        }
-
-        Self {
-            signature: value(headers, header::SIGNATURE),
-            delivery_id: value(headers, header::DELIVERY_ID),
-            event_name: value(headers, header::EVENT_NAME),
-            content_type: value(headers, header::CONTENT_TYPE),
-            target_type: value(headers, header::TARGET_TYPE),
-            target_id: value(headers, header::TARGET_ID),
-            malformed_signature: headers
-                .get(header::SIGNATURE)
-                .is_some_and(|value| value.to_str().is_err()),
-        }
+        let mut view =
+            Self::from_lookup(|name| headers.get(name).and_then(|value| value.to_str().ok()));
+        // A header value that is not visible ASCII has no `str` to look up,
+        // so the lookup left the signature unset; this is what tells a
+        // malformed one apart from an absent one.
+        view.malformed_signature = headers
+            .get(header::SIGNATURE)
+            .is_some_and(|value| value.to_str().is_err());
+        view
     }
 }
 
@@ -447,27 +496,66 @@ impl Envelope {
     ///
     /// `WebhookReceiver` (`http` feature) does three things around this call
     /// that a transport built directly on it must do for itself, or decide
-    /// to go without:
+    /// to go without. This is the receiver's sequence for a transport that is
+    /// handed a string map and the body; each of the three returns the
+    /// status the receiver would, and the handler runs only once all three
+    /// have passed:
     ///
-    /// - **Header-only rejection before reading the body.** The receiver
-    ///   refuses a request with no `X-Hub-Signature-256` header before it
-    ///   reads a byte of the body, so unsigned traffic never occupies
-    ///   memory. This function takes the body already read; a transport
-    ///   that streams checks the header is present
-    ///   ([`header::SIGNATURE`](crate::header::SIGNATURE)) before buffering,
-    ///   and answers its absence as `for_receive_error` answers
-    ///   [`VerifyError::MissingSignature`], the error this function would
-    ///   have returned.
-    /// - **The body limit.** The receiver stops reading at its configured
-    ///   limit ([`DEFAULT_BODY_LIMIT`](crate::DEFAULT_BODY_LIMIT), GitHub's
-    ///   25 MiB cap) and answers as `for_receive_error` answers
-    ///   [`ReceiveError::BodyTooLarge`]. This function verifies whatever it
-    ///   is given; a transport bounds the body before calling.
-    /// - **The ping short-circuit.** The receiver answers a verified `ping`
-    ///   with `NoContent` and passes it to no handler unless configured to.
-    ///   This function returns a `ping` like any other envelope, so a
-    ///   transport that forwards every envelope forwards pings too unless it
-    ///   checks [`EventMeta::kind`] for [`EventKind::Ping`] first.
+    /// ```
+    /// use std::collections::HashMap;
+    ///
+    /// use octoevents::{
+    ///     Bytes, DEFAULT_BODY_LIMIT, Envelope, EventKind, HeaderView, ReceiveError,
+    ///     ResponseStatus, Verifier, VerifyError, WebhookHandler, header,
+    /// };
+    ///
+    /// async fn receive<H: WebhookHandler>(
+    ///     verifier: &Verifier,
+    ///     received: &HashMap<String, String>,
+    ///     body: Bytes,
+    ///     handler: &H,
+    /// ) -> ResponseStatus {
+    ///     // Header-only rejection: an unsigned request is 401 before the
+    ///     // body is read, so it never occupies memory. Decidable from the
+    ///     // headers, so a transport that streams runs it before buffering;
+    ///     // `from_signed` reaches the same answer for one that does not.
+    ///     if received.get(header::SIGNATURE).is_none() {
+    ///         let error = ReceiveError::from(VerifyError::MissingSignature);
+    ///         return ResponseStatus::for_receive_error(&error);
+    ///     }
+    ///
+    ///     // The body limit: 413 past GitHub's 25 MiB cap. The receiver stops
+    ///     // reading at the limit; a transport that streams does the same,
+    ///     // and one handed the body already read checks its length.
+    ///     if body.len() > DEFAULT_BODY_LIMIT {
+    ///         let error = ReceiveError::BodyTooLarge { limit: DEFAULT_BODY_LIMIT };
+    ///         return ResponseStatus::for_receive_error(&error);
+    ///     }
+    ///
+    ///     let headers = HeaderView::from_lookup(|name| received.get(name).map(String::as_str));
+    ///     let envelope = match Envelope::from_signed(verifier, &headers, body) {
+    ///         Ok(envelope) => envelope,
+    ///         Err(error) => return ResponseStatus::for_receive_error(&error),
+    ///     };
+    ///
+    ///     // The ping short-circuit: a verified `ping` is 204 and reaches no
+    ///     // handler, unless the receiver was built with `handle_ping(true)`.
+    ///     // After `from_signed`, so an unsigned ping is still 401.
+    ///     if matches!(envelope.meta.kind, EventKind::Ping) {
+    ///         return ResponseStatus::NoContent;
+    ///     }
+    ///
+    ///     match handler.handle(envelope).await {
+    ///         Ok(()) => ResponseStatus::NoContent,
+    ///         Err(_) => ResponseStatus::InternalServerError,
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Without the first, unsigned traffic is buffered before it is refused;
+    /// without the second, this function verifies whatever it is given;
+    /// without the third, a transport that forwards every envelope forwards
+    /// pings too.
     ///
     /// # Errors
     ///
@@ -525,20 +613,6 @@ impl Envelope {
             .and_then(|value| value.parse().ok());
 
         Ok(Self { meta, raw: body })
-    }
-
-    /// Authenticates and constructs an envelope from standard HTTP headers.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`Envelope::from_signed`].
-    #[cfg(feature = "http")]
-    pub fn from_signed_headers(
-        verifier: &Verifier,
-        headers: &http::HeaderMap,
-        body: Bytes,
-    ) -> Result<Self, ReceiveError> {
-        Self::from_signed(verifier, &HeaderView::from(headers), body)
     }
 
     /// Decodes the exact payload into a caller-defined view, checking nothing
@@ -738,7 +812,7 @@ struct LoginOnly {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr as _;
+    use std::{collections::HashMap, str::FromStr as _};
 
     use bytes::Bytes;
     use hmac::{Hmac, KeyInit, Mac};
@@ -1211,6 +1285,59 @@ mod tests {
         assert_eq!(payload.issue.number, 7);
     }
 
+    #[test]
+    fn from_lookup_authenticates_a_string_map_the_caller_lowercased() {
+        // HTTP/1.1 hands a serverless runtime the names as GitHub wrote them.
+        // The constants are lowercase and the lookup compares nothing itself,
+        // so the transport lowercases its keys before asking.
+        let signature = signature(b"secret", BODY);
+        let received: HashMap<String, String> = [
+            ("X-Hub-Signature-256", signature.as_str()),
+            ("X-GitHub-Delivery", "delivery"),
+            ("X-GitHub-Event", "pull_request"),
+            ("Content-Type", "application/json"),
+            ("X-GitHub-Hook-Installation-Target-Type", "integration"),
+            ("X-GitHub-Hook-Installation-Target-ID", "12345"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_ascii_lowercase(), value.to_owned()))
+        .collect();
+
+        let headers = HeaderView::from_lookup(|name| received.get(name).map(String::as_str));
+        let envelope =
+            Envelope::from_signed(&verifier(), &headers, Bytes::from_static(BODY)).unwrap();
+
+        assert_eq!(envelope.meta.delivery_id, "delivery");
+        assert_eq!(envelope.meta.kind, EventKind::PullRequest);
+        assert_eq!(envelope.meta.action, Some(Action::Opened));
+        assert_eq!(envelope.meta.target_type, Some(TargetType::Integration));
+        assert_eq!(envelope.meta.target_id, Some(12345));
+        assert_eq!(envelope.meta.installation_id, Some(42));
+    }
+
+    #[test]
+    fn from_lookup_reports_an_absent_signature_as_missing() {
+        // A string map cannot hold a header whose bytes are not a string, so
+        // the only header failure this path can earn for the signature is its
+        // absence. The lookup hands over owned values here: either flavour of
+        // string is accepted, as the setters accept both.
+        let received: HashMap<String, String> = [
+            ("x-github-delivery", "delivery"),
+            ("x-github-event", "push"),
+            ("content-type", "application/json"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        .collect();
+
+        let headers = HeaderView::from_lookup(|name| received.get(name).cloned());
+
+        assert_eq!(
+            Envelope::from_signed(&verifier(), &headers, Bytes::new()),
+            Err(ReceiveError::Verify(VerifyError::MissingSignature))
+        );
+    }
+
     #[cfg(feature = "http")]
     #[test]
     fn constructs_from_an_http_header_map() {
@@ -1223,8 +1350,12 @@ mod tests {
         map.insert(header::TARGET_TYPE, "integration".parse().unwrap());
         map.insert(header::TARGET_ID, "12345".parse().unwrap());
 
-        let envelope =
-            Envelope::from_signed_headers(&verifier(), &map, Bytes::from_static(BODY)).unwrap();
+        let envelope = Envelope::from_signed(
+            &verifier(),
+            &HeaderView::from(&map),
+            Bytes::from_static(BODY),
+        )
+        .unwrap();
 
         assert_eq!(envelope.meta.delivery_id, "delivery");
         assert_eq!(envelope.meta.kind, EventKind::PullRequest);
@@ -1247,7 +1378,7 @@ mod tests {
         map.insert("content-type", "application/json".parse().unwrap());
 
         assert_eq!(
-            Envelope::from_signed_headers(&verifier(), &map, Bytes::new()),
+            Envelope::from_signed(&verifier(), &HeaderView::from(&map), Bytes::new()),
             Err(ReceiveError::Verify(VerifyError::MalformedSignature))
         );
     }

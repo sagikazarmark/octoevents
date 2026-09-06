@@ -188,12 +188,17 @@
 //! [`Envelope::from_signed`] is the sans-I/O entry point and the only path
 //! that turns an untrusted request into an envelope; it authenticates before
 //! it extracts. A transport with no `http::Request` builds a [`HeaderView`]
-//! from the values under the names in [`header`], calls it with the body as
-//! [`Bytes`], and answers with [`ResponseStatus`]. Its docs list the three
-//! things the receiver does that this path does not: refusing an unsigned
-//! request before reading the body, bounding the body, and short-circuiting
-//! `ping`. [`Envelope`] serializes with serde for forwarding, bytes in
-//! base64; its docs show the document.
+//! with [`HeaderView::from_lookup`], which asks its map for each header by
+//! the names in [`header`], calls it with the body as [`Bytes`], and answers
+//! with [`ResponseStatus`]. The header names are lowercase and the lookup
+//! compares nothing itself, so matching the case of the map's keys is the
+//! transport's concern. [`Dispatcher::dispatch`] is a plain `async fn` with
+//! no runtime of its own, so a transport awaits it on whatever executor it
+//! has. The docs of `from_signed` show, as code to copy, the three things
+//! the receiver does that this path does not: refusing an unsigned request
+//! before reading the body, bounding the body, and short-circuiting `ping`.
+//! [`Envelope`] serializes with serde for forwarding, bytes in base64; its
+//! docs show the document.
 //!
 //! # Delivery semantics
 //!

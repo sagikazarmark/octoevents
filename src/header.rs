@@ -1,9 +1,10 @@
 //! The names of the request headers this crate reads.
 //!
 //! A transport that receives its headers as a map rather than an
-//! `http::HeaderMap` looks them up by these names and hands the values to
-//! [`HeaderView`]. Each constant is the name the matching `HeaderView` setter
-//! takes, so the lookup and the setter pair up by name.
+//! `http::HeaderMap` builds a [`HeaderView`] with [`HeaderView::from_lookup`],
+//! which asks the map for each of these names in turn. Each constant is also
+//! the name of the matching `HeaderView` setter, for a transport that hands
+//! the values over one at a time.
 //!
 //! The names are lowercase, as `http::HeaderMap` stores them. Whether the
 //! keys of your map match them is your concern; [`HeaderView`] says what to
@@ -12,7 +13,7 @@
 //! ```
 //! use std::collections::HashMap;
 //!
-//! use octoevents::{HeaderView, header};
+//! use octoevents::HeaderView;
 //!
 //! // The shape a serverless runtime hands over: a map with lowercase keys.
 //! let received: HashMap<String, String> = [
@@ -25,29 +26,13 @@
 //! .map(|(name, value)| (name.to_owned(), value.to_owned()))
 //! .collect();
 //!
-//! let mut headers = HeaderView::new();
-//! if let Some(value) = received.get(header::SIGNATURE) {
-//!     headers = headers.signature(value.as_str());
-//! }
-//! if let Some(value) = received.get(header::DELIVERY_ID) {
-//!     headers = headers.delivery_id(value.as_str());
-//! }
-//! if let Some(value) = received.get(header::EVENT_NAME) {
-//!     headers = headers.event_name(value.as_str());
-//! }
-//! if let Some(value) = received.get(header::CONTENT_TYPE) {
-//!     headers = headers.content_type(value.as_str());
-//! }
-//! if let Some(value) = received.get(header::TARGET_TYPE) {
-//!     headers = headers.target_type(value.as_str());
-//! }
-//! if let Some(value) = received.get(header::TARGET_ID) {
-//!     headers = headers.target_id(value.as_str());
-//! }
+//! // Asks the map for `header::SIGNATURE`, `header::DELIVERY_ID`, and the rest.
+//! let headers = HeaderView::from_lookup(|name| received.get(name).map(String::as_str));
 //! # let _ = headers;
 //! ```
 //!
 //! [`HeaderView`]: crate::HeaderView
+//! [`HeaderView::from_lookup`]: crate::HeaderView::from_lookup
 
 /// `X-Hub-Signature-256`: the HMAC-SHA256 of the body under the webhook
 /// secret, which [`Verifier`](crate::Verifier) checks.
