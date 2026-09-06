@@ -243,28 +243,6 @@ impl<H: WebhookHandler> WebhookHandler for Arc<H> {
 /// `dispatcher.on_payload::<PullRequestNumber, _>(labeler)`. An `async fn`
 /// or a closure fixes the input by its parameter type and needs no turbofish.
 ///
-/// The type parameter is required: `impl EventHandler for X` without one is
-/// a missing-generics error, not a handler over some default input. An impl
-/// written against the earlier, octocrab-only trait of this name, which
-/// received `WebhookEvent` and nothing else, therefore fails to compile
-/// rather than changing what it handles. The fix is to name the input:
-/// `impl EventHandler<WebhookEvent> for X`.
-///
-/// ```compile_fail,E0107
-/// use octoevents::{EventHandler, EventMeta};
-/// # struct WebhookEvent; // stands in for octocrab's, so the octocrab feature is not needed
-///
-/// struct Auditor;
-///
-/// impl EventHandler for Auditor {
-///     type Error = std::convert::Infallible;
-///
-///     async fn handle(&self, _: EventMeta, _: WebhookEvent) -> Result<(), Self::Error> {
-///         Ok(())
-///     }
-/// }
-/// ```
-///
 /// `Arc<H>` is an event handler when `H` is, under the rule [`WebhookHandler`]
 /// states for both flavours; the dispatcher wraps every registered handler in
 /// its own `Arc`, so sharing needs nothing from the caller.
@@ -304,9 +282,6 @@ impl<H: WebhookHandler> WebhookHandler for Arc<H> {
 /// # use octoevents::DecodeError;
 /// # struct AppError;
 /// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
-/// # impl From<std::convert::Infallible> for AppError {
-/// #     fn from(never: std::convert::Infallible) -> Self { match never {} }
-/// # }
 ///
 /// #[derive(serde::Deserialize)]
 /// struct PullRequestNumber { number: u64 }
@@ -314,7 +289,7 @@ impl<H: WebhookHandler> WebhookHandler for Arc<H> {
 /// let dispatcher = Dispatcher::<AppError>::builder()
 ///     .on_payload(|_: EventMeta, pr: PullRequestNumber| async move {
 ///         println!("PR #{}", pr.number);
-///         Ok::<_, std::convert::Infallible>(())
+///         Ok::<_, AppError>(())
 ///     })
 ///     .build();
 /// ```

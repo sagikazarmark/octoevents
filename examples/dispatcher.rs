@@ -20,8 +20,8 @@
 //! is the store's to replay: a handler failure after that point is
 //! recovered from the store, not by asking GitHub to redeliver.
 //!
-//! Inside the dispatcher, both handler flavours appear, each a struct or
-//! closure with its own error type:
+//! Inside the dispatcher, both handler flavours appear, as structs and as a
+//! closure, every one returning the application error:
 //!
 //! - [`Auditor`] is a `WebhookHandler` in the `always` tier: it runs for
 //!   every delivery, reads the metadata off the envelope, and, with nothing
@@ -43,7 +43,7 @@
 // which is what a real `async fn handle` would do.
 #![allow(clippy::unused_async_trait_impl)]
 
-use std::{convert::Infallible, error::Error as _, sync::Mutex};
+use std::{error::Error as _, sync::Mutex};
 
 use axum::{Router, routing::post_service};
 use octocrab::models::webhook_events::{WebhookEvent, payload::PullRequestWebhookEventPayload};
@@ -52,19 +52,13 @@ use octoevents::{
     Match, Secret, Verifier, WebhookHandler, WebhookReceiverBuilder,
 };
 
-/// The application error every handler inside the dispatcher converts into.
+/// The application error every handler inside the dispatcher returns.
 ///
 /// One `From<DecodeError>` covers every decode the dispatcher performs.
 #[derive(Debug, thiserror::Error)]
 enum AppError {
     #[error(transparent)]
     Decode(#[from] DecodeError),
-}
-
-impl From<Infallible> for AppError {
-    fn from(never: Infallible) -> Self {
-        match never {}
-    }
 }
 
 /// A stand-in for a database: remembers which deliveries were stored, and
@@ -166,11 +160,11 @@ impl WebhookHandler for Inbox {
 }
 
 /// Runs for every delivery, reading only what `EventMeta` carries off the
-/// envelope. Its error type says it cannot fail.
+/// envelope.
 struct Auditor;
 
 impl WebhookHandler for Auditor {
-    type Error = Infallible;
+    type Error = AppError;
 
     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
         let meta = &envelope.meta;
@@ -192,7 +186,7 @@ struct Labeler {
 }
 
 impl EventHandler<PullRequestWebhookEventPayload> for Labeler {
-    type Error = Infallible;
+    type Error = AppError;
 
     async fn handle(
         &self,
@@ -241,7 +235,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .repository
                         .map_or_else(String::new, |repository| repository.name)
                 );
-                Ok::<_, Infallible>(())
+                Ok::<_, AppError>(())
             },
         )
         .on_payload_action(

@@ -43,13 +43,10 @@ use crate::{DecodeError, Envelope, EventKind};
 /// # #[derive(Debug)]
 /// # struct AppError;
 /// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
-/// # impl From<std::convert::Infallible> for AppError {
-/// #     fn from(never: std::convert::Infallible) -> Self { match never {} }
-/// # }
 /// let dispatcher = Dispatcher::<AppError>::builder()
 ///     .on([EventKind::Issues, EventKind::IssueComment], |meta: EventMeta, sender: Sender| async move {
 ///         println!("{} {} by {}", meta.delivery_id, meta.kind, sender.sender.login);
-///         Ok::<_, std::convert::Infallible>(())
+///         Ok::<_, AppError>(())
 ///     })
 ///     .build();
 /// # let _ = dispatcher;
