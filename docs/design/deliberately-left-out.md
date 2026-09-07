@@ -25,7 +25,7 @@ would only let a sender choose the weaker algorithm. Recorded on `Verifier`.
 The webhook must deliver `application/json`; anything else is
 `ReceiveError::UnsupportedContentType`. go-github also accepts
 `application/x-www-form-urlencoded`, JSON under a `payload` form parameter
-with the signature over the form body. Here `Envelope::raw` is both the signed
+with the signature over the form body. Here `Envelope::raw_payload` is both the signed
 input and the payload every decode reads, and a form body would make it one
 but not the other. Recorded on `Envelope::from_signed`.
 

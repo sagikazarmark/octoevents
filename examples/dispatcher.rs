@@ -139,7 +139,7 @@ impl Handler<Envelope> for Inbox {
         println!(
             "stored {} ({} bytes)",
             envelope.meta.delivery_id,
-            envelope.raw.len()
+            envelope.raw_payload.len()
         );
 
         // The dispatcher takes the envelope by value; the clone shares the
@@ -153,7 +153,7 @@ impl Handler<Envelope> for Inbox {
                     "dead-letter {} {} ({} bytes)",
                     envelope.meta.delivery_id,
                     envelope.meta.kind,
-                    envelope.raw.len()
+                    envelope.raw_payload.len()
                 );
                 Ok(self.store.dead_letter(envelope)?)
             }
@@ -182,7 +182,7 @@ impl Handler<Envelope> for Auditor {
 }
 
 /// Labels a pull request. Receives the meta and the decoded payload and no
-/// raw bytes; which actions reach it is decided where it is registered, not
+/// payload bytes; which actions reach it is decided where it is registered, not
 /// here.
 struct Labeler {
     label: String, // stands in for a GitHub API client

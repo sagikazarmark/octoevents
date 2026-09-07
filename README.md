@@ -49,7 +49,7 @@ Probot runs every matching handler and aggregates.
 | `app.on('issues', h)` | `on_payload(h)` after the same `impl_payload!`, or `on(EventKind::Issues, h)` |
 | `app.onAny(h)` | `always(h)`: runs first, for every delivery, over the envelope; its error fails the delivery; sees `ping` only when the receiver is built with `handle_ping(true)` |
 | `app.onError(h)` | `on_error(h)` on the receiver builder |
-| `app.receive(event)` | `dispatcher.dispatch(envelope)` with an envelope built by hand; see [Testing without GitHub](#testing-without-github) |
+| `app.receive(event)` | `dispatcher.dispatch(envelope)` with an envelope from `Envelope::new`; see [Testing without GitHub](#testing-without-github) |
 
 A complete receiver that labels every opened issue, audits every delivery,
 and reports every failure with its causes:
@@ -93,7 +93,7 @@ async fn label(issue: IssueOpened) -> Result<(), AppError> {
 
 /// Runs for every delivery the dispatcher is handed, bytes included.
 async fn audit(envelope: Envelope) -> Result<(), AppError> {
-    println!("{} {} ({} bytes)", envelope.meta.delivery_id, envelope.meta.kind, envelope.raw.len());
+    println!("{} {} ({} bytes)", envelope.meta.delivery_id, envelope.meta.kind, envelope.raw_payload.len());
     Ok(())
 }
 
@@ -276,13 +276,18 @@ the route table, beside the result.
 
 ## Testing without GitHub
 
-A handler is tested through `dispatch` with an envelope built by hand: an
-`EventMeta` for the delivery and the payload bytes as a literal. Nothing is
-signed, because nothing is verified on this path. In the same file as the
-program above:
+A handler is tested through `dispatch` with an envelope built by
+`Envelope::new`: the delivery ID, the kind, and the payload bytes as a
+literal. Nothing is signed, because nothing is verified on this path; what
+the constructor does do is read the action, installation ID, repository,
+organization and sender out of the bytes, the way the receiver does, so the
+meta a handler over `Event<P>` sees is what the payload says rather than what
+the test remembered to assign. In the same file as the program above:
 
 ```rust,ignore
-use octoevents::{Bytes, Match};
+use std::sync::{Arc, Mutex};
+
+use octoevents::{Event, Match};
 
 #[tokio::test]
 async fn labels_an_opened_issue() {
@@ -290,19 +295,51 @@ async fn labels_an_opened_issue() {
         .on_payload_action([Action::Opened], label)
         .build();
 
-    let mut meta = EventMeta::new("delivery-1", EventKind::Issues);
-    meta.action = Some(Action::Opened);
-    let envelope = Envelope {
-        meta,
-        raw: Bytes::from_static(br#"{"action":"opened","issue":{"number":7,"title":"Add tests"}}"#),
-    };
+    let envelope = Envelope::new(
+        "delivery-1",
+        EventKind::Issues,
+        br#"{"action":"opened","issue":{"number":7,"title":"Add tests"}}"#,
+    );
 
     let outcome = dispatcher.dispatch(envelope).await;
 
     assert_eq!(outcome.matched, Match::Matched);
     outcome.result.unwrap();
 }
+
+/// The meta a handler over `Event<P>` receives is what the payload carries:
+/// the action routed it, and the installation ID is beside the decoded view.
+#[tokio::test]
+async fn the_installation_reaches_the_handler_from_the_payload() {
+    let seen = Arc::new(Mutex::new(None));
+    let dispatcher = Dispatcher::<AppError>::builder()
+        .on_payload_action([Action::Opened], {
+            let seen = Arc::clone(&seen);
+            move |Event { meta, payload }: Event<IssueOpened>| {
+                let seen = Arc::clone(&seen);
+                async move {
+                    *seen.lock().unwrap() = Some((meta.installation_id, payload.issue.number));
+                    Ok::<_, AppError>(())
+                }
+            }
+        })
+        .build();
+
+    let envelope = Envelope::new(
+        "delivery-2",
+        EventKind::Issues,
+        br#"{"action":"opened","installation":{"id":42},"issue":{"number":7,"title":"Add tests"}}"#,
+    );
+
+    dispatcher.dispatch(envelope).await.result.unwrap();
+    assert_eq!(*seen.lock().unwrap(), Some((Some(42), 7)));
+}
 ```
+
+`Envelope` cannot be built as a struct literal outside the crate, so a meta
+cannot be paired with a payload that says something else. A field the payload
+does not carry, the target type and ID from GitHub's headers, is assigned
+afterwards on a `mut` binding if the handler reads it.
 
 The receiver is tested with a signed synthetic request. GitHub's signature is
 `sha256=` followed by the lowercase hex HMAC-SHA256 of the body under the

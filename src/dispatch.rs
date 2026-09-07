@@ -91,7 +91,7 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
 ///
 /// async fn forward(envelope: Envelope) -> Result<(), AppError> {
-///     println!("forward {} ({} bytes)", envelope.meta.delivery_id, envelope.raw.len());
+///     println!("forward {} ({} bytes)", envelope.meta.delivery_id, envelope.raw_payload.len());
 ///     Ok(())
 /// }
 ///
@@ -154,7 +154,7 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// }
 ///
 /// async fn forward(envelope: Envelope) -> Result<(), AppError> {
-///     println!("forward {} bytes of {}", envelope.raw.len(), envelope.meta.kind);
+///     println!("forward {} bytes of {}", envelope.raw_payload.len(), envelope.meta.kind);
 ///     Ok(())
 /// }
 ///
@@ -419,7 +419,7 @@ where
 ///             Match::Matched | Match::UnmatchedAction => outcome.result,
 ///             Match::UnmatchedKind => {
 ///                 outcome.result?;
-///                 println!("dead-letter {} ({} bytes)", envelope.meta.delivery_id, envelope.raw.len());
+///                 println!("dead-letter {} ({} bytes)", envelope.meta.delivery_id, envelope.raw_payload.len());
 ///                 Ok(())
 ///             }
 ///         }
@@ -682,7 +682,7 @@ where
     /// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
     ///
     /// async fn audit(envelope: Envelope) -> Result<(), AppError> {
-    ///     println!("{} {} ({} bytes)", envelope.meta.delivery_id, envelope.meta.kind, envelope.raw.len());
+    ///     println!("{} {} ({} bytes)", envelope.meta.delivery_id, envelope.meta.kind, envelope.raw_payload.len());
     ///     Ok(())
     /// }
     ///
@@ -736,7 +736,7 @@ where
     /// }
     ///
     /// async fn forward(envelope: Envelope) -> Result<(), AppError> {
-    ///     println!("forward {} bytes", envelope.raw.len());
+    ///     println!("forward {} bytes", envelope.raw_payload.len());
     ///     Ok(())
     /// }
     ///
@@ -1244,8 +1244,8 @@ mod tests {
     use crate::{
         Action, DecodeError, Envelope, Event, EventKind, EventMatcher, EventMeta, Handler,
         test_support::{
-            AppError, check_run_completed, envelope_with_action, installation_created, ping,
-            pull_request, pull_request_opened, unknown, unrepresentable,
+            AppError, check_run_completed, envelope, envelope_with_action, installation_created,
+            ping, pull_request, pull_request_opened, unknown, unrepresentable,
         },
     };
 
@@ -1541,7 +1541,7 @@ mod tests {
                 Box::pin(async move {
                     seen.lock()
                         .await
-                        .push((tier, envelope.meta.kind, envelope.raw));
+                        .push((tier, envelope.meta.kind, envelope.raw_payload));
                     Ok(())
                 })
             }
@@ -1561,8 +1561,8 @@ mod tests {
         assert_eq!(
             seen.lock().await.as_slice(),
             [
-                ("always", EventKind::CheckRun, envelope.raw.clone()),
-                ("fallback", EventKind::CheckRun, envelope.raw),
+                ("always", EventKind::CheckRun, envelope.raw_payload.clone()),
+                ("fallback", EventKind::CheckRun, envelope.raw_payload),
             ]
         );
     }
@@ -1914,11 +1914,7 @@ mod tests {
         let dispatcher = builder.on_payload(needs_number).build();
 
         let error = dispatcher
-            .dispatch(envelope_with_action(
-                EventKind::PullRequest,
-                Action::Opened,
-                br#"{"action":"opened"}"#,
-            ))
+            .dispatch(envelope(EventKind::PullRequest, br#"{"action":"opened"}"#))
             .await
             .result
             .unwrap_err();
@@ -2168,7 +2164,9 @@ mod tests {
             .build();
 
         // Nothing is decoded on the handler's behalf: a payload that is not
-        // even a JSON object still reaches it, meta in hand.
+        // even a JSON object still reaches it, meta in hand. The payload
+        // carries no installation for the constructor to read, so this test
+        // assigns it, on purpose.
         let mut envelope = envelope_with_action(
             EventKind::Installation,
             Action::Deleted,
@@ -2207,7 +2205,9 @@ mod tests {
             .on(EventKind::CheckRun, move |envelope: Envelope| {
                 let seen = Arc::clone(&handler_seen);
                 async move {
-                    seen.lock().await.push((envelope.meta.kind, envelope.raw));
+                    seen.lock()
+                        .await
+                        .push((envelope.meta.kind, envelope.raw_payload));
                     Ok::<_, std::convert::Infallible>(())
                 }
             })
@@ -2224,13 +2224,13 @@ mod tests {
         );
         assert_eq!(
             seen.lock().await.as_slice(),
-            [(EventKind::CheckRun, envelope.raw)]
+            [(EventKind::CheckRun, envelope.raw_payload)]
         );
 
         // Nothing is decoded for it either: a body that is not JSON reaches
         // it whole.
-        let raw = envelope_with_action(EventKind::CheckRun, Action::Completed, b"not json");
-        assert_eq!(dispatcher.dispatch(raw).await.result, Ok(()));
+        let not_json = envelope_with_action(EventKind::CheckRun, Action::Completed, b"not json");
+        assert_eq!(dispatcher.dispatch(not_json).await.result, Ok(()));
         assert_eq!(seen.lock().await.len(), 2);
 
         // Another kind is unmatched as for any routed handler.
@@ -2340,11 +2340,7 @@ mod tests {
             .build();
 
         let error = dispatcher
-            .dispatch(envelope_with_action(
-                EventKind::PullRequest,
-                Action::Opened,
-                br#"{"action":"opened"}"#,
-            ))
+            .dispatch(envelope(EventKind::PullRequest, br#"{"action":"opened"}"#))
             .await
             .result
             .unwrap_err();
@@ -2522,11 +2518,7 @@ mod tests {
         // A payload the view does not fit fails at the view's route, as any
         // decode does; the first route over it, alone, is the one reported.
         let error = dispatcher
-            .dispatch(envelope_with_action(
-                EventKind::PullRequest,
-                Action::Opened,
-                br#"{"action":"opened"}"#,
-            ))
+            .dispatch(envelope(EventKind::PullRequest, br#"{"action":"opened"}"#))
             .await
             .result
             .unwrap_err();
@@ -2583,25 +2575,21 @@ mod tests {
         );
         let dispatcher = dispatcher.build();
 
-        // A delivery carrying the installation reaches the handler as the ID.
-        // The synthetic envelope probes nothing, so the meta is set by hand,
-        // as the probe would have from the payload.
-        let mut envelope = envelope_with_action(
+        // A delivery carrying the installation reaches the handler as the ID,
+        // read from the payload.
+        let installed = envelope(
             EventKind::Installation,
-            Action::Deleted,
-            br#"{"action":"deleted"}"#,
+            br#"{"action":"deleted","installation":{"id":42}}"#,
         );
-        envelope.meta.installation_id = Some(42);
-        dispatcher.dispatch(envelope).await.result.unwrap();
+        dispatcher.dispatch(installed).await.result.unwrap();
         assert_eq!(seen.lock().await.as_slice(), [42]);
 
         // One without fails in the route tier at the handler's registration,
         // and the chain ends at the consumer's own message, not at a decode of
         // the payload.
         let error = dispatcher
-            .dispatch(envelope_with_action(
+            .dispatch(envelope(
                 EventKind::Installation,
-                Action::Deleted,
                 br#"{"action":"deleted"}"#,
             ))
             .await
@@ -2736,11 +2724,7 @@ mod tests {
 
         // An action this crate does not know yet: nothing registered cares,
         // so nothing is decoded, and the fallback answers.
-        let future = envelope_with_action(
-            EventKind::PullRequest,
-            Action::Unknown("future_action".into()),
-            br#"{"action":"future_action"}"#,
-        );
+        let future = envelope(EventKind::PullRequest, br#"{"action":"future_action"}"#);
         assert_eq!(
             unwrapped(dispatcher.dispatch(future).await),
             Err(AppError::Handler("unmatched"))
@@ -2766,9 +2750,8 @@ mod tests {
             .on_payload(record_payload(&calls, "view"))
             .build();
 
-        let future = envelope_with_action(
+        let future = envelope(
             EventKind::PullRequest,
-            Action::Unknown("future_action".into()),
             br#"{"action":"future_action","number":2}"#,
         );
         assert_eq!(dispatcher.dispatch(future.clone()).await.result, Ok(()));

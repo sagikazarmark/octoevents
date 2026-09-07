@@ -52,7 +52,7 @@
 //! | `app.on('issues', h)` | `on_payload(h)` after the same `impl_payload!`, or `on(EventKind::Issues, h)` |
 //! | `app.onAny(h)` | `always(h)`: runs first, for every delivery, over the envelope; its error fails the delivery; sees `ping` only when the receiver is built with `handle_ping(true)` |
 //! | `app.onError(h)` | `on_error(h)` on the receiver builder |
-//! | `app.receive(event)` | `dispatcher.dispatch(envelope)` with an envelope built by hand; see [Testing without GitHub](#testing-without-github) |
+//! | `app.receive(event)` | `dispatcher.dispatch(envelope)` with an envelope from `Envelope::new`; see [Testing without GitHub](#testing-without-github) |
 //!
 //! A complete receiver that labels every opened issue, audits every delivery,
 //! and reports every failure with its causes, mounted on Axum with the
@@ -98,7 +98,7 @@
 //!
 //! /// Runs for every delivery the dispatcher is handed, bytes included.
 //! async fn audit(envelope: Envelope) -> Result<(), AppError> {
-//!     println!("{} {} ({} bytes)", envelope.meta.delivery_id, envelope.meta.kind, envelope.raw.len());
+//!     println!("{} {} ({} bytes)", envelope.meta.delivery_id, envelope.meta.kind, envelope.raw_payload.len());
 //!     Ok(())
 //! }
 //!
@@ -244,13 +244,56 @@
 //!
 //! # Testing without GitHub
 //!
-//! A handler is tested through [`Dispatcher::dispatch`] with an envelope
-//! built by hand, [`EventMeta::new`] for the delivery and the payload bytes
-//! as a literal; nothing is verified on that path, so nothing is signed. The
-//! receiver is tested through [`WebhookReceiver::receive`] with a synthetic
-//! request carrying the four headers under [`header`] and a signature of
-//! `sha256=` plus the lowercase hex HMAC-SHA256 of the body under the secret.
-//! The README shows both as `#[tokio::test]` functions.
+//! A handler is tested through [`Dispatcher::dispatch`] with an envelope from
+//! [`Envelope::new`]: the delivery ID, the kind, and the payload bytes as a
+//! literal. Nothing is verified on that path, so nothing is signed; what the
+//! constructor does is read the action, installation ID, repository,
+//! organization and sender out of the bytes, as the receiver would, so a
+//! handler over [`Event<P>`](Event) sees the installation the payload carries:
+//!
+//! ```
+//! use std::sync::{Arc, Mutex};
+//!
+//! use octoevents::{Action, DecodeError, Dispatcher, Envelope, Event, EventKind, Match};
+//!
+//! #[derive(serde::Deserialize)]
+//! struct IssueOpened { issue: Issue }
+//! #[derive(serde::Deserialize)]
+//! struct Issue { number: u64 }
+//! octoevents::impl_payload!(IssueOpened => EventKind::Issues);
+//!
+//! # tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
+//! let seen = Arc::new(Mutex::new(Vec::new()));
+//! let dispatcher = Dispatcher::<DecodeError>::builder()
+//!     .on_payload_action([Action::Opened], {
+//!         let seen = Arc::clone(&seen);
+//!         move |Event { meta, payload }: Event<IssueOpened>| {
+//!             let seen = Arc::clone(&seen);
+//!             async move {
+//!                 seen.lock().unwrap().push((meta.installation_id, payload.issue.number));
+//!                 Ok(())
+//!             }
+//!         }
+//!     })
+//!     .build();
+//!
+//! let envelope = Envelope::new(
+//!     "delivery-1",
+//!     EventKind::Issues,
+//!     br#"{"action":"opened","installation":{"id":42},"issue":{"number":7}}"#,
+//! );
+//! let outcome = dispatcher.dispatch(envelope).await;
+//!
+//! assert_eq!(outcome.matched, Match::Matched);
+//! outcome.result.unwrap();
+//! assert_eq!(seen.lock().unwrap().as_slice(), [(Some(42), 7)]);
+//! # });
+//! ```
+//!
+//! The receiver is tested through [`WebhookReceiver::receive`] with a
+//! synthetic request carrying the four headers under [`header`] and a
+//! signature of `sha256=` plus the lowercase hex HMAC-SHA256 of the body under
+//! the secret. The README shows both as `#[tokio::test]` functions.
 //!
 //! # One event, one handler
 //!
@@ -479,7 +522,7 @@ pub use service::{WebhookReceiver, WebhookReceiverBuilder};
 pub use trace::BoxedError;
 pub use verify::{Verifier, VerifyError};
 
-/// The byte buffer type of [`Envelope::raw`] and of the body
+/// The byte buffer type of [`Envelope::raw_payload`] and of the body
 /// [`Envelope::from_signed`] takes, re-exported from the `bytes` crate.
 ///
 /// A transport that never touches `bytes` otherwise builds the body from

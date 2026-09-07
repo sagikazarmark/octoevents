@@ -526,7 +526,7 @@ where
 ///
 ///     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
 ///         // Persist or forward before returning; process asynchronously.
-///         let _ = (envelope.meta.delivery_id, envelope.raw);
+///         let _ = (envelope.meta.delivery_id, envelope.raw_payload);
 ///         Ok(())
 ///     }
 /// }
@@ -739,7 +739,7 @@ mod tests {
     #[tokio::test]
     async fn accepts_an_async_fn_item_over_the_envelope() {
         async fn count(envelope: Envelope) -> Result<(), std::convert::Infallible> {
-            COUNTED_BYTES.fetch_add(envelope.raw.len(), Ordering::Relaxed);
+            COUNTED_BYTES.fetch_add(envelope.raw_payload.len(), Ordering::Relaxed);
             Ok(())
         }
         static COUNTED_BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -915,7 +915,7 @@ mod tests {
                 async move {
                     seen.lock()
                         .unwrap()
-                        .push((envelope.meta.kind, envelope.raw));
+                        .push((envelope.meta.kind, envelope.raw_payload));
                     Ok::<_, std::convert::Infallible>(())
                 }
             })

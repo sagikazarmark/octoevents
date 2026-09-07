@@ -30,7 +30,7 @@ use crate::{MaybeSend, MaybeSync};
 ///
 /// // Bytes included: what the receiver and the `always` tier take.
 /// async fn audit(envelope: Envelope) -> Result<(), std::io::Error> {
-///     println!("{} {} ({} bytes)", envelope.meta.delivery_id, envelope.meta.kind, envelope.raw.len());
+///     println!("{} {} ({} bytes)", envelope.meta.delivery_id, envelope.meta.kind, envelope.raw_payload.len());
 ///     Ok(())
 /// }
 ///

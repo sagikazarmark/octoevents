@@ -10,36 +10,41 @@
               exist depends on the enabled features"
 )]
 
-use bytes::Bytes;
+use crate::{Action, DecodeError, Envelope, EventKind};
 
-use crate::{Action, DecodeError, Envelope, EventKind, EventMeta};
-
-/// A synthetic envelope of `kind` over `raw`, with `"delivery"` as its
-/// delivery ID and no action.
-pub(crate) fn envelope(kind: EventKind, raw: &'static [u8]) -> Envelope {
-    Envelope {
-        meta: EventMeta::new("delivery", kind),
-        raw: Bytes::from_static(raw),
-    }
+/// A synthetic envelope of `kind` over `payload`, with `"delivery"` as its
+/// delivery ID and the meta the receiver would have read from `payload`.
+pub(crate) fn envelope(kind: EventKind, payload: &'static [u8]) -> Envelope {
+    Envelope::new("delivery", kind, payload)
 }
 
-/// [`envelope`] with the action set, as the payload probe would.
+/// [`envelope`] delivered under `action`, whatever the payload says.
+///
+/// The override for a payload that carries no action (a non-JSON payload
+/// reaching a handler over `EventMeta`) or carries another one (a fixture
+/// delivered under an action the corpus does not cover). A payload that
+/// carries `action` already needs only [`envelope`].
 pub(crate) fn envelope_with_action(
     kind: EventKind,
     action: Action,
-    raw: &'static [u8],
+    payload: &'static [u8],
 ) -> Envelope {
-    let mut envelope = envelope(kind, raw);
+    let mut envelope = envelope(kind, payload);
     envelope.meta.action = Some(action);
     envelope
 }
 
+/// The `pull_request.opened` fixture, its action read from the payload.
 pub(crate) fn pull_request_opened() -> Envelope {
-    pull_request(Action::Opened)
+    envelope(
+        EventKind::PullRequest,
+        include_bytes!("../tests/fixtures/pull_request.opened.json"),
+    )
 }
 
 /// The `pull_request.opened` fixture delivered under `action`, so a route
-/// table can be probed with actions the corpus does not cover.
+/// table can be tried with actions the corpus does not cover. The payload
+/// still says `opened`; only the meta is under `action`.
 pub(crate) fn pull_request(action: Action) -> Envelope {
     envelope_with_action(
         EventKind::PullRequest,
@@ -49,17 +54,15 @@ pub(crate) fn pull_request(action: Action) -> Envelope {
 }
 
 pub(crate) fn check_run_completed() -> Envelope {
-    envelope_with_action(
+    envelope(
         EventKind::CheckRun,
-        Action::Completed,
         include_bytes!("../tests/fixtures/check_run.completed.json"),
     )
 }
 
 pub(crate) fn installation_created() -> Envelope {
-    envelope_with_action(
+    envelope(
         EventKind::Installation,
-        Action::Created,
         include_bytes!("../tests/fixtures/installation.created.json"),
     )
 }

@@ -10,7 +10,11 @@ vocabulary is deliberately kept out of this one.
 **Envelope**:
 The verified unit of receipt: exact payload bytes plus the routing metadata
 extracted from headers and a best-effort payload probe. Composed of an
-`EventMeta` and the raw bytes.
+`EventMeta` and the raw payload, as the fields `meta` and `raw_payload`. The
+crate produces envelopes and consumers read them: outside the crate one comes
+from `Envelope::from_signed` (the receiving path, verified) or `Envelope::new`
+(a test's path, unverified, the meta probed from the same bytes), never from
+a struct literal, so the two halves cannot disagree at birth.
 _Avoid_: Delivery (reserved for the outbound `octodelivery` project), event (the decoded unit, `Event<P>`, is the envelope decoded for one handler), message
 
 **EventMeta**:
@@ -172,12 +176,27 @@ The shared HMAC key configured on the GitHub webhook. GitHub's own term.
 _Avoid_: Token, key
 
 **Payload**:
-The JSON document GitHub sends: the envelope's raw bytes, viewed as content
-rather than as signed input. As a type (`Payload`), one kind's decoded
-payload, declaring the kind it belongs to; octocrab's per-kind structs,
-consumer-defined serde views and `Event<P>` over any of them are payloads;
-octocrab's `WebhookEvent` and a view over several kinds are not.
-_Avoid_: Body (reserved for the HTTP transport layer)
+The JSON document GitHub sends, in two states that two fields name: the
+*raw payload* (`Envelope::raw_payload`), the exact bytes as they arrived,
+undecoded and never re-encoded; and the payload decoded for one handler
+(`Event::payload`). On the receiving path the raw payload is also the signed
+input; form encoding is refused so the two stay the same bytes. As a type
+(`Payload`), one kind's decoded payload, declaring the kind it belongs to;
+octocrab's per-kind structs, consumer-defined serde views and `Event<P>` over
+any of them are payloads; octocrab's `WebhookEvent` and a view over several
+kinds are not.
+_Avoid_: Body (reserved for the HTTP transport layer), raw unqualified (says unprocessed without saying of what, and named a removed tier; "raw payload" is the term)
+
+**Probe**:
+The best-effort read of the payload bytes that fills the payload-derived
+fields of an `EventMeta` (action, installation ID, repository, organization,
+sender) without decoding the rest of the document. Partial, and never fatal:
+malformed JSON leaves every probed field empty, one malformed field clears
+only itself, and the bytes are kept either way. An implementation term for
+prose and internals, not an API: it runs inside both envelope constructors
+and no public name says "probe". No library or spec surveyed names this step
+(`docs/research/webhook-terminology.md`).
+_Avoid_: Peek, sniff, extract (unqualified; "extracted" is fine in prose), decode (the full, fallible turn into a handler's input), parse (kept for the header-to-kind step)
 
 **Decode**:
 Turning an envelope into a handler's input, through `FromEnvelope`: a serde
