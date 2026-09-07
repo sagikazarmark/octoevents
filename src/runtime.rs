@@ -29,7 +29,8 @@ pub(crate) type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
 ///
 /// The handler trait declares its future `impl Future + MaybeSend`, so a
 /// handler holding single-threaded state compiles for a Worker and is
-/// rejected natively at its own `impl`, where the diagnostic names the field:
+/// rejected natively at its own `impl`, where the diagnostic names the
+/// field's type:
 ///
 /// ```compile_fail
 /// use std::{cell::Cell, rc::Rc};
@@ -65,7 +66,9 @@ impl<T: ?Sized> MaybeSend for T {}
 /// platform is under [`MaybeSync` and
 /// `MaybeSend`](crate::Handler#maybesync-and-maybesend). A handler holding
 /// `!Sync` state is rejected natively at its own `impl`, where the diagnostic
-/// names the field:
+/// names the field's type. The future here is built by hand rather than with
+/// `async fn`, which would capture `&self` and fail [`MaybeSend`] as well, so
+/// that the supertrait is the one bound refusing it:
 ///
 /// ```compile_fail,E0277
 /// use std::cell::Cell;

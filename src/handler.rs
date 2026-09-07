@@ -155,26 +155,34 @@ use crate::{MaybeSend, MaybeSync};
 ///
 /// The trait carries two platform-conditional bounds: a handler is
 /// [`MaybeSync`], the supertrait, and the future `handle` returns is
-/// [`MaybeSend`]. On native targets they are `Sync` and `Send`: a server
-/// clones the receiver per connection and polls a delivery's future from any
-/// of its threads, so the handler is shared between threads and its future
-/// moves between them. On `wasm32`, where a Cloudflare Worker runs on one
-/// JavaScript event loop, both bounds are empty: a handler may hold `Rc`
-/// state or JavaScript values, and its future may await a JavaScript
-/// promise. The future's bound is on the trait because `async fn` in a trait
-/// cannot name an auto-trait bound; implementors still write `async fn`. The
-/// handler's bound is on the trait so it is stated once, where every handler
-/// already satisfies it to be registered.
+/// [`MaybeSend`].
+///
+/// On native targets they are `Sync` and `Send`. A server polls a delivery's
+/// future from any of its threads, so the handler is shared between threads
+/// and its future moves between them.
+///
+/// On `wasm32`, where a Cloudflare Worker runs on one JavaScript event loop,
+/// both bounds are empty: a handler may hold `Rc` state or JavaScript values,
+/// and its future may await a JavaScript promise.
+///
+/// Both bounds are on the trait. The future's, because `async fn` in a trait
+/// cannot name an auto-trait bound, and implementors still write `async fn`;
+/// the handler's, so that it is stated once, where every handler already
+/// satisfies it to be registered.
 ///
 /// The supertrait is what lets an adapter generic over another handler be
 /// written with no bound on `H` beyond the trait. Its `async fn handle` holds
 /// `&self.inner` across the await, so its future is `Send` only if `H` is
-/// `Sync`, and `H: Handler<I>` says so. Without the supertrait rustc would
+/// `Sync`, and `H: Handler<I>` says so; without the supertrait rustc would
 /// suggest `H: Sync`, which compiles natively and refuses a single-threaded
-/// handler on `wasm32`. The input is a separate matter: an `async fn`'s
-/// future owns its arguments from creation, so an adapter generic over the
-/// payload bounds it `P: MaybeSend`, the platform-conditional spelling of the
-/// `P: Send` rustc suggests.
+/// handler on `wasm32`.
+///
+/// The input is a separate matter. An `async fn`'s future owns its arguments
+/// from creation, so an adapter generic over the payload bounds it
+/// `P: MaybeSend`, the platform-conditional spelling of the `P: Send` rustc
+/// suggests. An adapter that calls `self.inner.handle(event)` before its own
+/// `async move` block captures neither the input nor `&self` and needs no
+/// bound at all.
 ///
 /// ```
 /// use octoevents::{Event, Handler, MaybeSend};
@@ -202,13 +210,24 @@ use crate::{MaybeSend, MaybeSync};
 /// 'static`, repeating the `MaybeSync` the trait implies, for the
 /// diagnostic's sake. A closure capturing `!Sync` state its future never
 /// touches, a `Cell` read before the future is built, fails the closure
-/// blanket, and the blanket is hidden from rustc's explanation so that the
-/// trait's message can name the input: on the trait bound alone the closure
-/// is reported as not a handler. The repeated bound is what rustc reports
-/// instead, naming the `Cell`: it cannot be shared between threads safely,
-/// required to implement `MaybeSync`. A struct holding such state never
-/// reaches registration; its `impl` is refused at the supertrait, naming the
-/// field.
+/// blanket; the blanket is hidden from rustc's explanation so that the
+/// trait's message can name the input, and on the trait bound alone the
+/// closure is reported as not a handler. The repeated bound is what rustc
+/// reports instead (abridged):
+///
+/// ```text
+/// error[E0277]: `Cell<u32>` cannot be shared between threads safely
+///   |
+///   |     .always(move |_: Envelope| {
+///   |      ------ ^----------------- `Cell<u32>` cannot be shared between threads safely
+///   |
+///   = help: within `{closure}`, the trait `Sync` is not implemented for `Cell<u32>`
+///   = note: required for `{closure}` to implement `MaybeSync`
+/// note: required by a bound in `DispatcherBuilder::<E>::always`
+/// ```
+///
+/// A struct holding such state never reaches registration: its `impl` is
+/// refused at the supertrait, naming the field's type.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a handler over `{I}`",
     label = "expected an `impl Handler<{I}>` or a one-argument closure `|input: {I}| async {{ .. }}`",
