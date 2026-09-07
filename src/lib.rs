@@ -65,7 +65,7 @@
 //!   and a best-effort probe of the payload.
 //! - [`Handler<I>`](Handler): consumer code over one input `I`, any
 //!   [`FromEnvelope`]: the `Envelope`, the `EventMeta`, a [`Payload`] view
-//!   (a serde type declaring its kind with [`impl_payload!`]), or
+//!   (a serde type declaring its kind with `#[derive(Payload)]`), or
 //!   [`Event<P>`](Event) for the meta beside the payload. An `async fn`, a
 //!   struct, or a closure.
 //! - [`Dispatcher`]: a handler over the envelope that routes to other
@@ -92,6 +92,7 @@
 //! | Feature | Default | Provides |
 //! | --- | --- | --- |
 //! | `http` | yes | [`WebhookReceiver`] and [`WebhookReceiverBuilder`] over `http::Request`, [`HeaderView`] from an `http::HeaderMap`, [`ResponseStatus`] into `http::StatusCode` |
+//! | `derive` | yes | `#[derive(Payload)]`, declaring a serde type's kind with `#[payload(EventKind::..)]`; without it, a payload is declared with a three-line `impl Payload` |
 //! | `tower` | no | `tower_service::Service` for [`WebhookReceiver`] |
 //! | `octocrab` | no | [`FromEnvelope`] for octocrab's `WebhookEvent`, [`Payload`] for its per-kind payload structs, `Envelope::decode_event`; see [Feature caveats](#feature-caveats) |
 //! | `tracing` | no | The spans and the failed-delivery event under [Tracing](#tracing), and `trace_errors` / `trace_boxed_errors` on [`WebhookReceiverBuilder`] |
@@ -212,6 +213,10 @@ pub use envelope::{
 pub use events::{Action, EventKind};
 pub use handler::Handler;
 pub use matcher::EventMatcher;
+/// Derives [`Payload`] for a serde type, declaring its kind:
+/// `#[derive(Payload)] #[payload(EventKind::..)]`. See the trait.
+#[cfg(feature = "derive")]
+pub use octoevents_derive::Payload;
 pub use payload::{Event, FromEnvelope, Payload};
 pub use respond::ResponseStatus;
 pub use runtime::{MaybeSend, MaybeSync};

@@ -767,11 +767,11 @@ impl Envelope {
     /// ```
     /// use octoevents::{DecodeError, Envelope, EventKind};
     ///
-    /// #[derive(serde::Deserialize)]
+    /// #[derive(serde::Deserialize, octoevents::Payload)]
+    /// #[payload(EventKind::Issues)]
     /// struct IssueNumber { issue: Numbered }
     /// #[derive(serde::Deserialize)]
     /// struct Numbered { number: u64 }
-    /// octoevents::impl_payload!(IssueNumber => EventKind::Issues);
     ///
     /// let envelope = Envelope::new("delivery", EventKind::PullRequest, br#"{"issue":{"number":7}}"#);
     ///
@@ -1464,7 +1464,9 @@ mod tests {
         number: u64,
     }
 
-    crate::impl_payload!(IssueNumber => EventKind::Issues);
+    impl crate::Payload for IssueNumber {
+        const KIND: EventKind = EventKind::Issues;
+    }
 
     #[test]
     fn decode_payload_refuses_an_envelope_of_another_kind_at_the_kind() {

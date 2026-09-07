@@ -137,16 +137,19 @@ receives and what is decoded for it:
 | `Event<P>` | The meta beside the payload as `P` | `P`, kind checked | `on_payload`, `on_payload_action`, `on` |
 
 A `Payload` is a serde view over the fields a handler reads, declaring the
-event kind it decodes with `impl_payload!`. It fails only on the fields it
-names, so a field GitHub adds elsewhere in the document changes nothing.
+event kind it decodes with `#[derive(Payload)]` and `#[payload(EventKind::..)]`.
+It fails only on the fields it names, so a field GitHub adds elsewhere in the
+document changes nothing.
 
 ```rust
-use octoevents::{Action, Dispatcher, Envelope, Event, EventKind, EventMeta};
+use octoevents::{Action, Dispatcher, Envelope, Event, EventKind, EventMeta, Payload};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-// A view over an `issues` payload: only what the handlers read.
-#[derive(serde::Deserialize)]
+// A view over an `issues` payload: only what the handlers read, and the kind
+// it decodes from.
+#[derive(serde::Deserialize, Payload)]
+#[payload(EventKind::Issues)]
 struct IssueOpened {
     issue: Issue,
 }
@@ -156,9 +159,6 @@ struct Issue {
     number: u64,
     title: String,
 }
-
-// Declares which kind `IssueOpened` decodes from.
-octoevents::impl_payload!(IssueOpened => EventKind::Issues);
 
 // Envelope: the meta and the raw bytes, nothing decoded.
 async fn audit(envelope: Envelope) -> Result<(), BoxError> {
@@ -203,15 +203,15 @@ struct keeps its own error type, and the dispatcher converts it into the
 application error through `From`:
 
 ```rust
-use octoevents::{Dispatcher, Event, EventKind, Handler};
+use octoevents::{Dispatcher, Event, EventKind, Handler, Payload};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Payload)]
+#[payload(EventKind::Issues)]
 struct IssueOpened { issue: Issue }
 #[derive(serde::Deserialize)]
 struct Issue { number: u64 }
-octoevents::impl_payload!(IssueOpened => EventKind::Issues);
 
 struct Labeler {
     label: String, // stands in for a GitHub API client
@@ -274,15 +274,15 @@ the delivery. There are no priorities and no propagation control.
 kind/action pairs) and a handler over any input, a payload view included.
 
 ```rust
-use octoevents::{Action, Dispatcher, Envelope, EventKind, EventMeta};
+use octoevents::{Action, Dispatcher, Envelope, EventKind, EventMeta, Payload};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Payload)]
+#[payload(EventKind::Issues)]
 struct IssueOpened { issue: Issue }
 #[derive(serde::Deserialize)]
 struct Issue { number: u64 }
-octoevents::impl_payload!(IssueOpened => EventKind::Issues);
 
 async fn audit(envelope: Envelope) -> Result<(), BoxError> {
     println!("{} {}", envelope.meta.delivery_id, envelope.meta.kind);
@@ -627,7 +627,7 @@ matching handler and aggregates.
 | `app.onAny(h)` | `always(h)`: first, for every delivery, over the envelope; its error fails the delivery. Sees `ping` only with `handle_ping(true)` |
 | `app.onError(h)` | `on_error(h)` on the receiver builder |
 | `app.receive(event)` | `dispatcher.dispatch(envelope)` with an envelope from `Envelope::new`; see [Testing without GitHub](#testing-without-github) |
-| `context.payload` | The handler's input: a serde view of your own (`impl_payload!`), or octocrab's structs with the `octocrab` feature |
+| `context.payload` | The handler's input: a serde view of your own (`#[derive(Payload)]`), or octocrab's structs with the `octocrab` feature |
 | `context.id`, `context.name` | `meta.delivery_id` and `meta.kind` on the `EventMeta`; a handler gets it beside the payload as `Event<P>` |
 
 ## Cargo features
@@ -635,6 +635,7 @@ matching handler and aggregates.
 | Feature | Default | Provides |
 | --- | --- | --- |
 | `http` | yes | `WebhookReceiver` and its builder over `http::Request`, `HeaderView` from an `http::HeaderMap`, `ResponseStatus` into `http::StatusCode` |
+| `derive` | yes | `#[derive(Payload)]`, declaring a serde view's kind with `#[payload(EventKind::..)]`. Without it the same impl is three lines by hand |
 | `tower` | no | `tower_service::Service` for `WebhookReceiver`, so it mounts with `post_service` |
 | `octocrab` | no | `FromEnvelope` for octocrab's `WebhookEvent`, `Payload` for its per-kind structs, `Envelope::decode_event`. Makes octocrab's pre-1.0 types part of this crate's public API |
 | `tracing` | no | The spans and the failed-delivery event under [Tracing](#tracing), and `trace_errors` / `trace_boxed_errors` on the receiver builder |

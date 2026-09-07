@@ -43,11 +43,11 @@ where
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, octoevents::Payload)]
+#[payload(EventKind::PullRequest)]
 struct PullRequestNumber {
     number: u64,
 }
-octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
 
 /// The application error a dispatcher under test converts every handler's
 /// error into.

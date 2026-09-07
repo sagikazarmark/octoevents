@@ -13,9 +13,10 @@ use crate::{DecodeError, Envelope, EventKind, FromEnvelope};
 // `ScheduleWebhookEventPayload` is deliberately absent: `schedule` is a
 // workflow trigger, not a webhook event GitHub delivers.
 //
-// A local macro rather than `impl_payload!` so every impl carries the same
-// rustdoc: the note below is what a consumer reaching for `payload.sender`
-// needs, and it renders on the `Payload` trait page beside each impl.
+// A local macro so every impl carries the same rustdoc: the note below is what
+// a consumer reaching for `payload.sender` needs, and it renders on the
+// `Payload` trait page beside each impl. The derive is for a consumer's own
+// types; these are octocrab's, so the impls are written here.
 macro_rules! octocrab_payloads {
     ($($payload:ty => $kind:expr),+ $(,)?) => {
         $(
@@ -29,7 +30,7 @@ macro_rules! octocrab_payloads {
             /// repository reference beside every payload; for the full
             /// objects, decode the event as [`WebhookEvent`]
             /// ([`Envelope::decode_event`]), or define a view naming the
-            /// objects you need with [`impl_payload!`](crate::impl_payload).
+            /// objects you need and derive [`Payload`](crate::Payload) on it.
             impl crate::Payload for $payload {
                 const KIND: EventKind = $kind;
             }

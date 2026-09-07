@@ -415,12 +415,22 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "octoevents-derive",
  "serde",
  "serde_json",
  "sha2",
  "subtle",
  "thiserror",
  "zeroize",
+]
+
+[[package]]
+name = "octoevents-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

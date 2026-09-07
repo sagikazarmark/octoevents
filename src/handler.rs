@@ -24,9 +24,9 @@ use crate::{MaybeSend, MaybeSync};
 /// ```
 /// use octoevents::{Envelope, Event, EventKind, EventMeta, Handler};
 ///
-/// #[derive(serde::Deserialize)]
+/// #[derive(serde::Deserialize, octoevents::Payload)]
+/// #[payload(EventKind::PullRequest)]
 /// struct PullRequestNumber { number: u64 }
-/// octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
 ///
 /// // Bytes included: what the receiver and the `always` tier take.
 /// async fn audit(envelope: Envelope) -> Result<(), std::io::Error> {
@@ -68,9 +68,9 @@ use crate::{MaybeSend, MaybeSync};
 /// ```
 /// use octoevents::{DecodeError, Dispatcher, Event, EventKind, Handler};
 ///
-/// #[derive(serde::Deserialize)]
+/// #[derive(serde::Deserialize, octoevents::Payload)]
+/// #[payload(EventKind::PullRequest)]
 /// struct PullRequestNumber { number: u64 }
-/// octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
 ///
 /// struct Labeler {
 ///     label: String, // stands in for a GitHub API client

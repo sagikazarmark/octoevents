@@ -76,7 +76,8 @@ impl Handler<Envelope> for Forward {
 /// A consumer view over the `installation` payload: the one field this worker
 /// wants beyond what `EventMeta` already carries. The kind it declares is the
 /// kind the dispatcher routes its handler by.
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, octoevents::Payload)]
+#[payload(EventKind::Installation)]
 struct InstallationView {
     installation: Installation,
 }
@@ -90,8 +91,6 @@ struct Installation {
 struct Account {
     login: String,
 }
-
-octoevents::impl_payload!(InstallationView => EventKind::Installation);
 
 /// Logs installation lifecycle changes. Receives the meta and the decoded
 /// view and no payload bytes; other kinds never reach it.
