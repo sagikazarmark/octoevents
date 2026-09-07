@@ -19,8 +19,9 @@
 //! and `outcome` is a `&'static str` label on all three, with the receive
 //! span's HTTP code in its own `status` field. A `Display` value goes through
 //! [`record_display`] for the same reason. The failed-delivery event
-//! ([`HandlerFailed`]) records the fields it shares with the spans in the
-//! same forms.
+//! (`handler_failed`) records the fields it shares with the spans in the
+//! same forms, and which fields of the error it carries is the receiver's
+//! setting, `ErrorFields`.
 //!
 //! Nothing secret-derived may pass through here: signature header values,
 //! computed MACs, and secrets are never recorded. `tests/tracing_hygiene.rs`
@@ -62,14 +63,13 @@ pub(crate) fn record_display(field: &str, value: impl std::fmt::Display) {
 #[cfg(feature = "http")]
 pub(crate) const ENABLED: bool = cfg!(feature = "tracing");
 
-/// How the receiver emits the one ERROR event a failed delivery produces:
-/// the handler returned an error and the receiver answers `status`.
+/// Which fields of the handler's error the failed-delivery event carries:
+/// the receiver's setting, made on the builder.
 ///
 /// The event always carries the event meta's identifying fields and the
-/// status. Whether it also carries the error is the receiver's setting, made
-/// on the builder: recording the error's text and source needs a bound on
+/// status. Recording the error's text and source as well needs a bound on
 /// the handler's error type, which the receiver itself does not place, so
-/// the bound-free default records neither, and `trace_errors` or
+/// the default, [`none`](Self::none), records neither, and `trace_errors` or
 /// `trace_boxed_errors` swaps in a function that reads the error through the
 /// bound it asked for. A function pointer rather than a trait object: the
 /// three are known, capture nothing, and one is picked at build time.
@@ -81,70 +81,112 @@ pub(crate) const ENABLED: bool = cfg!(feature = "tracing");
 /// The receiver is the only user, so like the receive span's `outcome`
 /// label this exists with the `http` feature.
 #[cfg(feature = "http")]
-pub(crate) struct HandlerFailed<E> {
+pub(crate) struct ErrorFields<E> {
     #[cfg(feature = "tracing")]
-    with_error: Option<fn(&EventMeta, &E, u16)>,
+    emit: Option<fn(&EventMeta, &E, u16)>,
     // `fn(&E)` rather than `E`: the receiver's `Send` and `Sync` must not
     // depend on the error type, and neither must this type's.
     error: PhantomData<fn(&E)>,
 }
 
+// Hand-written for the same reason `Config`'s is: a derive would ask
+// `E: Clone` and `E: Debug`, and the type holds no `E`.
 #[cfg(feature = "http")]
-impl<E> HandlerFailed<E> {
-    /// The default: the identifying fields and the status, no error.
-    pub(crate) const fn bound_free() -> Self {
+impl<E> Clone for ErrorFields<E> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+#[cfg(feature = "http")]
+impl<E> Copy for ErrorFields<E> {}
+
+#[cfg(feature = "http")]
+impl<E> ErrorFields<E> {
+    /// The default: the identifying fields and the status, nothing of the
+    /// error.
+    pub(crate) const fn none() -> Self {
         Self {
             #[cfg(feature = "tracing")]
-            with_error: None,
+            emit: None,
             error: PhantomData,
         }
     }
 }
 
 #[cfg(all(feature = "http", feature = "tracing"))]
-impl<E> HandlerFailed<E> {
-    /// Emits the event for a failed delivery.
-    pub(crate) fn emit(self, meta: &EventMeta, error: &E, status: u16) {
-        match self.with_error {
-            Some(with_error) => with_error(meta, error, status),
-            None => emit(meta, status, None, None),
+impl<E> ErrorFields<E> {
+    /// Emits the event for a failed delivery, with the fields this setting
+    /// asks for.
+    pub(crate) fn handler_failed(self, meta: &EventMeta, error: &E, status: u16) {
+        match self.emit {
+            Some(emit) => emit(meta, error, status),
+            None => handler_failed(meta, status, None, None),
         }
     }
 
     /// Whether the event carries the error, for the receiver's `Debug`.
-    pub(crate) fn traces_error(self) -> bool {
-        self.with_error.is_some()
+    pub(crate) fn is_some(self) -> bool {
+        self.emit.is_some()
     }
 
-    /// The event with the error's [`Display`] as `error` and its
-    /// [`source`](Error::source) as `source`.
-    pub(crate) const fn with_error() -> Self
+    /// The error's [`Display`] as `error` and its [`source`](Error::source)
+    /// as `source`.
+    pub(crate) const fn of_error() -> Self
     where
         E: Error,
     {
         Self {
-            with_error: Some(|meta, error, status| {
-                emit(meta, status, Some(error), error.source());
+            emit: Some(|meta, error, status| {
+                handler_failed(meta, status, Some(error), error.source());
             }),
             error: PhantomData,
         }
     }
 
-    /// The event with a [`BoxedError`]'s text as `error` and its source as
-    /// `source`: for a boxed error, the boxed error's own; for a
-    /// `DispatchError` over one, the dispatch error's text and the boxed
-    /// error.
-    pub(crate) const fn with_boxed_error() -> Self
+    /// A [`BoxedError`]'s text as `error` and its source as `source`: for an
+    /// error behind a pointer, that error's own; for a `DispatchError` over
+    /// one, the dispatch error's text and the boxed error.
+    pub(crate) const fn of_boxed_error() -> Self
     where
         E: BoxedError,
     {
         Self {
-            with_error: Some(|meta, error, status| {
-                emit(meta, status, Some(error.text()), error.source());
+            emit: Some(|meta, error, status| {
+                handler_failed(meta, status, Some(error.text()), error.source());
             }),
             error: PhantomData,
         }
     }
+}
+
+/// The one `tracing::error!` for a failed delivery, so the event's fields
+/// are declared in one place whatever the receiver was asked to record.
+///
+/// `error` is recorded through its `Display` and `source` as an error value
+/// the subscriber walks itself. Two fields rather than the error alone as
+/// one value, because a subscriber's error value must be `Error + 'static`,
+/// and the error `trace_boxed_errors` traces, a
+/// [`DispatchError`](crate::DispatchError) over a boxed error, is no `Error`:
+/// its text and its source are all it can offer, so every shape offers the
+/// same two.
+#[cfg(all(feature = "http", feature = "tracing"))]
+fn handler_failed(
+    meta: &EventMeta,
+    status: u16,
+    error: Option<&dyn Display>,
+    source: Option<&(dyn Error + 'static)>,
+) {
+    tracing::error!(
+        delivery_id = meta.delivery_id.as_str(),
+        event = meta.kind.as_str(),
+        action = meta.action.as_ref().map(Action::as_str),
+        installation_id = meta.installation_id,
+        status,
+        error = error.map(tracing::field::display),
+        source,
+        "handler failed"
+    );
 }
 
 /// An error behind a pointer, or a [`DispatchError`] over one: what
@@ -156,10 +198,12 @@ impl<E> HandlerFailed<E> {
 /// [`DispatchError`] over it, and `trace_errors` refuses both. This is the
 /// bound that admits them: anything that is
 /// `AsRef<dyn Error + Send + Sync + 'static>`, which `Box<dyn Error + Send +
-/// Sync>` and `Arc<dyn Error + Send + Sync>` are, and `anyhow::Error` and
-/// `eyre::Report` implement, and a `DispatchError` over any of them. The
-/// crate reads the error through it: its text, and its source for the
-/// subscriber to render with the chain beneath.
+/// Sync>` and `Arc<dyn Error + Send + Sync>` are and `anyhow::Error`
+/// implements, and a `DispatchError` over any of them. The crate reads the
+/// error through it: its text, and its source for the subscriber to render
+/// with the chain beneath. The event records those two fields rather than
+/// the error as one value because a subscriber's error value must be an
+/// `Error + 'static`, and a `DispatchError` over a box is not one.
 ///
 /// Sealed: the two impls are the whole contract, and a consumer's own error
 /// type that is an `Error` goes through `trace_errors` instead.
@@ -221,48 +265,6 @@ mod sealed {
     }
 }
 
-// Hand-written for the same reason `Config`'s is: a derive would ask
-// `E: Clone` and `E: Debug`, and the type holds no `E`.
-#[cfg(feature = "http")]
-impl<E> Clone for HandlerFailed<E> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-#[cfg(feature = "http")]
-impl<E> Copy for HandlerFailed<E> {}
-
-/// The one `tracing::error!` for a failed delivery, so the event's fields
-/// are declared in one place whatever the receiver was asked to record.
-///
-/// `error` is recorded through its `Display` and `source` as an error value
-/// the subscriber walks itself (the `fmt` subscriber prints
-/// `source=<cause> source.sources=[<cause>, ..]`). Two fields rather than
-/// the error alone as one value, because a subscriber's error value must be
-/// `Error + 'static`, and the error `trace_boxed_errors` traces, a
-/// [`DispatchError`](crate::DispatchError) over a boxed error, is no `Error`:
-/// its text and its source are all it can offer, so every shape offers the
-/// same two.
-#[cfg(all(feature = "http", feature = "tracing"))]
-fn emit(
-    meta: &EventMeta,
-    status: u16,
-    error: Option<&dyn Display>,
-    source: Option<&(dyn Error + 'static)>,
-) {
-    tracing::error!(
-        delivery_id = meta.delivery_id.as_str(),
-        event = meta.kind.as_str(),
-        action = meta.action.as_ref().map(Action::as_str),
-        installation_id = meta.installation_id,
-        status,
-        error = error.map(tracing::field::display),
-        source,
-        "handler failed"
-    );
-}
-
 /// Records nothing: the `tracing` feature is disabled.
 #[cfg(not(feature = "tracing"))]
 pub(crate) fn record<V>(_field: &str, _value: V) {}
@@ -275,12 +277,12 @@ pub(crate) fn record_display<V>(_field: &str, _value: V) {}
 // setting they would read does not exist without the feature.
 #[cfg(all(feature = "http", not(feature = "tracing")))]
 #[allow(clippy::unused_self)]
-impl<E> HandlerFailed<E> {
+impl<E> ErrorFields<E> {
     /// Emits nothing: the `tracing` feature is disabled.
-    pub(crate) fn emit(self, _meta: &EventMeta, _error: &E, _status: u16) {}
+    pub(crate) fn handler_failed(self, _meta: &EventMeta, _error: &E, _status: u16) {}
 
     /// Never: the `tracing` feature is disabled.
-    pub(crate) fn traces_error(self) -> bool {
+    pub(crate) fn is_some(self) -> bool {
         false
     }
 }

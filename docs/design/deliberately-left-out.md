@@ -258,7 +258,11 @@ handler, the registration site) and why is its `source()`, the application
 error, which a `Display` bound cannot reach. The event records both, `error`
 as the text and `source` as an error value the subscriber renders with the
 chain beneath it, and a `Display`-bounded method would have recorded the
-where and lost the why for exactly the shape the front page teaches.
+where and lost the why for exactly the shape the front page teaches. The
+cost is that an error type that is only `Display` (a `String`, a `&str`) has
+no one-line path; a consumer with one writes an `on_error` observer that
+emits its own event, and the receiver's bound-free event still names the
+delivery.
 
 That shape, `Box<dyn Error + Send + Sync>`, is not an `Error` (std implements
 `Error` for `Box<E>` only for a sized `E`), so a `DispatchError` over it is
@@ -285,14 +289,19 @@ or a second `Error` impl for `DispatchError` over the box. The blanket over
 `Error` is what every `thiserror` enum needs, so the box gets its own method,
 `trace_boxed_errors`, over the sealed `BoxedError`: anything
 `AsRef<dyn Error + Send + Sync + 'static>` (`Box`, `Arc`, `anyhow::Error`,
-`eyre::Report`) and a `DispatchError` over one. `AsRef` rather than `Deref`
-because the target must be a concrete `dyn Error` to become the event's
-`source` value: a generic `?Sized` `Deref::Target` cannot be coerced to one.
-Two fields rather than the whole error as one value, for every shape alike,
-because a subscriber's error value must be `Error + 'static` and a
-`DispatchError` over a box is no `Error`; a borrowed view that made it one
-would not be `'static`. Recorded on `trace_errors`, `trace_boxed_errors` and
-`BoxedError`.
+which the tests cover) and a `DispatchError` over one. `AsRef<dyn Error +
+Send + Sync>` rather than `Deref<Target = dyn Error + Send + Sync>` because
+it is the conversion `anyhow` and the std pointers both implement by that
+name and it says what is wanted, a view of the error, rather than how a
+pointer is followed; a generic `Deref<Target: Error + ?Sized>` was probed
+first and does not compile, since an unsized associated target cannot be
+coerced to the `dyn Error` the event's `source` value needs. Two fields
+rather than the whole error as one value, for every shape alike, because a
+subscriber's error value must be `Error + 'static` and a `DispatchError`
+over a box is no `Error`; a borrowed view that made it one would not be
+`'static`. Recorded on `trace_errors` (the bound and the `Display`-only
+cost), `trace_boxed_errors` and `BoxedError` (the shapes admitted, and the
+two fields).
 
 ## No `trace_error` observer
 
@@ -308,21 +317,5 @@ tracing does not do: a metric, a dead letter, a line on stderr. The two
 compose, and the observer changes nothing about the event. Suppressing the
 receiver's event whenever any observer is registered was declined: a
 metrics-only observer would have made failed deliveries invisible at ERROR,
-the silence #18 set out to end.
-
-## Deferred, not declined
-
-The registration bound `E: From<H::Error>` makes an application error
-absorb every handler's error through `From`, so a reusable handler struct
-keeps its own error type. It is also why a handler that cannot fail needs
-`impl From<Infallible> for AppError`, and why a bare `Ok(())` in a closure is
-ambiguous (E0283) once the application error has two `From` impls. The
-alternative, `H::Error = E`, removes both at the cost of the reusable-handler
-case. The decision is deferred: writing handlers as `async fn` items
-returning `Result<(), AppError>` needs neither the `Infallible` impl nor the
-annotation, the README leads with that shape, and no shipped example or
-rustdoc example declares `Infallible` any more. Re-evaluate at the next
-persona review ([`../review/`](../review/)). With no crate-taught
-`Infallible` left, a `From<Infallible>` or ambiguous-`From` hit that a
-persona reports traces to a shape the user chose, and that is the data the
-decision needs.
+the silence #18 set out to end. Recorded on `on_error` and in the `Tracing`
+section of the crate front page.

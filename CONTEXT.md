@@ -119,7 +119,7 @@ when the receiver builder was asked with `trace_errors` (an `Error`) or
 error over one), the error's text as `error` and its source as `source`, the
 chain beneath rendered by the subscriber. One event whether or not the text
 is on it and whether or not an observer is registered.
-_Avoid_: Handler error event (the removed second event), log line (a subscriber's rendering of it), error event (ambiguous with the `error` field)
+_Avoid_: Handler error event (the removed second event), log line (a subscriber's rendering of it), error event in lowercase (ambiguous with the `error` field; "ERROR event" and "event at ERROR" name the level and are fine)
 
 **Outcome**:
 What one dispatch reports: whether the delivery was matched, and if not,

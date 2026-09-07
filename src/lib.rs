@@ -404,8 +404,9 @@
 //! receiver builder, and it goes on the same event, never a second one:
 //! `WebhookReceiverBuilder::trace_errors`, for an `E: Error`, records the
 //! error's `Display` as `error` and its `source()` as `source`, an error
-//! value the subscriber renders with the sources beneath it;
-//! `WebhookReceiverBuilder::trace_boxed_errors` does the same for a
+//! value the subscriber renders with the sources beneath it (the `fmt`
+//! subscriber prints `error=<text> source=<cause> source.sources=[<cause>,
+//! ..]`); `WebhookReceiverBuilder::trace_boxed_errors` does the same for a
 //! `BoxedError`, an error behind a pointer (`Box<dyn Error + Send + Sync>`,
 //! `anyhow::Error`) or a [`DispatchError`] over one, which is no `Error`
 //! itself. With a dispatcher, `error` says where (the tier, the handler and

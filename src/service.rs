@@ -37,7 +37,7 @@ struct Config<E> {
     body_limit: usize,
     handle_ping: bool,
     observer: Option<ErrorObserver<E>>,
-    failed: trace::HandlerFailed<E>,
+    error_fields: trace::ErrorFields<E>,
 }
 
 impl<E> Config<E> {
@@ -50,7 +50,7 @@ impl<E> Config<E> {
             .field("body_limit", &self.body_limit)
             .field("handle_ping", &self.handle_ping)
             .field("on_error", &self.observer.is_some())
-            .field("trace_errors", &self.failed.traces_error());
+            .field("trace_errors", &self.error_fields.is_some());
     }
 }
 
@@ -63,7 +63,7 @@ impl<E> Clone for Config<E> {
             body_limit: self.body_limit,
             handle_ping: self.handle_ping,
             observer: self.observer.clone(),
-            failed: self.failed,
+            error_fields: self.error_fields,
         }
     }
 }
@@ -92,7 +92,7 @@ impl<E> WebhookReceiverBuilder<E> {
                 body_limit: DEFAULT_BODY_LIMIT,
                 handle_ping: false,
                 observer: None,
-                failed: trace::HandlerFailed::bound_free(),
+                error_fields: trace::ErrorFields::none(),
             },
         }
     }
@@ -195,35 +195,33 @@ impl<E> WebhookReceiverBuilder<E> {
         self
     }
 
-    /// Puts the handler's error on the ERROR event a failed delivery emits:
-    /// its text as `error`, its source and the chain beneath as `source`.
+    /// Puts the handler's error on the failed-delivery event: its text as
+    /// `error`, its source as `source`, the chain beneath rendered by the
+    /// subscriber.
     ///
     /// With the `tracing` feature the receiver emits one event at ERROR for
-    /// every failed delivery, carrying the delivery's identifying fields and
-    /// the status but, by default, nothing of the error, since it places no
-    /// bound on the error type. This asks `E: Error` and records the error
-    /// on that same event: `error` is its `Display` and `source` its
-    /// [`source`](std::error::Error::source), an error value the subscriber
-    /// renders with the sources beneath it (the `fmt` subscriber prints
-    /// `error=<text> source=<cause> source.sources=[<cause>, ..]`). Still one
-    /// event, in the `octoevents.receive` span; an [`on_error`](Self::on_error)
-    /// observer, if any, runs beside it. The contract is under
-    /// [Tracing](crate#tracing).
+    /// every failed delivery, and by default nothing of the error is on it,
+    /// since the receiver places no bound on the error type. This asks
+    /// `E: Error` and records the error on that same event, still one, in
+    /// the `octoevents.receive` span; an [`on_error`](Self::on_error)
+    /// observer, if any, runs beside it. The fields and their forms are
+    /// under [Tracing](crate#tracing).
     ///
     /// `Error` rather than `Display`, because a `Display` bound cannot walk
     /// `source()`: the text of a [`DispatchError`](crate::DispatchError) says
     /// where the delivery failed, and why is its source, the application
     /// error. A `thiserror` enum qualifies, and so does a `DispatchError`
-    /// over one. A `Box<dyn Error + Send + Sync>` does not, since std
-    /// implements `Error` for `Box<E>` only for a sized `E`, and neither does
-    /// a `DispatchError` over one; both are
-    /// [`trace_boxed_errors`](Self::trace_boxed_errors)'.
+    /// over one. `Box<dyn Error + Send + Sync>` and a `DispatchError` over
+    /// it are no `Error`, and are
+    /// [`trace_boxed_errors`](Self::trace_boxed_errors)'; an error type that
+    /// is only `Display` (a `String`, say) has no one-line path, and an
+    /// `on_error` observer that emits its own event is the way for one.
     ///
-    /// With a [`Dispatcher`](crate::Dispatcher) as the handler, the event for
-    /// a failed delivery reads, on the `fmt` subscriber:
+    /// With a [`Dispatcher`](crate::Dispatcher) as the handler, the `fmt`
+    /// subscriber renders the two fields as:
     ///
     /// ```text
-    /// ERROR octoevents.receive{delivery_id="72d3162e-cc78-11e3-81ab-4c9367dc0958" event="issues" outcome="handler_error" status=500}: octoevents::trace: handler failed delivery_id="72d3162e-cc78-11e3-81ab-4c9367dc0958" event="issues" action="opened" installation_id=42 status=500 error=delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (issues.opened) failed in the always tier at the handler `app::main::{{closure}}` registered at src/main.rs:12:6 source=database is down
+    /// error=delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (issues.opened) failed in the always tier at the handler `app::main::{{closure}}` registered at src/main.rs:12:6 source=database is down
     /// ```
     ///
     /// ```
@@ -251,23 +249,19 @@ impl<E> WebhookReceiverBuilder<E> {
     where
         E: std::error::Error,
     {
-        self.config.failed = trace::HandlerFailed::with_error();
+        self.config.error_fields = trace::ErrorFields::of_error();
         self
     }
 
-    /// [`trace_errors`](Self::trace_errors) for an error behind a pointer,
-    /// `Box<dyn Error + Send + Sync>` foremost, or a `DispatchError` over one.
+    /// [`trace_errors`](Self::trace_errors) for a [`BoxedError`]: an error
+    /// behind a pointer, `Box<dyn Error + Send + Sync>` foremost, or a
+    /// `DispatchError` over one, neither of which is an `Error` itself.
     ///
-    /// `Box<dyn Error + Send + Sync>` is not an `Error` (std implements
-    /// `Error` for `Box<E>` only for a sized `E`), so a
-    /// [`DispatchError`](crate::DispatchError) over it is not one either,
-    /// and `trace_errors` refuses both. This asks [`BoxedError`] instead,
-    /// which both are, along with `Arc<dyn Error + Send + Sync>`,
-    /// `anyhow::Error` and `eyre::Report`. The event is the same one with
-    /// the same two fields: for a boxed error, `error` is its text and
-    /// `source` its own source; for a `DispatchError` over one, `error` is
-    /// the dispatch error's text, saying where, and `source` the boxed
-    /// error, saying why, with its chain rendered by the subscriber.
+    /// The event is the same one with the same two fields. For a boxed
+    /// error, `error` is its text and `source` its own source; for a
+    /// [`DispatchError`](crate::DispatchError) over one, `error` is the
+    /// dispatch error's text, saying where, and `source` the boxed error,
+    /// saying why, with its chain rendered by the subscriber.
     ///
     /// The crate front page's receiver, whose handlers return
     /// `Box<dyn Error + Send + Sync>`:
@@ -296,7 +290,7 @@ impl<E> WebhookReceiverBuilder<E> {
     where
         E: crate::BoxedError,
     {
-        self.config.failed = trace::HandlerFailed::with_boxed_error();
+        self.config.error_fields = trace::ErrorFields::of_boxed_error();
         self
     }
 
@@ -458,7 +452,7 @@ where
             body_limit,
             handle_ping,
             observer,
-            failed,
+            error_fields,
         } = &self.config;
 
         // The comparison is in `u64` so a hint above `usize::MAX` (possible
@@ -507,7 +501,7 @@ where
                 // delivery ended.
                 let status = record_outcome(ResponseStatus::InternalServerError);
                 if let Some(meta) = &meta {
-                    failed.emit(meta, &error, status.as_u16());
+                    error_fields.handler_failed(meta, &error, status.as_u16());
                     if let Some(observer) = observer {
                         observer(meta, &error);
                     }

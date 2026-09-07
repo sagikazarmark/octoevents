@@ -59,14 +59,36 @@ fn error_events(log: &str) -> Vec<&str> {
         .collect()
 }
 
-/// The `name=value` pairs an event line carries after its message, as
-/// rendered: `name="text"` for a string, `name=42` for a number.
+/// The fields an event line carries after its message, as rendered:
+/// `name="text"` for a string, `name=42` for a number, and an error's text
+/// unquoted, so `error` and `source` run to the next field.
+fn rendered_fields(line: &str) -> &str {
+    line.rsplit_once("}: ").map_or(line, |(_, tail)| tail)
+}
+
+/// One `name=value` pair off an event line.
 fn rendered_field<'a>(line: &'a str, name: &str) -> Option<&'a str> {
-    let (_, tail) = line.rsplit_once("}: ")?;
-    tail.split_whitespace().find_map(|pair| {
+    rendered_fields(line).split_whitespace().find_map(|pair| {
         let (key, value) = pair.split_once('=')?;
         (key == name).then_some(value)
     })
+}
+
+/// The `error` and `source` fields off an event line: `error` is the
+/// error's `Display`, `source` its first source followed by the rest of the
+/// chain as `source.sources=[..]`, both unquoted, so each is everything after
+/// its key up to the next key or the end of the line.
+fn rendered_error_and_source(line: &str) -> (Option<&str>, Option<&str>) {
+    let fields = rendered_fields(line);
+    let error = fields.split_once(" error=").map(|(_, rest)| {
+        rest.split_once(" source=")
+            .map_or(rest, |(error, _)| error)
+            .trim_end()
+    });
+    let source = fields
+        .split_once(" source=")
+        .map(|(_, source)| source.trim_end());
+    (error, source)
 }
 
 #[test]
@@ -160,21 +182,23 @@ enum AppError {
     Database,
 }
 
-/// The `error` and `source` fields as rendered: `error` is the error's
-/// `Display`, `source` its first source followed by the rest of the chain in
-/// `source.sources=[..]`, both unquoted. Each is everything after its key up
-/// to the next key or the end of the line.
-fn rendered_error_and_source(line: &str) -> (Option<&str>, Option<&str>) {
-    let (_, tail) = line.rsplit_once("}: ").unwrap();
-    let error = tail.split_once(" error=").map(|(_, rest)| {
-        rest.split_once(" source=")
-            .map_or(rest, |(error, _)| error)
-            .trim_end()
-    });
-    let source = tail
-        .split_once(" source=")
-        .map(|(_, source)| source.trim_end());
-    (error, source)
+/// A three-deep chain, so a test can tell the error's text from its source
+/// and its source from the chain beneath, which is the subscriber's to
+/// render.
+#[derive(Debug, thiserror::Error)]
+#[error("timed out")]
+struct TimedOut;
+
+#[derive(Debug, thiserror::Error)]
+#[error("connection refused")]
+struct Refused(#[source] TimedOut);
+
+#[derive(Debug, thiserror::Error)]
+#[error("database is down")]
+struct Database(#[source] Refused);
+
+fn database_is_down() -> Database {
+    Database(Refused(TimedOut))
 }
 
 #[test]
@@ -214,21 +238,9 @@ fn trace_errors_puts_the_errors_text_and_source_chain_on_the_one_event() {
 
 #[test]
 fn trace_errors_renders_a_source_chain_through_the_subscriber() {
-    #[derive(Debug, thiserror::Error)]
-    #[error("timed out")]
-    struct TimedOut;
-
-    #[derive(Debug, thiserror::Error)]
-    #[error("connection refused")]
-    struct Refused(#[source] TimedOut);
-
-    #[derive(Debug, thiserror::Error)]
-    #[error("database is down")]
-    struct Database(#[source] Refused);
-
     let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
         .trace_errors()
-        .build(|_: Envelope| async { Err::<(), _>(Database(Refused(TimedOut))) });
+        .build(|_: Envelope| async { Err::<(), _>(database_is_down()) });
 
     let (log, response) = common::traced(receiver.receive(request("pull_request")));
     assert_eq!(response.status(), 500);
@@ -250,20 +262,12 @@ fn trace_errors_renders_a_source_chain_through_the_subscriber() {
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-#[derive(Debug, thiserror::Error)]
-#[error("connection refused")]
-struct Refused;
-
-#[derive(Debug, thiserror::Error)]
-#[error("database is down")]
-struct Database(#[source] Refused);
-
 #[test]
 fn trace_boxed_errors_traces_a_dispatch_error_over_a_boxed_error() {
     // The front page's shape: a dispatcher over `Box<dyn Error + Send + Sync>`,
     // whose `DispatchError` is no `Error` and so out of `trace_errors`' reach.
     let dispatcher = Dispatcher::<BoxError>::builder()
-        .always(|_: Envelope| async { Err::<(), BoxError>(Box::new(Database(Refused))) })
+        .always(|_: Envelope| async { Err::<(), BoxError>(Box::new(database_is_down())) })
         .build();
     let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
         .trace_boxed_errors()
@@ -290,7 +294,7 @@ fn trace_boxed_errors_traces_a_dispatch_error_over_a_boxed_error() {
     );
     assert_eq!(
         source,
-        Some("database is down source.sources=[connection refused]"),
+        Some("database is down source.sources=[connection refused, timed out]"),
         "{event}"
     );
 }
@@ -299,27 +303,62 @@ fn trace_boxed_errors_traces_a_dispatch_error_over_a_boxed_error() {
 fn trace_boxed_errors_traces_a_boxed_error_as_the_handlers_own() {
     let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
         .trace_boxed_errors()
-        .build(|_: Envelope| async { Err::<(), BoxError>(Box::new(Database(Refused))) });
+        .build(|_: Envelope| async { Err::<(), BoxError>(Box::new(database_is_down())) });
 
     let (log, response) = common::traced(receiver.receive(request("pull_request")));
     assert_eq!(response.status(), 500);
 
     // Without a dispatcher the boxed error is the text and its source the
-    // `source` field, as an unboxed one would be under `trace_errors`.
+    // `source` field, as an unboxed one is under `trace_errors`.
     let events = error_events(&log);
     assert_eq!(events.len(), 1, "{log}");
     let (error, source) = rendered_error_and_source(events[0]);
     assert_eq!(error, Some("database is down"), "{}", events[0]);
-    assert_eq!(source, Some("connection refused"), "{}", events[0]);
+    assert_eq!(
+        source,
+        Some("connection refused source.sources=[timed out]"),
+        "{}",
+        events[0]
+    );
+}
+
+#[test]
+fn trace_boxed_errors_traces_an_anyhow_error_through_its_as_ref() {
+    // `anyhow::Error` is neither an `Error` nor a `Box`; it is a
+    // `BoxedError` through its `AsRef<dyn Error + Send + Sync>`.
+    let dispatcher = Dispatcher::<anyhow::Error>::builder()
+        .always(|_: Envelope| async { Err::<(), anyhow::Error>(database_is_down().into()) })
+        .build();
+    let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
+        .trace_boxed_errors()
+        .build(dispatcher);
+
+    let (log, response) = common::traced(receiver.receive(request("pull_request")));
+    assert_eq!(response.status(), 500);
+
+    let events = error_events(&log);
+    assert_eq!(events.len(), 1, "{log}");
+    let (error, source) = rendered_error_and_source(events[0]);
+    assert!(
+        error.is_some_and(|error| error.contains("failed in the always tier")),
+        "{}",
+        events[0]
+    );
+    assert_eq!(
+        source,
+        Some("database is down source.sources=[connection refused, timed out]"),
+        "{}",
+        events[0]
+    );
 }
 
 #[test]
 fn trace_errors_and_an_error_observer_run_side_by_side_for_one_event() {
     use std::sync::{Arc, Mutex};
 
-    // The observer is the consumer's hook (a metric, a dead letter, a line
-    // on stderr); the event is the receiver's. Registering both costs no
-    // second event.
+    // The observer is for what tracing does not do (a metric, a dead letter,
+    // a line on stderr); the event is the receiver's. Registering both costs
+    // no second event.
     let observed = Arc::new(Mutex::new(Vec::new()));
     let observer_seen = Arc::clone(&observed);
     let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
@@ -330,7 +369,7 @@ fn trace_errors_and_an_error_observer_run_side_by_side_for_one_event() {
                 .unwrap()
                 .push(format!("{} {error}", meta.delivery_id));
         })
-        .build(|_: Envelope| async { Err::<(), _>(Database(Refused)) });
+        .build(|_: Envelope| async { Err::<(), _>(database_is_down()) });
 
     let (log, response) = common::traced(receiver.receive(request("pull_request")));
     assert_eq!(response.status(), 500);
