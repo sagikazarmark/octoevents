@@ -326,11 +326,11 @@ section of the crate front page.
 
 ## `impl_payload!` is suggested for `EventMeta`: a note cannot be filtered on `Self`
 
-#38 asked that `Payload`'s message, for an input that declares no kind
-(`EventMeta`, `Envelope`), lead with "register it with `on` and a matcher"
-and not suggest `impl_payload!` for a crate type. The first half holds; the
-second is unmet, by the mechanism rather than by omission.
-`assert_payload::<EventMeta>()` renders (abridged):
+The single-trait redesign, #38, asked that `Payload`'s message, for an input
+that declares no kind (`EventMeta`, `Envelope`), lead with "register it with
+`on` and a matcher" and not suggest `impl_payload!` for a crate type. The
+first half holds; the second is unmet, by the mechanism rather than by
+omission. `assert_payload::<EventMeta>()` renders (abridged):
 
 ```text
 error[E0277]: `EventMeta` is not a payload
@@ -366,19 +366,20 @@ the `EventMeta` case and its first note.
 ## `Arc<H>` described on `Handler` only
 
 Two closed tickets disagree. #38's documentation section asked the README's
-Handlers section to show `Arc<H>` beside the struct form over `Event<P>`;
-#33 asked that the impl be described on the handler trait only and that the
-front page and README stop mentioning it. #33 was sequenced after #38, on
-which it waited, and wins: the impl is documented on `Handler`, and the
-README and front page name `Arc` only as a test's shared `Mutex`, captured
-by a closure. Beyond sequence, the evidence was on #33's side. No persona
-used the `Arc<H>` impls in run 2 (0/4); neither the receiver nor the
-dispatcher needs the caller's `Arc`, since each holds its handlers behind
-its own and the receiver is `Clone` for any `H` without one; and the impl's
-job, one struct shared between a route, a tier and a test that reads its
-state, which is #38's user story for it, is met by the impl and is a fact
-about the trait rather than a shape a first program needs. Reopens if a
-persona reaches for `Arc<H>` and cannot find it. Recorded on `Handler`.
+Handlers section to show `Arc<H>` beside the struct form over `Event<P>`; the
+rustdoc consolidation, #33, asked that the impl be described on the handler
+trait only and that the front page and README stop mentioning it. #33 was
+sequenced after #38, on which it waited, and wins: the impl is documented on
+`Handler`, and the README and front page name `Arc` only as a test's shared
+`Mutex`, captured by a closure. Beyond sequence, the evidence was on #33's
+side. No persona used the `Arc<H>` impls in run 2 (0/4); neither the
+receiver nor the dispatcher needs the caller's `Arc`, since each holds its
+handlers behind its own and the receiver is `Clone` for any `H` without one;
+and the impl's job, one struct shared between a route, a tier and a test
+that reads its state, which is #38's user story for it, is met by the impl
+and is a fact about the trait rather than a shape a first program needs.
+Reopens if a persona reaches for `Arc<H>` and cannot find it. Recorded on
+`Handler`.
 
 ## A payload view under a disagreeing `on` matcher fails at dispatch
 
