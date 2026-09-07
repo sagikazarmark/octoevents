@@ -37,17 +37,20 @@ struct Config<E> {
     body_limit: usize,
     handle_ping: bool,
     observer: Option<ErrorObserver<E>>,
+    failed: trace::HandlerFailed<E>,
 }
 
 impl<E> Config<E> {
     fn debug_fields(&self, debug: &mut fmt::DebugStruct<'_, '_>) {
         // The observer is a closure and never `Debug`; whether one is
-        // registered is the configuration worth printing.
+        // registered is the configuration worth printing, as is whether the
+        // failed-delivery event carries the error.
         debug
             .field("verifier", &self.verifier)
             .field("body_limit", &self.body_limit)
             .field("handle_ping", &self.handle_ping)
-            .field("on_error", &self.observer.is_some());
+            .field("on_error", &self.observer.is_some())
+            .field("trace_errors", &self.failed.traces_error());
     }
 }
 
@@ -60,6 +63,7 @@ impl<E> Clone for Config<E> {
             body_limit: self.body_limit,
             handle_ping: self.handle_ping,
             observer: self.observer.clone(),
+            failed: self.failed,
         }
     }
 }
@@ -88,6 +92,7 @@ impl<E> WebhookReceiverBuilder<E> {
                 body_limit: DEFAULT_BODY_LIMIT,
                 handle_ping: false,
                 observer: None,
+                failed: trace::HandlerFailed::bound_free(),
             },
         }
     }
@@ -134,13 +139,13 @@ impl<E> WebhookReceiverBuilder<E> {
     ///
     /// With the `tracing` feature, a failed delivery already emits one ERROR
     /// event naming the delivery, observer or not; the error's text is what
-    /// it lacks. The one-line way to get the text is the crate's
-    /// `trace_error` observer, which exists with the feature and emits a
-    /// second ERROR event with the error and its source chain:
-    /// `.on_error(octoevents::trace_error)`. It asks `E: Error + 'static`,
-    /// which a `Box<dyn Error + Send + Sync>` does not satisfy; a closure
-    /// that formats the error, as the crate front page's example does,
-    /// observes one. The contract is under [Tracing](crate#tracing).
+    /// it lacks by default, and the observer is not how it gets it. That is
+    /// `trace_errors` on this builder, or `trace_boxed_errors` for a
+    /// `Box<dyn Error + Send + Sync>` and a `DispatchError` over one, which
+    /// put the text and its sources on that same event. The observer is for
+    /// what tracing does not do: a metric, a dead letter, a line on stderr;
+    /// it runs beside the event either way. The contract is under
+    /// [Tracing](crate#tracing).
     ///
     /// With a [`Dispatcher`](crate::Dispatcher) as the handler, the error is
     /// a [`DispatchError`](crate::DispatchError) naming the tier, the
@@ -187,6 +192,111 @@ impl<E> WebhookReceiverBuilder<E> {
         F: Fn(&EventMeta, &E) + MaybeSend + MaybeSync + 'static,
     {
         self.config.observer = Some(Arc::new(observer));
+        self
+    }
+
+    /// Puts the handler's error on the ERROR event a failed delivery emits:
+    /// its text as `error`, its source and the chain beneath as `source`.
+    ///
+    /// With the `tracing` feature the receiver emits one event at ERROR for
+    /// every failed delivery, carrying the delivery's identifying fields and
+    /// the status but, by default, nothing of the error, since it places no
+    /// bound on the error type. This asks `E: Error` and records the error
+    /// on that same event: `error` is its `Display` and `source` its
+    /// [`source`](std::error::Error::source), an error value the subscriber
+    /// renders with the sources beneath it (the `fmt` subscriber prints
+    /// `error=<text> source=<cause> source.sources=[<cause>, ..]`). Still one
+    /// event, in the `octoevents.receive` span; an [`on_error`](Self::on_error)
+    /// observer, if any, runs beside it. The contract is under
+    /// [Tracing](crate#tracing).
+    ///
+    /// `Error` rather than `Display`, because a `Display` bound cannot walk
+    /// `source()`: the text of a [`DispatchError`](crate::DispatchError) says
+    /// where the delivery failed, and why is its source, the application
+    /// error. A `thiserror` enum qualifies, and so does a `DispatchError`
+    /// over one. A `Box<dyn Error + Send + Sync>` does not, since std
+    /// implements `Error` for `Box<E>` only for a sized `E`, and neither does
+    /// a `DispatchError` over one; both are
+    /// [`trace_boxed_errors`](Self::trace_boxed_errors)'.
+    ///
+    /// With a [`Dispatcher`](crate::Dispatcher) as the handler, the event for
+    /// a failed delivery reads, on the `fmt` subscriber:
+    ///
+    /// ```text
+    /// ERROR octoevents.receive{delivery_id="72d3162e-cc78-11e3-81ab-4c9367dc0958" event="issues" outcome="handler_error" status=500}: octoevents::trace: handler failed delivery_id="72d3162e-cc78-11e3-81ab-4c9367dc0958" event="issues" action="opened" installation_id=42 status=500 error=delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (issues.opened) failed in the always tier at the handler `app::main::{{closure}}` registered at src/main.rs:12:6 source=database is down
+    /// ```
+    ///
+    /// ```
+    /// use octoevents::{DecodeError, Dispatcher, Envelope, Secret, Verifier, WebhookReceiverBuilder};
+    /// # #[derive(Debug, thiserror::Error)]
+    /// # enum AppError {
+    /// #     #[error(transparent)]
+    /// #     Decode(#[from] DecodeError),
+    /// #     #[error("database is down")]
+    /// #     Database,
+    /// # }
+    ///
+    /// let dispatcher = Dispatcher::<AppError>::builder()
+    ///     .always(|_: Envelope| async { Err::<(), _>(AppError::Database) })
+    ///     .build();
+    ///
+    /// let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("current secret")))
+    ///     .trace_errors()
+    ///     .build(dispatcher);
+    /// # let _ = receiver;
+    /// ```
+    #[cfg(feature = "tracing")]
+    #[must_use]
+    pub fn trace_errors(mut self) -> Self
+    where
+        E: std::error::Error,
+    {
+        self.config.failed = trace::HandlerFailed::with_error();
+        self
+    }
+
+    /// [`trace_errors`](Self::trace_errors) for an error behind a pointer,
+    /// `Box<dyn Error + Send + Sync>` foremost, or a `DispatchError` over one.
+    ///
+    /// `Box<dyn Error + Send + Sync>` is not an `Error` (std implements
+    /// `Error` for `Box<E>` only for a sized `E`), so a
+    /// [`DispatchError`](crate::DispatchError) over it is not one either,
+    /// and `trace_errors` refuses both. This asks [`BoxedError`] instead,
+    /// which both are, along with `Arc<dyn Error + Send + Sync>`,
+    /// `anyhow::Error` and `eyre::Report`. The event is the same one with
+    /// the same two fields: for a boxed error, `error` is its text and
+    /// `source` its own source; for a `DispatchError` over one, `error` is
+    /// the dispatch error's text, saying where, and `source` the boxed
+    /// error, saying why, with its chain rendered by the subscriber.
+    ///
+    /// The crate front page's receiver, whose handlers return
+    /// `Box<dyn Error + Send + Sync>`:
+    ///
+    /// ```
+    /// use octoevents::{Dispatcher, Envelope, Secret, Verifier, WebhookReceiverBuilder};
+    ///
+    /// type BoxError = Box<dyn std::error::Error + Send + Sync>;
+    ///
+    /// async fn print(envelope: Envelope) -> Result<(), BoxError> {
+    ///     println!("{} {}", envelope.meta.delivery_id, envelope.meta.kind);
+    ///     Ok(())
+    /// }
+    ///
+    /// let dispatcher = Dispatcher::<BoxError>::builder().always(print).build();
+    /// let webhook = WebhookReceiverBuilder::new(Verifier::new(Secret::new("development-secret")))
+    ///     .trace_boxed_errors()
+    ///     .build(dispatcher);
+    /// # let _ = webhook;
+    /// ```
+    ///
+    /// [`BoxedError`]: crate::BoxedError
+    #[cfg(feature = "tracing")]
+    #[must_use]
+    pub fn trace_boxed_errors(mut self) -> Self
+    where
+        E: crate::BoxedError,
+    {
+        self.config.failed = trace::HandlerFailed::with_boxed_error();
         self
     }
 
@@ -348,6 +458,7 @@ where
             body_limit,
             handle_ping,
             observer,
+            failed,
         } = &self.config;
 
         // The comparison is in `u64` so a hint above `usize::MAX` (possible
@@ -396,7 +507,7 @@ where
                 // delivery ended.
                 let status = record_outcome(ResponseStatus::InternalServerError);
                 if let Some(meta) = &meta {
-                    trace::handler_failed(meta, status.as_u16());
+                    failed.emit(meta, &error, status.as_u16());
                     if let Some(observer) = observer {
                         observer(meta, &error);
                     }
@@ -1311,6 +1422,7 @@ mod tests {
         let debug = format!("{:?}", builder.clone());
         assert!(debug.contains("body_limit: 64"), "{debug}");
         assert!(debug.contains("on_error: true"), "{debug}");
+        assert!(debug.contains("trace_errors: false"), "{debug}");
         assert!(!debug.contains("super-secret"), "{debug}");
 
         let receiver = builder.build(|_: Envelope| async { Err::<(), _>(NotCloneOrDebug) });
@@ -1327,6 +1439,24 @@ mod tests {
             });
         let debug = format!("{:?}", receiver.clone());
         assert!(debug.contains("on_error: false"), "{debug}");
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn debug_says_whether_the_failed_delivery_event_carries_the_error() {
+        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+            .trace_errors()
+            .build(|_: Envelope| async { Err::<(), _>(std::fmt::Error) });
+        let debug = format!("{receiver:?}");
+        assert!(debug.contains("trace_errors: true"), "{debug}");
+
+        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+            .trace_boxed_errors()
+            .build(|_: Envelope| async {
+                Err::<(), Box<dyn std::error::Error + Send + Sync>>("boxed".into())
+            });
+        let debug = format!("{receiver:?}");
+        assert!(debug.contains("trace_errors: true"), "{debug}");
     }
 
     #[test]

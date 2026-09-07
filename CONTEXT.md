@@ -107,8 +107,19 @@ _Avoid_: Handler error (the application error inside it), failure (prose for the
 The callback registered with `on_error` on the receiver builder, called with
 the event meta and a reference to the handler's error after a handler fails
 and before the 500 is answered. Synchronous, with no bound on the error type,
-and never called for a receive failure or a short-circuited ping.
-_Avoid_: Error handler (it handles nothing; the response is unchanged), hook, middleware
+and never called for a receive failure or a short-circuited ping. Not how the
+error's text reaches `tracing`; that is the failed-delivery event's setting.
+_Avoid_: Error handler (it handles nothing; the response is unchanged), hook, middleware, trace_error (the removed observer that emitted a second event)
+
+**Failed-delivery event**:
+The one `tracing` event at ERROR the receiver emits when a handler fails,
+`handler failed`: the event meta's identifying fields and the status, and,
+when the receiver builder was asked with `trace_errors` (an `Error`) or
+`trace_boxed_errors` (a `BoxedError`: an error behind a pointer, or a dispatch
+error over one), the error's text as `error` and its source as `source`, the
+chain beneath rendered by the subscriber. One event whether or not the text
+is on it and whether or not an observer is registered.
+_Avoid_: Handler error event (the removed second event), log line (a subscriber's rendering of it), error event (ambiguous with the `error` field)
 
 **Outcome**:
 What one dispatch reports: whether the delivery was matched, and if not,

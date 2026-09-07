@@ -247,6 +247,69 @@ ship if demand appears.
 name, `payload`, and the deref would shadow a view field named `meta` or
 `payload` behind a type-safe but surprising resolution. Recorded on `Event`.
 
+## `Error`, not `Display`, to trace the error's text; a second method for the boxed shape
+
+With the `tracing` feature a failed delivery is one ERROR event, and the
+error's text goes on it through `WebhookReceiverBuilder::trace_errors`, which
+asks `E: Error`. The spec that introduced the text (#29) named a `Display`
+bound. `Error` was chosen because the text alone is not the story: a
+`DispatchError`'s `Display` says where the delivery failed (the tier, the
+handler, the registration site) and why is its `source()`, the application
+error, which a `Display` bound cannot reach. The event records both, `error`
+as the text and `source` as an error value the subscriber renders with the
+chain beneath it, and a `Display`-bounded method would have recorded the
+where and lost the why for exactly the shape the front page teaches.
+
+That shape, `Box<dyn Error + Send + Sync>`, is not an `Error` (std implements
+`Error` for `Box<E>` only for a sized `E`), so a `DispatchError` over it is
+not one either, and `trace_errors` refuses both. One method over a crate
+trait covering both an `E: Error` and the box was probed and is not
+expressible:
+
+```text
+error[E0119]: conflicting implementations of trait `TracedError` for type `Box<(dyn std::error::Error + Send + Sync + 'static)>`
+   |
+ 7 | impl<E: Error + 'static> TracedError for E {
+   | ------------------------------------------ first implementation here
+...
+11 | impl TracedError for Box<dyn Error + Send + Sync> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ conflicting implementation for `Box<(dyn std::error::Error + Send + Sync + 'static)>`
+   |
+   = note: upstream crates may add a new impl of trait `std::error::Error` for type `std::boxed::Box<(dyn std::error::Error + std::marker::Send + std::marker::Sync + 'static)>` in future versions
+```
+
+The same note defeats every variant: an impl for `DispatchError<Box<dyn
+Error + Send + Sync>>` beside the blanket, a blanket over `Deref<Target:
+Error>` beside one over `Error` (they overlap for real on `Box<AppError>`),
+or a second `Error` impl for `DispatchError` over the box. The blanket over
+`Error` is what every `thiserror` enum needs, so the box gets its own method,
+`trace_boxed_errors`, over the sealed `BoxedError`: anything
+`AsRef<dyn Error + Send + Sync + 'static>` (`Box`, `Arc`, `anyhow::Error`,
+`eyre::Report`) and a `DispatchError` over one. `AsRef` rather than `Deref`
+because the target must be a concrete `dyn Error` to become the event's
+`source` value: a generic `?Sized` `Deref::Target` cannot be coerced to one.
+Two fields rather than the whole error as one value, for every shape alike,
+because a subscriber's error value must be `Error + 'static` and a
+`DispatchError` over a box is no `Error`; a borrowed view that made it one
+would not be `'static`. Recorded on `trace_errors`, `trace_boxed_errors` and
+`BoxedError`.
+
+## No `trace_error` observer
+
+The text was first an `on_error` observer, `trace_error`, that emitted a
+second ERROR event, `handler error`, beside the receiver's bound-free
+`handler failed`. A failed delivery was two lines that read alike, and the
+receiver could not make them one: its own event needs no bound and the
+observer it holds is a type-erased `Fn`, so it cannot tell that the observer
+about to run will say everything it is about to say. Making the text a
+receiver setting instead (`trace_errors`, `trace_boxed_errors`) lets the
+receiver emit one event that carries it, and leaves `on_error` for what
+tracing does not do: a metric, a dead letter, a line on stderr. The two
+compose, and the observer changes nothing about the event. Suppressing the
+receiver's event whenever any observer is registered was declined: a
+metrics-only observer would have made failed deliveries invisible at ERROR,
+the silence #18 set out to end.
+
 ## Deferred, not declined
 
 The registration bound `E: From<H::Error>` makes an application error
