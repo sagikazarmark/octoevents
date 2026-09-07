@@ -29,7 +29,8 @@ pub(crate) type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
 ///
 /// The handler trait declares its future `impl Future + MaybeSend`, so a
 /// handler holding single-threaded state compiles for a Worker and is
-/// rejected natively at its own `impl`, where the diagnostic names the field:
+/// rejected natively at its own `impl`, where the diagnostic names the
+/// field's type:
 ///
 /// ```compile_fail
 /// use std::{cell::Cell, rc::Rc};
@@ -59,6 +60,31 @@ pub trait MaybeSend {}
 impl<T: ?Sized> MaybeSend for T {}
 
 /// `Sync` on native targets; no requirement on `wasm32`.
+///
+/// The supertrait of [`Handler`](crate::Handler), so `H: Handler<I>` alone
+/// lets an adapter hold `&H` across an await; what that means on each
+/// platform is under [`MaybeSync` and
+/// `MaybeSend`](crate::Handler#maybesync-and-maybesend). A handler holding
+/// `!Sync` state is rejected natively at its own `impl`, where the diagnostic
+/// names the field's type. The future here is built by hand rather than with
+/// `async fn`, which would capture `&self` and fail [`MaybeSend`] as well, so
+/// that the supertrait is the one bound refusing it:
+///
+/// ```compile_fail,E0277
+/// use std::cell::Cell;
+/// use std::future::Future;
+/// use octoevents::{Envelope, Handler, MaybeSend};
+///
+/// struct Counter { calls: Cell<u32> }
+///
+/// impl Handler<Envelope> for Counter {
+///     type Error = ();
+///     fn handle(&self, _envelope: Envelope) -> impl Future<Output = Result<(), ()>> + MaybeSend {
+///         self.calls.set(self.calls.get() + 1);
+///         async { Ok(()) }
+///     }
+/// }
+/// ```
 #[cfg(not(target_arch = "wasm32"))]
 pub trait MaybeSync: Sync {}
 
