@@ -259,6 +259,40 @@ where
     /// fallback fails it. [`Handler::handle`] on the dispatcher keeps only
     /// the result.
     ///
+    /// A plain `async fn` with no runtime of its own: a transport awaits it
+    /// on whatever executor it has, and a synchronous entry with none polls
+    /// it once. When no handler suspends, a single poll with a no-op waker
+    /// completes it; a poll that comes back `Pending` means a handler did
+    /// suspend and needs an executor after all.
+    ///
+    /// ```
+    /// use std::pin::pin;
+    /// use std::task::{Context, Poll, Waker};
+    ///
+    /// use octoevents::{Dispatcher, Envelope, EventKind};
+    /// # use octoevents::DecodeError;
+    /// # struct AppError;
+    /// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
+    ///
+    /// async fn log(envelope: Envelope) -> Result<(), AppError> {
+    ///     println!("{} bytes of {}", envelope.raw_payload.len(), envelope.meta.kind);
+    ///     Ok(())
+    /// }
+    ///
+    /// let dispatcher = Dispatcher::<AppError>::builder().on(EventKind::Push, log).build();
+    /// let envelope = Envelope::new(
+    ///     "72d3162e-cc78-11e3-81ab-4c9367dc0958",
+    ///     EventKind::Push,
+    ///     br#"{"ref":"refs/heads/main"}"#,
+    /// );
+    ///
+    /// let mut future = pin!(dispatcher.dispatch(envelope));
+    /// let Poll::Ready(outcome) = future.as_mut().poll(&mut Context::from_waker(Waker::noop())) else {
+    ///     panic!("a handler suspended; drive the future on an executor");
+    /// };
+    /// assert!(outcome.result.is_ok());
+    /// ```
+    ///
     /// With the `tracing` feature, the call runs in an `octoevents.dispatch`
     /// span that records `delivery_id`, `event`, and, when the delivery has
     /// them, `action` and `installation_id`, all on open. On the way out it
@@ -454,7 +488,7 @@ impl<E> Outcome<E> {
 ///
 /// A delivery matches when at least one routed handler is registered for its
 /// kind, or for its kind and action. The `always` and `fallback` tiers never
-/// count: a delivery handled only by them is unmatched. When nothing
+/// count: a delivery that reaches only them is unmatched. When nothing
 /// matched, the route table still says whether it knows the kind, so a
 /// strict policy can reject a kind it never registered while tolerating an
 /// action GitHub added to one it did.
@@ -787,6 +821,49 @@ where
     ///     })
     ///     .build();
     /// ```
+    ///
+    /// A handler that wants the meta beside the payload takes them as one
+    /// input, `Event { meta, payload }: Event<P>`, not as two parameters.
+    /// Written with two, `async fn notify(meta: EventMeta, pr:
+    /// PullRequestNumber)`, it is refused before any message of this crate's
+    /// can name the input, since rustc checks the `Fn` bound's argument count
+    /// first (abridged):
+    ///
+    /// ```text
+    /// error[E0593]: function is expected to take 1 argument, but it takes 2 arguments
+    ///    |
+    ///    | async fn notify(meta: EventMeta, pr: PullRequestNumber) -> Result<(), AppError> {
+    ///    | ------------------------------------------------------------------------------- takes 2 arguments
+    /// ...
+    ///    |     .on((EventKind::PullRequest, Action::Opened), notify)
+    ///    |                                                   ^^^^^^ expected function that takes 1 argument
+    ///    |
+    ///    = note: required for `fn(EventMeta, PullRequestNumber) -> ... {notify}` to implement `Handler<_>`
+    /// ```
+    ///
+    /// The fix is the one parameter, destructured:
+    /// `async fn notify(Event { meta, payload: pr }: Event<PullRequestNumber>)`,
+    /// as [`on_payload`](Self::on_payload) shows.
+    ///
+    /// ```compile_fail,E0593
+    /// use octoevents::{Action, Dispatcher, EventKind, EventMeta};
+    /// # use octoevents::DecodeError;
+    /// # struct AppError;
+    /// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
+    ///
+    /// #[derive(serde::Deserialize)]
+    /// struct PullRequestNumber { number: u64 }
+    /// octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
+    ///
+    /// async fn notify(meta: EventMeta, pr: PullRequestNumber) -> Result<(), AppError> {
+    ///     println!("{}: PR #{}", meta.delivery_id, pr.number);
+    ///     Ok(())
+    /// }
+    ///
+    /// let dispatcher = Dispatcher::<AppError>::builder()
+    ///     .on((EventKind::PullRequest, Action::Opened), notify)
+    ///     .build();
+    /// ```
     #[must_use]
     #[track_caller]
     pub fn on<I, H>(mut self, matcher: impl Into<EventMatcher>, handler: H) -> Self
@@ -931,6 +1008,38 @@ where
     /// for `on_payload`, and a struct that implements [`Handler`] for several
     /// payloads names it the same way:
     /// `on_payload_action::<PullRequestNumber, _>([Action::Opened], labeler)`.
+    ///
+    /// A handler that reads the action beside the payload takes the two as
+    /// one input, `Event { meta, payload }: Event<P>`, not as two parameters.
+    /// Written with two, it is E0593, "function is expected to take 1
+    /// argument, but it takes 2 arguments", pointing at the handler with
+    /// "expected function that takes 1 argument"; rustc checks the `Fn`
+    /// bound's argument count before any message of this crate's can name
+    /// the input, and [`on`](Self::on) shows the output in full. The fix is
+    /// the one parameter, destructured:
+    /// `async fn label(Event { meta, payload }: Event<IssueOpened>)`.
+    ///
+    /// ```compile_fail,E0593
+    /// use octoevents::{Action, Dispatcher, EventKind, EventMeta};
+    /// # use octoevents::DecodeError;
+    /// # struct AppError;
+    /// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
+    ///
+    /// #[derive(serde::Deserialize)]
+    /// struct IssueOpened { issue: Issue }
+    /// #[derive(serde::Deserialize)]
+    /// struct Issue { number: u64 }
+    /// octoevents::impl_payload!(IssueOpened => EventKind::Issues);
+    ///
+    /// async fn label(meta: EventMeta, issue: IssueOpened) -> Result<(), AppError> {
+    ///     println!("{:?}: label #{}", meta.action, issue.issue.number);
+    ///     Ok(())
+    /// }
+    ///
+    /// let dispatcher = Dispatcher::<AppError>::builder()
+    ///     .on_payload_action([Action::Opened, Action::Reopened], label)
+    ///     .build();
+    /// ```
     #[must_use]
     #[track_caller]
     pub fn on_payload_action<I, H>(
@@ -988,10 +1097,10 @@ where
     /// A strict fallback fails the delivery instead, so an unmatched delivery
     /// shows as a failure in GitHub's delivery log rather than passing
     /// silently. Not seeing the match, it rejects an action GitHub added to a
-    /// handled kind as readily as an unknown kind; and with the receiver built
-    /// with `handle_ping(true)`, it rejects the `ping` GitHub sends on creating
-    /// the webhook unless a route registers that kind. "Log it, then reject
-    /// it" is the two handlers in that order:
+    /// kind the route table knows as readily as a kind it does not; and with
+    /// the receiver built with `handle_ping(true)`, it rejects the `ping`
+    /// GitHub sends on creating the webhook unless a route registers that
+    /// kind. "Log it, then reject it" is the two handlers in that order:
     ///
     /// ```
     /// use octoevents::{Dispatcher, Envelope, EventKind};

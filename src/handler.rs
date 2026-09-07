@@ -148,8 +148,11 @@ use crate::{MaybeSend, MaybeSync};
 /// A function of the wrong arity is the one shape that message cannot reach:
 /// rustc checks the `Fn` bound's argument count before any trait message
 /// fires, so `async fn notify(meta: EventMeta, pr: PullRequestNumber)` passed
-/// to a registration method is E0593, "expected to take 1 argument, but it
-/// takes 2". Meta and payload together is one input, `Event<P>`.
+/// to a registration method is E0593, "function is expected to take 1
+/// argument, but it takes 2 arguments". Meta and payload together is one
+/// input, destructured in the parameter: `Event { meta, payload }: Event<P>`.
+/// [`DispatcherBuilder::on`](crate::DispatcherBuilder::on) shows the error
+/// and the fix.
 ///
 /// # `MaybeSync` and `MaybeSend`
 ///

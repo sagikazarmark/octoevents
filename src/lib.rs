@@ -360,13 +360,16 @@
 //! the names in [`header`], calls it with the body as [`Bytes`], and answers
 //! with [`ResponseStatus`]. The header names are lowercase and the lookup
 //! compares nothing itself, so matching the case of the map's keys is the
-//! transport's concern. [`Dispatcher::dispatch`] is a plain `async fn` with
-//! no runtime of its own, so a transport awaits it on whatever executor it
-//! has. The docs of `from_signed` show, as code to copy, the three things
-//! the receiver does that this path does not: refusing an unsigned request
-//! before reading the body, bounding the body, and short-circuiting `ping`.
-//! [`Envelope`] serializes with serde for forwarding, bytes in base64; its
-//! docs show the document.
+//! transport's concern; a map that kept GitHub's casing is lowercased first,
+//! or every delivery is 401 for want of a signature. [`Dispatcher::dispatch`]
+//! is a plain `async fn` with no runtime of its own, so a transport awaits it
+//! on whatever executor it has; a synchronous entry with none polls it once
+//! with a no-op waker, which completes it when no handler suspends, as its
+//! docs show. The docs of `from_signed` show, as code to copy, the three
+//! things the receiver does that this path does not: refusing an unsigned
+//! request before reading the body, bounding the body, and short-circuiting
+//! `ping`. [`Envelope`] serializes with serde for forwarding, bytes in base64;
+//! its docs show the document and what it costs.
 //!
 //! # Delivery semantics
 //!

@@ -476,7 +476,7 @@ a `serde_json::Value`, then a second `from_value` into a
 ### Portable ideas from the Rust set
 
 - **An Axum extractor** as a thin feature, for people who won't adopt a
-  `WebhookHandler`.
+  handler over the envelope.
 - **Normalise the installation object** (octocrab's `EventInstallation::id()`).
 - **Negative example**: `octoapp`'s untagged enum shows why the kind must
   come from the header.
