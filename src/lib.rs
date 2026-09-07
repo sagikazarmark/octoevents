@@ -95,7 +95,7 @@
 //!
 //! /// Runs for every delivery the dispatcher is handed, bytes included.
 //! async fn audit(envelope: Envelope) -> Result<(), AppError> {
-//!     println!("{} {} ({} bytes)", envelope.meta.delivery_id, envelope.meta.kind, envelope.raw.len());
+//!     println!("{} {} ({} bytes)", envelope.meta.delivery_id, envelope.meta.kind, envelope.raw_payload.len());
 //!     Ok(())
 //! }
 //!
@@ -512,7 +512,7 @@ pub use service::{WebhookReceiver, WebhookReceiverBuilder};
 pub use trace::trace_error;
 pub use verify::{Verifier, VerifyError};
 
-/// The byte buffer type of [`Envelope::raw`] and of the body
+/// The byte buffer type of [`Envelope::raw_payload`] and of the body
 /// [`Envelope::from_signed`] takes, re-exported from the `bytes` crate.
 ///
 /// A transport that never touches `bytes` otherwise builds the body from

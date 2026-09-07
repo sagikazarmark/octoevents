@@ -12,10 +12,10 @@
 
 use crate::{Action, DecodeError, Envelope, EventKind};
 
-/// A synthetic envelope of `kind` over `raw`, with `"delivery"` as its
-/// delivery ID and the meta the receiver would have read from `raw`.
-pub(crate) fn envelope(kind: EventKind, raw: &'static [u8]) -> Envelope {
-    Envelope::new("delivery", kind, raw)
+/// A synthetic envelope of `kind` over `payload`, with `"delivery"` as its
+/// delivery ID and the meta the receiver would have read from `payload`.
+pub(crate) fn envelope(kind: EventKind, payload: &'static [u8]) -> Envelope {
+    Envelope::new("delivery", kind, payload)
 }
 
 /// [`envelope`] delivered under `action`, whatever the payload says.
@@ -27,9 +27,9 @@ pub(crate) fn envelope(kind: EventKind, raw: &'static [u8]) -> Envelope {
 pub(crate) fn envelope_with_action(
     kind: EventKind,
     action: Action,
-    raw: &'static [u8],
+    payload: &'static [u8],
 ) -> Envelope {
-    let mut envelope = envelope(kind, raw);
+    let mut envelope = envelope(kind, payload);
     envelope.meta.action = Some(action);
     envelope
 }

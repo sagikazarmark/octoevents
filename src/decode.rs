@@ -123,17 +123,17 @@ impl Envelope {
     /// This is what a [`Handler`] over `WebhookEvent` (or over
     /// `Event<WebhookEvent>`) receives, through `WebhookEvent`'s
     /// [`FromEnvelope`] impl; call it directly from a handler over the
-    /// [`Envelope`] that needs octocrab's models alongside the raw bytes.
+    /// [`Envelope`] that needs octocrab's models alongside the payload bytes.
     ///
     /// Best-effort: octocrab's webhook models are hand-maintained and
     /// self-described as beta. An event kind octocrab does not know still
     /// decodes -- it arrives as [`WebhookEventPayload::Unknown`] carrying the
     /// generic JSON -- so an error here means the payload was not a JSON
-    /// object or a known kind's payload drifted. [`Envelope::raw`] is
+    /// object or a known kind's payload drifted. [`Envelope::raw_payload`] is
     /// unaffected either way, and [`Envelope::decode`] decodes a caller-defined
     /// view that only breaks on fields you name.
     ///
-    /// Decodes [`Envelope::raw`] on every call. Bind the result rather than
+    /// Decodes [`Envelope::raw_payload`] on every call. Bind the result rather than
     /// calling it repeatedly: a delivery can carry megabytes of JSON.
     ///
     /// [`WebhookEventPayload::Unknown`]: octocrab::models::webhook_events::WebhookEventPayload::Unknown
@@ -144,7 +144,7 @@ impl Envelope {
     /// Returns [`DecodeError::Json`] for payloads that are not a JSON object
     /// and payloads octocrab cannot represent.
     pub fn decode_event(&self) -> Result<WebhookEvent, DecodeError> {
-        WebhookEvent::try_from_header_and_body(self.meta.kind.as_str(), &self.raw)
+        WebhookEvent::try_from_header_and_body(self.meta.kind.as_str(), &self.raw_payload)
             .map_err(DecodeError::Json)
     }
 }
@@ -186,7 +186,10 @@ mod tests {
         let envelope = envelope(EventKind::PullRequest, br#"{"future":true}"#);
 
         assert!(envelope.decode_event().is_err());
-        assert_eq!(envelope.raw, Bytes::from_static(br#"{"future":true}"#));
+        assert_eq!(
+            envelope.raw_payload,
+            Bytes::from_static(br#"{"future":true}"#)
+        );
     }
 
     #[test]
@@ -194,7 +197,7 @@ mod tests {
         let envelope = envelope(EventKind::Ping, b"not json");
 
         assert!(envelope.decode_event().is_err());
-        assert_eq!(envelope.raw, Bytes::from_static(b"not json"));
+        assert_eq!(envelope.raw_payload, Bytes::from_static(b"not json"));
     }
 
     #[test]
@@ -211,11 +214,11 @@ mod tests {
 
         fn decodes<P: Payload + serde::de::DeserializeOwned>(
             event_name: &str,
-            raw: &'static [u8],
+            payload: &'static [u8],
         ) -> bool {
             let kind = EventKind::from_str(event_name).unwrap();
             assert_eq!(P::KIND, kind, "{event_name} maps to the wrong kind");
-            envelope(kind, raw).decode_payload::<P>().is_ok()
+            envelope(kind, payload).decode_payload::<P>().is_ok()
         }
 
         assert!(decodes::<PullRequestWebhookEventPayload>(

@@ -395,10 +395,12 @@ impl<'a> From<&'a http::HeaderMap> for HeaderView<'a> {
 ///
 /// An envelope is the composition of its routing metadata and the exact
 /// payload bytes: `meta` is everything a handler needs to route, deduplicate,
-/// and authenticate against GitHub, and `raw` is the signed input. A handler
-/// over a decoded payload receives [`EventMeta`] beside it, as
-/// [`Event<P>`](crate::Event), so the metadata has one home rather than being
-/// duplicated onto every decoded view.
+/// and authenticate against GitHub, and `raw_payload` is the payload as it
+/// arrived, undecoded. A handler over a decoded payload receives
+/// [`EventMeta`] beside it, as [`Event<P>`](crate::Event), so the metadata
+/// has one home rather than being duplicated onto every decoded view; the two
+/// types hold the same document in its two states, `raw_payload` here and
+/// `payload` there.
 ///
 /// The crate produces envelopes and consumers read them. Outside the crate
 /// one comes from [`Envelope::from_signed`], which authenticates an untrusted
@@ -418,7 +420,7 @@ impl<'a> From<&'a http::HeaderMap> for HeaderView<'a> {
 ///
 /// let Envelope { meta, .. } = &envelope;
 /// assert_eq!(meta.action, Some(Action::Opened));
-/// assert_eq!(envelope.raw.len(), 19);
+/// assert_eq!(envelope.raw_payload.len(), 19);
 ///
 /// // A field the payload cannot supply is assigned afterwards.
 /// let mut envelope = envelope;
@@ -433,7 +435,7 @@ impl<'a> From<&'a http::HeaderMap> for HeaderView<'a> {
 ///
 /// let envelope = Envelope {
 ///     meta: EventMeta::new("delivery-1", EventKind::Issues),
-///     raw: Bytes::from_static(br#"{"action":"opened"}"#),
+///     raw_payload: Bytes::from_static(br#"{"action":"opened"}"#),
 /// };
 /// ```
 ///
@@ -443,9 +445,9 @@ impl<'a> From<&'a http::HeaderMap> for HeaderView<'a> {
 /// # Wire format
 ///
 /// A serialized envelope is one flat JSON object: the metadata sits at the
-/// top level beside `raw`, with no `meta` nesting, so a consumer in another
-/// language reads it without knowing the Rust-side split. This is the
-/// envelope of a `pull_request` delivery with every field present:
+/// top level beside `raw_payload`, with no `meta` nesting, so a consumer in
+/// another language reads it without knowing the Rust-side split. This is
+/// the envelope of a `pull_request` delivery with every field present:
 ///
 /// ```
 /// use octoevents::{Action, Bytes, Envelope, EventKind, TargetType};
@@ -465,23 +467,24 @@ impl<'a> From<&'a http::HeaderMap> for HeaderView<'a> {
 ///   "sender": "monalisa",
 ///   "target_type": "integration",
 ///   "target_id": 12345,
-///   "raw": "eyJhY3Rpb24iOiJvcGVuZWQifQ=="
+///   "raw_payload": "eyJhY3Rpb24iOiJvcGVuZWQifQ=="
 /// }"#;
 ///
 /// let envelope: Envelope = serde_json::from_str(document).unwrap();
 /// assert_eq!(envelope.meta.kind, EventKind::PullRequest);
 /// assert_eq!(envelope.meta.action, Some(Action::Opened));
 /// assert_eq!(envelope.meta.target_type, Some(TargetType::Integration));
-/// assert_eq!(envelope.raw, Bytes::from_static(br#"{"action":"opened"}"#));
+/// assert_eq!(envelope.raw_payload, Bytes::from_static(br#"{"action":"opened"}"#));
 ///
 /// // Serializing produces the same document back.
 /// let expected: serde_json::Value = serde_json::from_str(document).unwrap();
 /// assert_eq!(serde_json::to_value(&envelope).unwrap(), expected);
 /// ```
 ///
-/// - `raw` is the exact payload bytes in standard base64 with padding
-///   (RFC 4648 section 4), so the payload survives the hop without being
-///   re-encoded and still verifies against GitHub's signature.
+/// - `raw_payload` is the exact payload bytes in standard base64 with
+///   padding (RFC 4648 section 4), a string and not a nested object, so the
+///   payload survives the hop without being re-encoded and still verifies
+///   against GitHub's signature.
 /// - `kind`, `action` and `target_type` are GitHub's wire strings
 ///   (`"pull_request"`, `"opened"`, `"integration"`); a value this version
 ///   of the crate does not know reads back as the `Unknown` variant carrying
@@ -489,27 +492,31 @@ impl<'a> From<&'a http::HeaderMap> for HeaderView<'a> {
 /// - `repository` is an object with `id`, `name`, `full_name` and `owner`,
 ///   where `owner` is the login.
 ///
-/// On deserialize, `delivery_id`, `kind` and `raw` are required; every other
-/// field is optional, and a field that is absent reads the same as one that
-/// is `null`. On serialize, an optional field with no value is omitted rather
-/// than written as `null`. Unknown fields are ignored, so a producer may
-/// annotate the document for its own transport, and a producer on a newer
-/// version of this crate does not break an older consumer.
+/// On deserialize, `delivery_id`, `kind` and `raw_payload` are required;
+/// every other field is optional, and a field that is absent reads the same
+/// as one that is `null`. On serialize, an optional field with no value is
+/// omitted rather than written as `null`. Unknown fields are ignored, so a
+/// producer may annotate the document for its own transport, and a producer
+/// on a newer version of this crate does not break an older consumer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Envelope {
     /// The routing metadata extracted from the headers and the payload probe.
     #[serde(flatten)]
     pub meta: EventMeta,
-    /// The exact bytes over which the signature was calculated.
+    /// The payload as it arrived: the exact bytes, undecoded and never
+    /// re-encoded.
     ///
-    /// Serialized as standard base64 so an envelope survives a JSON hop to an
-    /// internal service without the body being re-encoded.
+    /// On the receiving path these are the bytes the signature was verified
+    /// over; [`Envelope::new`] and the `Deserialize` impl hold whatever they
+    /// were given, with no such claim. Either way they are the bytes every
+    /// decode reads. Serialized as standard base64 so an envelope survives a
+    /// JSON hop to an internal service without the payload being re-encoded.
     #[serde(
         serialize_with = "serialize_bytes",
         deserialize_with = "deserialize_bytes"
     )]
-    pub raw: Bytes,
+    pub raw_payload: Bytes,
 }
 
 impl Envelope {
@@ -533,9 +540,9 @@ impl Envelope {
     /// The body must be `application/json`, which is a setting on the GitHub
     /// webhook; anything else is [`ReceiveError::UnsupportedContentType`]. The
     /// other setting, `application/x-www-form-urlencoded`, wraps the JSON in a
-    /// `payload` form parameter and signs the form body, which would make
-    /// [`Envelope::raw`] the signed input but no longer the payload every
-    /// decode reads.
+    /// `payload` form parameter and signs the form body, so the signed input
+    /// would no longer be the payload every decode reads. Refusing it is what
+    /// lets [`Envelope::raw_payload`] be both.
     ///
     /// # What the receiver adds
     ///
@@ -660,11 +667,12 @@ impl Envelope {
     /// construction. Malformed top-level JSON leaves every payload-derived
     /// field empty; one malformed field (a `repository` object missing
     /// `full_name`, say) clears only that field and leaves its siblings
-    /// intact. In both cases [`Envelope::raw`] holds the bytes as given.
+    /// intact. In both cases [`Envelope::raw_payload`] holds the bytes as
+    /// given.
     ///
     /// The payload is anything that views as bytes, a byte-string literal
-    /// included, and is copied into [`Envelope::raw`]; a test's payload is
-    /// small and the copy is one allocation.
+    /// included, and is copied into [`Envelope::raw_payload`]; a test's
+    /// payload is small and the copy is one allocation.
     ///
     /// ```
     /// use octoevents::{Action, Envelope, EventKind};
@@ -684,12 +692,13 @@ impl Envelope {
         Self::probed(delivery_id, kind, Bytes::copy_from_slice(payload.as_ref()))
     }
 
-    /// The probe: the meta's payload-derived fields read from `raw`, with the
-    /// header-derived target left empty. Both constructors come through here,
-    /// [`Envelope::new`] after copying a test's payload into [`Bytes`] and
-    /// [`Envelope::from_signed`] with the authenticated body as it holds it.
-    fn probed(delivery_id: impl Into<String>, kind: EventKind, raw: Bytes) -> Self {
-        let probe = serde_json::from_slice::<Probe<'_>>(&raw).unwrap_or_default();
+    /// The probe: the meta's payload-derived fields read from `raw_payload`,
+    /// with the header-derived target left empty. Both constructors come
+    /// through here, [`Envelope::new`] after copying a test's payload into
+    /// [`Bytes`] and [`Envelope::from_signed`] with the authenticated body as
+    /// it holds it.
+    fn probed(delivery_id: impl Into<String>, kind: EventKind, raw_payload: Bytes) -> Self {
+        let probe = serde_json::from_slice::<Probe<'_>>(&raw_payload).unwrap_or_default();
 
         let mut meta = EventMeta::new(delivery_id, kind);
         meta.action = probe
@@ -713,7 +722,7 @@ impl Envelope {
             .and_then(parse_probe::<LoginOnly>)
             .map(|sender| sender.login);
 
-        Self { meta, raw }
+        Self { meta, raw_payload }
     }
 
     /// Decodes the exact payload into a caller-defined view, checking nothing
@@ -729,7 +738,7 @@ impl Envelope {
     ///
     /// Returns [`DecodeError::Json`] when the payload does not fit `T`.
     pub fn decode<T: serde::de::DeserializeOwned>(&self) -> Result<T, DecodeError> {
-        serde_json::from_slice(&self.raw).map_err(DecodeError::Json)
+        serde_json::from_slice(&self.raw_payload).map_err(DecodeError::Json)
     }
 
     /// Decodes the payload as `P` after checking that the envelope is of
@@ -1083,7 +1092,7 @@ mod tests {
         assert_eq!(meta.sender.as_deref(), Some("monalisa"));
         assert_eq!(meta.target_type, Some(TargetType::Repository));
         assert_eq!(meta.target_id, Some(7));
-        assert_eq!(envelope.raw, Bytes::from_static(BODY));
+        assert_eq!(envelope.raw_payload, Bytes::from_static(BODY));
     }
 
     #[test]
@@ -1094,7 +1103,7 @@ mod tests {
             envelope.meta,
             EventMeta::new("delivery", EventKind::PullRequest)
         );
-        assert_eq!(envelope.raw, Bytes::from_static(b"not json"));
+        assert_eq!(envelope.raw_payload, Bytes::from_static(b"not json"));
     }
 
     #[test]
@@ -1111,7 +1120,7 @@ mod tests {
         expected.target_type = Some(TargetType::Repository);
         expected.target_id = Some(7);
         assert_eq!(envelope.meta, expected);
-        assert_eq!(envelope.raw, body);
+        assert_eq!(envelope.raw_payload, body);
     }
 
     #[test]
@@ -1130,7 +1139,7 @@ mod tests {
         expected.target_type = None;
         expected.target_id = None;
         assert_eq!(synthetic.meta, expected);
-        assert_eq!(synthetic.raw, signed.raw);
+        assert_eq!(synthetic.raw_payload, signed.raw_payload);
 
         // What the payload carried is now in the meta, not hand-assigned.
         assert_eq!(synthetic.meta.action, Some(Action::Opened));
@@ -1172,7 +1181,7 @@ mod tests {
     }
 
     #[test]
-    fn serializes_the_metadata_flat_beside_the_raw_bytes() {
+    fn serializes_the_metadata_flat_beside_the_raw_payload() {
         let signature = signature(b"secret", BODY);
         let envelope =
             Envelope::from_signed(&verifier(), &headers(&signature), Bytes::from_static(BODY))
@@ -1180,8 +1189,8 @@ mod tests {
 
         let value = serde_json::to_value(envelope).unwrap();
 
-        // The meta/raw split is a Rust-side composition only: on the wire the
-        // metadata sits at the top level with no `meta` nesting.
+        // The meta/raw_payload split is a Rust-side composition only: on the
+        // wire the metadata sits at the top level with no `meta` nesting.
         assert_eq!(
             sorted_keys(&value),
             [
@@ -1190,7 +1199,7 @@ mod tests {
                 "installation_id",
                 "kind",
                 "organization",
-                "raw",
+                "raw_payload",
                 "repository",
                 "sender",
                 "target_id",
@@ -1293,7 +1302,7 @@ mod tests {
     }
 
     #[test]
-    fn serializes_the_raw_body_as_base64() {
+    fn serializes_the_raw_payload_as_base64() {
         let verifier = verifier();
         let signature = signature(b"secret", BODY);
         let envelope =
@@ -1303,7 +1312,7 @@ mod tests {
         let value = serde_json::to_value(envelope).unwrap();
 
         assert_eq!(
-            value["raw"],
+            value["raw_payload"],
             base64::Engine::encode(&base64::engine::general_purpose::STANDARD, BODY)
         );
         assert_eq!(value["target_type"], "repository");
@@ -1320,7 +1329,7 @@ mod tests {
         let received: Envelope = serde_json::from_str(&forwarded).unwrap();
 
         assert_eq!(received, envelope);
-        assert_eq!(received.raw, Bytes::from_static(BODY));
+        assert_eq!(received.raw_payload, Bytes::from_static(BODY));
         assert_eq!(received.meta.target_type, Some(TargetType::Repository));
     }
 
@@ -1332,7 +1341,7 @@ mod tests {
 
         let value = serde_json::to_value(envelope).unwrap();
 
-        assert_eq!(sorted_keys(&value), ["delivery_id", "kind", "raw"]);
+        assert_eq!(sorted_keys(&value), ["delivery_id", "kind", "raw_payload"]);
     }
 
     #[test]
@@ -1349,9 +1358,9 @@ mod tests {
             "sender": null,
             "target_type": null,
             "target_id": null,
-            "raw": "e30="
+            "raw_payload": "e30="
         }"#;
-        let without = r#"{"delivery_id": "delivery", "kind": "push", "raw": "e30="}"#;
+        let without = r#"{"delivery_id": "delivery", "kind": "push", "raw_payload": "e30="}"#;
 
         let from_nulls: Envelope = serde_json::from_str(with_nulls).unwrap();
         let from_absent: Envelope = serde_json::from_str(without).unwrap();
@@ -1364,12 +1373,11 @@ mod tests {
     }
 
     #[test]
-    fn requires_delivery_id_kind_and_raw_on_deserialize() {
+    fn requires_delivery_id_kind_and_raw_payload_on_deserialize() {
         // The three fields the docs name as required are the three whose
         // absence is an error; every other field defaults.
-        for missing in ["delivery_id", "kind", "raw"] {
-            let mut document =
-                serde_json::json!({"delivery_id": "delivery", "kind": "push", "raw": "e30="});
+        for missing in ["delivery_id", "kind", "raw_payload"] {
+            let mut document = serde_json::json!({"delivery_id": "delivery", "kind": "push", "raw_payload": "e30="});
             document.as_object_mut().unwrap().remove(missing);
 
             let error = serde_json::from_value::<Envelope>(document).unwrap_err();
@@ -1388,7 +1396,7 @@ mod tests {
         let document = r#"{
             "delivery_id": "delivery",
             "kind": "push",
-            "raw": "e30=",
+            "raw_payload": "e30=",
             "enterprise": {"id": 1},
             "received_at": "2026-09-06T00:00:00Z"
         }"#;
@@ -1396,7 +1404,7 @@ mod tests {
         let envelope: Envelope = serde_json::from_str(document).unwrap();
 
         assert_eq!(envelope.meta, EventMeta::new("delivery", EventKind::Push));
-        assert_eq!(envelope.raw, Bytes::from_static(b"{}"));
+        assert_eq!(envelope.raw_payload, Bytes::from_static(b"{}"));
     }
 
     #[test]
@@ -1416,7 +1424,7 @@ mod tests {
         let envelope =
             Envelope::from_signed(&verifier(), &headers, Bytes::from_static(UNICODE_BODY)).unwrap();
 
-        assert_eq!(envelope.raw.as_ref(), UNICODE_BODY);
+        assert_eq!(envelope.raw_payload.as_ref(), UNICODE_BODY);
         assert_eq!(envelope.meta.action, Some(Action::Opened));
 
         let decoded: serde_json::Value = envelope.decode().unwrap();

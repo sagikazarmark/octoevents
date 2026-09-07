@@ -91,7 +91,7 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
 ///
 /// async fn forward(envelope: Envelope) -> Result<(), AppError> {
-///     println!("forward {} ({} bytes)", envelope.meta.delivery_id, envelope.raw.len());
+///     println!("forward {} ({} bytes)", envelope.meta.delivery_id, envelope.raw_payload.len());
 ///     Ok(())
 /// }
 ///
@@ -154,7 +154,7 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// }
 ///
 /// async fn forward(envelope: Envelope) -> Result<(), AppError> {
-///     println!("forward {} bytes of {}", envelope.raw.len(), envelope.meta.kind);
+///     println!("forward {} bytes of {}", envelope.raw_payload.len(), envelope.meta.kind);
 ///     Ok(())
 /// }
 ///
@@ -419,7 +419,7 @@ where
 ///             Match::Matched | Match::UnmatchedAction => outcome.result,
 ///             Match::UnmatchedKind => {
 ///                 outcome.result?;
-///                 println!("dead-letter {} ({} bytes)", envelope.meta.delivery_id, envelope.raw.len());
+///                 println!("dead-letter {} ({} bytes)", envelope.meta.delivery_id, envelope.raw_payload.len());
 ///                 Ok(())
 ///             }
 ///         }
@@ -680,7 +680,7 @@ where
     /// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
     ///
     /// async fn audit(envelope: Envelope) -> Result<(), AppError> {
-    ///     println!("{} {} ({} bytes)", envelope.meta.delivery_id, envelope.meta.kind, envelope.raw.len());
+    ///     println!("{} {} ({} bytes)", envelope.meta.delivery_id, envelope.meta.kind, envelope.raw_payload.len());
     ///     Ok(())
     /// }
     ///
@@ -734,7 +734,7 @@ where
     /// }
     ///
     /// async fn forward(envelope: Envelope) -> Result<(), AppError> {
-    ///     println!("forward {} bytes", envelope.raw.len());
+    ///     println!("forward {} bytes", envelope.raw_payload.len());
     ///     Ok(())
     /// }
     ///
@@ -1539,7 +1539,7 @@ mod tests {
                 Box::pin(async move {
                     seen.lock()
                         .await
-                        .push((tier, envelope.meta.kind, envelope.raw));
+                        .push((tier, envelope.meta.kind, envelope.raw_payload));
                     Ok(())
                 })
             }
@@ -1559,8 +1559,8 @@ mod tests {
         assert_eq!(
             seen.lock().await.as_slice(),
             [
-                ("always", EventKind::CheckRun, envelope.raw.clone()),
-                ("fallback", EventKind::CheckRun, envelope.raw),
+                ("always", EventKind::CheckRun, envelope.raw_payload.clone()),
+                ("fallback", EventKind::CheckRun, envelope.raw_payload),
             ]
         );
     }
@@ -2203,7 +2203,9 @@ mod tests {
             .on(EventKind::CheckRun, move |envelope: Envelope| {
                 let seen = Arc::clone(&handler_seen);
                 async move {
-                    seen.lock().await.push((envelope.meta.kind, envelope.raw));
+                    seen.lock()
+                        .await
+                        .push((envelope.meta.kind, envelope.raw_payload));
                     Ok::<_, std::convert::Infallible>(())
                 }
             })
@@ -2220,13 +2222,13 @@ mod tests {
         );
         assert_eq!(
             seen.lock().await.as_slice(),
-            [(EventKind::CheckRun, envelope.raw)]
+            [(EventKind::CheckRun, envelope.raw_payload)]
         );
 
         // Nothing is decoded for it either: a body that is not JSON reaches
         // it whole.
-        let raw = envelope_with_action(EventKind::CheckRun, Action::Completed, b"not json");
-        assert_eq!(dispatcher.dispatch(raw).await.result, Ok(()));
+        let not_json = envelope_with_action(EventKind::CheckRun, Action::Completed, b"not json");
+        assert_eq!(dispatcher.dispatch(not_json).await.result, Ok(()));
         assert_eq!(seen.lock().await.len(), 2);
 
         // Another kind is unmatched as for any routed handler.

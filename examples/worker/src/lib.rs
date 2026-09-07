@@ -27,7 +27,7 @@ enum AppError {
     Worker(#[from] worker::Error),
 }
 
-/// Forwards the raw envelope to the Restate ingress. Registered in the
+/// Forwards the envelope to the Restate ingress. Registered in the
 /// dispatcher's `always` tier, it receives the envelope, bytes included, and
 /// runs before any routed handler; a delivery the ingress refused is not
 /// routed.
@@ -85,7 +85,7 @@ struct Account {
 octoevents::impl_payload!(InstallationView => EventKind::Installation);
 
 /// Logs installation lifecycle changes. Receives the meta and the decoded
-/// view and no raw bytes; other kinds never reach it.
+/// view and no payload bytes; other kinds never reach it.
 struct InstallationLog;
 
 impl Handler<Event<InstallationView>> for InstallationLog {

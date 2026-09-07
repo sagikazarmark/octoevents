@@ -90,7 +90,7 @@ async fn label(issue: IssueOpened) -> Result<(), AppError> {
 
 /// Runs for every delivery the dispatcher is handed, bytes included.
 async fn audit(envelope: Envelope) -> Result<(), AppError> {
-    println!("{} {} ({} bytes)", envelope.meta.delivery_id, envelope.meta.kind, envelope.raw.len());
+    println!("{} {} ({} bytes)", envelope.meta.delivery_id, envelope.meta.kind, envelope.raw_payload.len());
     Ok(())
 }
 

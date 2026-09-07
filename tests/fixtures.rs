@@ -74,7 +74,7 @@ fn signed_unrepresentable_json_keeps_the_raw_body() {
     let envelope = signed_envelope(body, "pull_request");
 
     assert!(envelope.decode_event().is_err());
-    assert_eq!(envelope.raw, bytes::Bytes::from_static(body));
+    assert_eq!(envelope.raw_payload, bytes::Bytes::from_static(body));
 }
 
 fn signed_envelope(body: &'static [u8], event: &str) -> Envelope {
