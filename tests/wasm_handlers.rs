@@ -71,6 +71,52 @@ fn the_receiver_accepts_single_threaded_handler_state() {
     );
 }
 
+/// `receive` promises a `MaybeSend` future and asks the body for `MaybeSend`,
+/// the bounds the `tower` `Service` impl places. On `wasm32` neither binds: a
+/// Worker hands in an `http::Request<worker::Body>`, a JavaScript stream that
+/// is neither `Send` nor `Sync`, to a handler holding `Rc` state.
+#[cfg(feature = "http")]
+#[test]
+fn receive_accepts_a_single_threaded_body_and_handler() {
+    use std::{
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
+    use bytes::Bytes;
+    use http::Request;
+    use http_body::{Body, Frame};
+    use octoevents::{Secret, Verifier, WebhookReceiverBuilder};
+
+    /// A Worker-shaped body: holds a non-`Send`, non-`Sync` value.
+    struct JsBody {
+        polled: Rc<Cell<bool>>,
+    }
+
+    impl Body for JsBody {
+        type Data = Bytes;
+        type Error = std::convert::Infallible;
+
+        fn poll_frame(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+            self.polled.set(true);
+            Poll::Ready(None)
+        }
+    }
+
+    let receiver =
+        WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(Counter {
+            calls: Rc::new(Cell::new(0)),
+        });
+    let request = Request::new(JsBody {
+        polled: Rc::new(Cell::new(false)),
+    });
+
+    let _future = receiver.receive(request);
+}
+
 /// The `on_error` observer is bounded like a handler, so a Worker can record
 /// failures into the same single-threaded state, JavaScript values included.
 #[cfg(feature = "http")]

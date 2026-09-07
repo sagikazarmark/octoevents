@@ -3,7 +3,7 @@ use std::{
     convert::Infallible,
     task::{Context, Poll},
 };
-use std::{fmt, sync::Arc};
+use std::{fmt, future::Future, sync::Arc};
 
 use bytes::{Bytes, BytesMut};
 use http::{Request, Response};
@@ -282,11 +282,31 @@ where
     /// boundary, so on `wasm32` a Cloudflare Worker can hand an
     /// `http::Request<worker::Body>` straight in with a handler holding
     /// JavaScript values.
-    pub async fn receive<B>(&self, request: Request<B>) -> ServiceResponse
+    ///
+    /// The future is `Send` on native targets whenever the handler and the
+    /// body are, the bounds the `tower` `Service` impl places, so a plain
+    /// axum handler calling `receive` accepts every handler `post_service`
+    /// does.
+    ///
+    /// That is promised here rather than left to an `async fn`: an `async fn`
+    /// borrowing `&self` leaves its `Send` proof to auto-trait leakage over
+    /// the concrete handler, and for a [`Dispatcher`] over
+    /// `Box<dyn Error + Send + Sync>`, whose error type the receiver's state
+    /// names, that proof fails inside an `async move` block with
+    /// "implementation of `Send` is not general enough".
+    ///
+    /// [`Dispatcher`]: crate::Dispatcher
+    // Written as `fn -> impl Future` for the bound on the return type; the
+    // body is the `async` block an `async fn` would desugar to.
+    #[allow(clippy::manual_async_fn)]
+    pub fn receive<B>(
+        &self,
+        request: Request<B>,
+    ) -> impl Future<Output = ServiceResponse> + MaybeSend
     where
-        B: Body<Data = Bytes> + Unpin,
+        B: Body<Data = Bytes> + MaybeSend + Unpin,
     {
-        empty_response(self.inner.process(request).await)
+        async move { empty_response(self.inner.process(request).await) }
     }
 }
 
