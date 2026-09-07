@@ -57,7 +57,9 @@
 //! - [`Envelope`]: the verified unit of receipt, an [`EventMeta`] beside the
 //!   exact payload bytes. Produced by [`Envelope::from_signed`] on the
 //!   receiving path and by [`Envelope::new`] in a test, never by a struct
-//!   literal, so the meta and the bytes cannot disagree.
+//!   literal, so the meta and the bytes cannot disagree at birth. An envelope
+//!   a trusted transport forwarded is read back through serde, meta as
+//!   forwarded; only `from_signed` carries an authentication claim.
 //! - [`EventMeta`]: the delivery ID, [`EventKind`], [`Action`], installation
 //!   ID, repository, organization, sender and target, read from the headers
 //!   and a best-effort probe of the payload.

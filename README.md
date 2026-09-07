@@ -427,8 +427,10 @@ delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (issues.opened) failed in the rout
 
 The response stays a bare 500 either way: it is GitHub's delivery record, not
 a log. The `on_error` observer is synchronous, places no bound on the error
-type, and runs only when a handler ran and failed; a refused request is a
-status code, and a short-circuited `ping` reaches no handler.
+type, and runs whenever the receiver's handler fails: with a dispatcher, that
+includes a payload that could not be decoded for a routed handler, as above.
+It never runs for a refused request, which is a status code, or for a
+short-circuited `ping`, which reaches no handler.
 
 **Boxed errors.** `Box<dyn Error + Send + Sync>` is not itself an `Error`, so
 neither is `DispatchError` over it, and there is no `source()` to call on what
