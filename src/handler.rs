@@ -135,8 +135,7 @@ use crate::{MaybeSend, MaybeSync};
 /// envelope decodes its own view with
 /// [`Envelope::decode_payload`](crate::Envelope::decode_payload), whose kind
 /// check refuses a delivery of another kind at the kind, so a misconfigured
-/// webhook fails loudly rather than at a missing field. The crate docs show
-/// one under [One event, one handler](crate#one-event-one-handler).
+/// webhook fails loudly rather than at a missing field.
 ///
 /// Passing something that is not a handler names the input and the shape
 /// expected rather than the `Fn` bound behind it. For a struct with no impl,

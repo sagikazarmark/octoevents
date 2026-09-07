@@ -1,14 +1,14 @@
 //! `receive` composes with axum's `post` for every handler `post_service`
 //! accepts.
 //!
-//! The README's hello world names `Box<dyn Error + Send + Sync>` as the
-//! application error, and its "One event, one handler" program mounts the
-//! receiver without the `tower` feature by calling `receive` inside an axum
-//! closure. axum requires that closure's future to be `Send`, so the two
-//! compose only if `receive`'s future is `Send` for a dispatcher over the
-//! boxed error. These tests hold the receiver to that: a bare `Send`
-//! assertion on the future, and the README's wiring driven end to end with
-//! the README's hello world as the handler.
+//! The README's quickstart names `Box<dyn Error + Send + Sync>` as the
+//! application error, and its "Transports" section mounts the receiver
+//! without the `tower` feature by calling `receive` inside an axum closure.
+//! axum requires that closure's future to be `Send`, so the two compose only
+//! if `receive`'s future is `Send` for a dispatcher over the boxed error.
+//! These tests hold the receiver to that: a bare `Send` assertion on the
+//! future, and the README's wiring driven end to end with the README's
+//! quickstart handler.
 
 #![cfg(all(feature = "http", not(target_arch = "wasm32")))]
 
@@ -18,7 +18,8 @@ use axum::{Router, body::Body, extract::Request, routing::post};
 use bytes::Bytes;
 use http::StatusCode;
 use octoevents::{
-    DispatchError, Dispatcher, Envelope, Secret, Verifier, WebhookReceiver, WebhookReceiverBuilder,
+    Action, Dispatcher, Envelope, EventKind, Secret, Verifier, WebhookReceiver,
+    WebhookReceiverBuilder,
 };
 use tower::ServiceExt as _;
 
@@ -27,27 +28,20 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 const SECRET: &str = "development-secret";
 
-/// The README's hello world handler: an `async fn` item over the envelope.
-async fn print(envelope: Envelope) -> Result<(), BoxError> {
-    println!("{} {}", envelope.meta.delivery_id, envelope.meta.kind);
+/// The README's quickstart handler: an `async fn` item over the envelope.
+async fn thank(envelope: Envelope) -> Result<(), BoxError> {
+    let sender = envelope.meta.sender.unwrap_or_default();
+    println!("Thank you for your contribution, @{sender}! :)");
     Ok(())
 }
 
-/// The README's hello world receiver, verbatim: a dispatcher over the boxed
-/// error with `print` in its always tier, and an observer that says why a
-/// delivery failed.
-fn hello_world() -> WebhookReceiver<Dispatcher<BoxError>> {
-    let dispatcher = Dispatcher::<BoxError>::builder().always(print).build();
-    WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
-        .on_error(|_, error: &DispatchError<BoxError>| {
-            eprintln!("{error}: {}", error.source);
-            let mut cause = error.source.source();
-            while let Some(error) = cause {
-                eprintln!("  caused by: {error}");
-                cause = error.source();
-            }
-        })
-        .build(dispatcher)
+/// The README's quickstart receiver: a dispatcher over the boxed error with
+/// `thank` routed for `issues.opened`.
+fn quickstart() -> WebhookReceiver<Dispatcher<BoxError>> {
+    let dispatcher = Dispatcher::<BoxError>::builder()
+        .on((EventKind::Issues, Action::Opened), thank)
+        .build();
+    WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET))).build(dispatcher)
 }
 
 /// A signed request for `event` carrying `body`, as GitHub would send it.
@@ -70,18 +64,18 @@ fn signed(event: &str, body: &'static [u8]) -> Request<Body> {
 fn the_receive_future_is_send_for_a_dispatcher_over_a_boxed_error() {
     fn assert_send<T: Send>(_: T) {}
 
-    let webhook = hello_world();
+    let webhook = quickstart();
 
     assert_send(webhook.receive(signed("push", b"{}")));
 }
 
 #[tokio::test]
 async fn the_readme_wiring_without_tower_accepts_a_dispatcher_over_a_boxed_error() {
-    let webhook = hello_world();
+    let webhook = quickstart();
 
-    // The README's "One event, one handler" wiring, verbatim: a plain axum
-    // handler calling `receive`, no `post_service`.
-    let app = Router::new().route(
+    // The README's "Transports" wiring, verbatim: a plain axum handler
+    // calling `receive`, no `post_service`.
+    let app: Router = Router::new().route(
         "/webhook",
         post(move |request: Request| {
             let webhook = webhook.clone();
@@ -89,7 +83,13 @@ async fn the_readme_wiring_without_tower_accepts_a_dispatcher_over_a_boxed_error
         }),
     );
 
-    let response = app.oneshot(signed("push", b"{}")).await.unwrap();
+    let response = app
+        .oneshot(signed(
+            "issues",
+            br#"{"action":"opened","sender":{"login":"octocat"}}"#,
+        ))
+        .await
+        .unwrap();
 
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
