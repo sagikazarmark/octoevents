@@ -37,7 +37,10 @@
 //! `Box<dyn Error + Send + Sync>` is not itself an `Error`, so neither is
 //! [`DispatchError`] over it, and the error the observer receives has no
 //! `source()` to call. The handler's error is the `source` field, and its
-//! chain continues from `error.source.source()`.
+//! chain continues from `error.source.source()`. With the `tracing` feature
+//! the closure gives way to `.trace_boxed_errors()` on the builder: the one
+//! ERROR event the receiver emits for a failed delivery then carries the
+//! error's text and its sources; see [Tracing](#tracing).
 //!
 //! **Coming from Probot?** The registrations map one to one. The rule that
 //! does not: handlers run one at a time and the first error fails the
@@ -154,8 +157,8 @@
 //!   caused by: missing field `title` at line 1 column 39
 //! ```
 //!
-//! With the `tracing` feature, `on_error(octoevents::trace_error)` is
-//! `report` as an ERROR event, source chain included.
+//! With the `tracing` feature, `.trace_errors()` on the receiver builder is
+//! `report` as fields on that one ERROR event, source chain included.
 //!
 //! Always pass the exact request bytes. Parsing, re-encoding, or normalizing
 //! the body before verification invalidates GitHub's signature.
@@ -396,12 +399,19 @@
 //! the delivery has them, so a subscriber filtering at ERROR sees every
 //! failed delivery without an observer. A successful delivery, a request
 //! refused before any handler ran and a short-circuited `ping` emit no event.
-//! The event carries no text of the error, since the receiver places no
-//! bound on the handler's error type; the text and its source chain appear
-//! only through the opt-in `trace_error` observer, which exists with the
-//! feature and is registered with `WebhookReceiverBuilder::on_error`. It
-//! emits a second ERROR event, `handler error`, with `delivery_id` and the
-//! error as an `error` field the subscriber renders with its sources.
+//! By default the event carries no text of the error, since the receiver
+//! places no bound on the handler's error type. The text is a setting on the
+//! receiver builder, and it goes on the same event, never a second one:
+//! `WebhookReceiverBuilder::trace_errors`, for an `E: Error`, records the
+//! error's `Display` as `error` and its `source()` as `source`, an error
+//! value the subscriber renders with the sources beneath it (the `fmt`
+//! subscriber prints `error=<text> source=<cause> source.sources=[<cause>,
+//! ..]`); `WebhookReceiverBuilder::trace_boxed_errors` does the same for a
+//! `BoxedError`, an error behind a pointer (`Box<dyn Error + Send + Sync>`,
+//! `anyhow::Error`) or a [`DispatchError`] over one, which is no `Error`
+//! itself. With a dispatcher, `error` says where (the tier, the handler and
+//! its registration site) and `source` why (the application error). An
+//! `on_error` observer runs beside the event and changes nothing about it.
 //!
 //! Nothing secret-derived is recorded anywhere: not the secret, the
 //! signature header, nor a computed MAC.
@@ -466,7 +476,7 @@ pub use secret::Secret;
 #[cfg(feature = "http")]
 pub use service::{WebhookReceiver, WebhookReceiverBuilder};
 #[cfg(feature = "tracing")]
-pub use trace::trace_error;
+pub use trace::BoxedError;
 pub use verify::{Verifier, VerifyError};
 
 /// The byte buffer type of [`Envelope::raw`] and of the body

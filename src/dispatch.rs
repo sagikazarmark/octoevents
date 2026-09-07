@@ -505,8 +505,10 @@ pub enum Match {
 /// wrapping for code that wants the application error alone. The [`Error`]
 /// impl asks `Error + 'static` of `E`, what any source in a chain must be;
 /// for an `E` that is not one, `Box<dyn Error + Send + Sync>` included, the
-/// dispatcher still builds, the error still displays, and `into_source`
-/// returns the boxed error, which is one.
+/// dispatcher still builds, the error still displays, `into_source` returns
+/// the boxed error, which is one, and with the `tracing` feature
+/// `WebhookReceiverBuilder::trace_boxed_errors` puts both on the
+/// failed-delivery event.
 ///
 /// A wrapping handler that passes the dispatcher's result through keeps the
 /// tier, handler name and registration site by making this its error type;

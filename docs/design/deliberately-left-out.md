@@ -247,19 +247,75 @@ ship if demand appears.
 name, `payload`, and the deref would shadow a view field named `meta` or
 `payload` behind a type-safe but surprising resolution. Recorded on `Event`.
 
-## Deferred, not declined
+## `Error`, not `Display`, to trace the error's text; a second method for the boxed shape
 
-The registration bound `E: From<H::Error>` makes an application error
-absorb every handler's error through `From`, so a reusable handler struct
-keeps its own error type. It is also why a handler that cannot fail needs
-`impl From<Infallible> for AppError`, and why a bare `Ok(())` in a closure is
-ambiguous (E0283) once the application error has two `From` impls. The
-alternative, `H::Error = E`, removes both at the cost of the reusable-handler
-case. The decision is deferred: writing handlers as `async fn` items
-returning `Result<(), AppError>` needs neither the `Infallible` impl nor the
-annotation, the README leads with that shape, and no shipped example or
-rustdoc example declares `Infallible` any more. Re-evaluate at the next
-persona review ([`../review/`](../review/)). With no crate-taught
-`Infallible` left, a `From<Infallible>` or ambiguous-`From` hit that a
-persona reports traces to a shape the user chose, and that is the data the
-decision needs.
+With the `tracing` feature a failed delivery is one ERROR event, and the
+error's text goes on it through `WebhookReceiverBuilder::trace_errors`, which
+asks `E: Error`. The spec that introduced the text (#29) named a `Display`
+bound. `Error` was chosen because the text alone is not the story: a
+`DispatchError`'s `Display` says where the delivery failed (the tier, the
+handler, the registration site) and why is its `source()`, the application
+error, which a `Display` bound cannot reach. The event records both, `error`
+as the text and `source` as an error value the subscriber renders with the
+chain beneath it, and a `Display`-bounded method would have recorded the
+where and lost the why for exactly the shape the front page teaches. The
+cost is that an error type that is only `Display` (a `String`, a `&str`) has
+no one-line path; a consumer with one writes an `on_error` observer that
+emits its own event, and the receiver's bound-free event still names the
+delivery.
+
+That shape, `Box<dyn Error + Send + Sync>`, is not an `Error` (std implements
+`Error` for `Box<E>` only for a sized `E`), so a `DispatchError` over it is
+not one either, and `trace_errors` refuses both. One method over a crate
+trait covering both an `E: Error` and the box was probed and is not
+expressible:
+
+```text
+error[E0119]: conflicting implementations of trait `TracedError` for type `Box<(dyn std::error::Error + Send + Sync + 'static)>`
+   |
+ 7 | impl<E: Error + 'static> TracedError for E {
+   | ------------------------------------------ first implementation here
+...
+11 | impl TracedError for Box<dyn Error + Send + Sync> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ conflicting implementation for `Box<(dyn std::error::Error + Send + Sync + 'static)>`
+   |
+   = note: upstream crates may add a new impl of trait `std::error::Error` for type `std::boxed::Box<(dyn std::error::Error + std::marker::Send + std::marker::Sync + 'static)>` in future versions
+```
+
+The same note defeats every variant: an impl for `DispatchError<Box<dyn
+Error + Send + Sync>>` beside the blanket, a blanket over `Deref<Target:
+Error>` beside one over `Error` (they overlap for real on `Box<AppError>`),
+or a second `Error` impl for `DispatchError` over the box. The blanket over
+`Error` is what every `thiserror` enum needs, so the box gets its own method,
+`trace_boxed_errors`, over the sealed `BoxedError`: anything
+`AsRef<dyn Error + Send + Sync + 'static>` (`Box`, `Arc`, `anyhow::Error`,
+which the tests cover) and a `DispatchError` over one. `AsRef<dyn Error +
+Send + Sync>` rather than `Deref<Target = dyn Error + Send + Sync>` because
+it is the conversion `anyhow` and the std pointers both implement by that
+name and it says what is wanted, a view of the error, rather than how a
+pointer is followed; a generic `Deref<Target: Error + ?Sized>` was probed
+first and does not compile, since an unsized associated target cannot be
+coerced to the `dyn Error` the event's `source` value needs. Two fields
+rather than the whole error as one value, for every shape alike, because a
+subscriber's error value must be `Error + 'static` and a `DispatchError`
+over a box is no `Error`; a borrowed view that made it one would not be
+`'static`. Recorded on `trace_errors` (the bound and the `Display`-only
+cost), `trace_boxed_errors` and `BoxedError` (the shapes admitted, and the
+two fields).
+
+## No `trace_error` observer
+
+The text was first an `on_error` observer, `trace_error`, that emitted a
+second ERROR event, `handler error`, beside the receiver's bound-free
+`handler failed`. A failed delivery was two lines that read alike, and the
+receiver could not make them one: its own event needs no bound and the
+observer it holds is a type-erased `Fn`, so it cannot tell that the observer
+about to run will say everything it is about to say. Making the text a
+receiver setting instead (`trace_errors`, `trace_boxed_errors`) lets the
+receiver emit one event that carries it, and leaves `on_error` for what
+tracing does not do: a metric, a dead letter, a line on stderr. The two
+compose, and the observer changes nothing about the event. Suppressing the
+receiver's event whenever any observer is registered was declined: a
+metrics-only observer would have made failed deliveries invisible at ERROR,
+the silence #18 set out to end. Recorded on `on_error` and in the `Tracing`
+section of the crate front page.

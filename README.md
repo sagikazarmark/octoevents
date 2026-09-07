@@ -34,7 +34,10 @@ The application error is a boxed `dyn Error`, so no error enum is written and
 `Box<dyn Error + Send + Sync>` is not itself an `Error`, so neither is
 `DispatchError` over it, and the error the observer receives has no
 `source()` to call. The handler's error is the `source` field, and its chain
-continues from `error.source.source()`.
+continues from `error.source.source()`. With the `tracing` feature the closure
+gives way to `.trace_boxed_errors()` on the builder: the one ERROR event the
+receiver emits for a failed delivery then carries the error's text and its
+sources.
 
 **Coming from Probot?** The registrations map one to one. The rule that does
 not: handlers run one at a time and the first error fails the delivery, where
@@ -153,8 +156,8 @@ delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (issues.opened) failed in the rout
   caused by: missing field `title` at line 1 column 39
 ```
 
-With the `tracing` feature, `on_error(octoevents::trace_error)` is `report`
-as an ERROR event, source chain included.
+With the `tracing` feature, `.trace_errors()` on the receiver builder is
+`report` as fields on that one ERROR event, source chain included.
 
 ## Features
 
@@ -163,7 +166,7 @@ as an ERROR event, source chain included.
 | `http` | yes | `WebhookReceiver` and its builder over `http::Request`, `HeaderView` from an `http::HeaderMap`, `ResponseStatus` into `http::StatusCode` |
 | `tower` | no | `tower_service::Service` for `WebhookReceiver`, so it mounts with `post_service` as above. Without it, the receiver mounts on axum as a plain handler calling `receive`; [One event, one handler](#one-event-one-handler) shows the wiring |
 | `octocrab` | no | `FromEnvelope` for octocrab's decoded `WebhookEvent`, `Payload` for its per-kind payload structs, `Envelope::decode_event`. The trade-off is whole-model decode: a field GitHub changes fails the delivery with 500, where a view fails only on the fields it names. The per-kind payload structs omit the top-level `installation`, `sender`, `repository` and `organization` objects, which `WebhookEvent` carries and `EventMeta` summarizes. Makes octocrab's pre-1.0 types part of this crate's public API |
-| `tracing` | no | receive and dispatch spans at INFO and a verify span at DEBUG, one ERROR event per failed delivery, and the `trace_error` observer that adds the error's text; nothing secret-derived in any of them. The contract is on the crate's front page |
+| `tracing` | no | receive and dispatch spans at INFO and a verify span at DEBUG, and one ERROR event per failed delivery, which `trace_errors` (for an `Error`) or `trace_boxed_errors` (for a boxed one, or a `DispatchError` over it) on the receiver builder extends with the error's text and sources; nothing secret-derived in any of them. The contract is on the crate's front page |
 
 The core (envelope, verification, the handler trait and its inputs, the
 dispatcher) depends on none of them and builds for `wasm32-unknown-unknown`.
