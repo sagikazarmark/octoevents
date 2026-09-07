@@ -73,7 +73,8 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// decodes only when its route matches: a handler registered for some actions
 /// decodes nothing for a delivery carrying another.
 ///
-/// ```
+#[cfg_attr(feature = "derive", doc = "```")]
+#[cfg_attr(not(feature = "derive"), doc = "```ignore")]
 /// use octoevents::{Action, DecodeError, Dispatcher, Envelope, Event, EventKind};
 ///
 /// /// The application error every handler converts into. `From<DecodeError>`
@@ -893,7 +894,8 @@ where
     /// catch-all, so a payload type built on them cannot decode an action they
     /// do not know.
     ///
-    /// ```
+    #[cfg_attr(feature = "derive", doc = "```")]
+    #[cfg_attr(not(feature = "derive"), doc = "```ignore")]
     /// use octoevents::{Dispatcher, Event, EventKind};
     /// # use octoevents::DecodeError;
     /// # struct AppError;
@@ -980,7 +982,8 @@ where
     /// duplicated, and runs before any kind-wide `on_payload` route for the
     /// same kind.
     ///
-    /// ```
+    #[cfg_attr(feature = "derive", doc = "```")]
+    #[cfg_attr(not(feature = "derive"), doc = "```ignore")]
     /// use octoevents::{Action, Dispatcher, EventKind};
     /// # use octoevents::DecodeError;
     /// # struct AppError;

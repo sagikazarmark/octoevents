@@ -21,7 +21,8 @@ use crate::{MaybeSend, MaybeSync};
 /// `Result<(), E>`; the receiver and the dispatcher accept the function
 /// itself, and the parameter's type is what fixes `I`:
 ///
-/// ```
+#[cfg_attr(feature = "derive", doc = "```")]
+#[cfg_attr(not(feature = "derive"), doc = "```ignore")]
 /// use octoevents::{Envelope, Event, EventKind, EventMeta, Handler};
 ///
 /// #[derive(serde::Deserialize, octoevents::Payload)]
@@ -65,7 +66,8 @@ use crate::{MaybeSend, MaybeSync};
 /// application error through `From`; without `AppError: From<std::io::Error>`
 /// below, the registration is what fails to compile, not the impl:
 ///
-/// ```
+#[cfg_attr(feature = "derive", doc = "```")]
+#[cfg_attr(not(feature = "derive"), doc = "```ignore")]
 /// use octoevents::{DecodeError, Dispatcher, Event, EventKind, Handler};
 ///
 /// #[derive(serde::Deserialize, octoevents::Payload)]

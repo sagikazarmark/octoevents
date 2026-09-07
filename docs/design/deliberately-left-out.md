@@ -241,14 +241,29 @@ fields, and the derive puts it on the view, in the derive list every serde
 user already reads, `#[derive(serde::Deserialize, Payload)]
 #[payload(EventKind::Issues)]`; the macro put it one statement away in a
 grammar of its own, `Type => kind`, that nothing else in Rust uses. Same
-line count, same generated impl, same rustc error at a misspelled variant;
-a missing attribute is reported at the type name and a malformed one at the
-token, in the derive's own words. What it costs: a second crate,
-`octoevents-derive`, published beside this one and pinned exactly, with
-`syn` and `quote` behind it, which every consumer with `serde`'s derive
-already builds. It is the `derive` feature, on by default, so a minimal
-build can leave it out and write the three lines by hand; the `Payload`
-docs show that impl as what the derive expands to.
+line count, the same generated impl but for one bound (below), same rustc
+error at a misspelled variant; a missing attribute is reported at the type
+name and a malformed one at the token, in the derive's own words. What it
+costs: a second crate, `octoevents-derive`, published beside this one and
+pinned exactly, with `syn` and `quote` behind it, which every consumer with
+`serde`'s derive already builds. It is the `derive` feature, on by default,
+so a minimal build can leave it out and write the three lines by hand; the
+`Payload` docs show that impl as what the derive expands to.
+
+The one thing the derive adds to those three lines is `where Self:
+DeserializeOwned`. `Payload` requires `FromEnvelope`, which a serde type has
+through the blanket impl over `Payload + DeserializeOwned`, so an impl on a
+generic view `View<T>` carrying only the type's own bounds owes
+`FromEnvelope` for every `T`, deserializable or not, and rustc refuses it; a
+hand-written generic impl needs the same clause. The bound is on every
+expansion rather than only the generic ones, so the derive has one shape,
+and so that a type that forgot `serde::Deserialize` is told the bound is
+unsatisfied, at the `Payload` in its derive list, rather than that it
+"cannot be decoded from an `Envelope`" with a note advising the derive it
+already wrote. The bound names `::serde`, the name every consumer deriving
+`serde::Deserialize` has; a hidden re-export of serde for a renamed one was
+considered and not added, since the three-line impl already serves that
+case.
 
 `impl_payload!` was removed rather than kept beside the derive. It could
 attach a kind only to a type the consumer owns, the same types the derive

@@ -240,10 +240,11 @@ pub const DEFAULT_BODY_LIMIT: usize = 25 * 1024 * 1024;
 
 // The README's Rust blocks compile as doctests, so its programs cannot drift
 // from the API. Its quickstart mounts the receiver with `post_service`, which
-// the `tower` feature provides, so the blocks are checked under that feature.
-// Blocks that continue a program rather than stand alone (the closure and
-// observer fragments, and the tests) are marked `ignore` in the README itself;
-// `tests/readme_testing.rs` compiles the tests.
-#[cfg(all(doctest, feature = "tower"))]
+// the `tower` feature provides, and its views declare their kind with
+// `#[derive(Payload)]`, which the `derive` feature provides, so the blocks are
+// checked under both. Blocks that continue a program rather than stand alone
+// (the closure and observer fragments, and the tests) are marked `ignore` in
+// the README itself; `tests/readme_testing.rs` compiles the tests.
+#[cfg(all(doctest, feature = "tower", feature = "derive"))]
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;

@@ -764,7 +764,8 @@ impl Envelope {
     /// through as a handler input. The kind check reports a wrong payload
     /// type at the kind, not as a missing field somewhere in the JSON:
     ///
-    /// ```
+    #[cfg_attr(feature = "derive", doc = "```")]
+    #[cfg_attr(not(feature = "derive"), doc = "```ignore")]
     /// use octoevents::{DecodeError, Envelope, EventKind};
     ///
     /// #[derive(serde::Deserialize, octoevents::Payload)]

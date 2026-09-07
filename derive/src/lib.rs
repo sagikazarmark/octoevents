@@ -9,16 +9,22 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
-use syn::{DeriveInput, Error, Expr, Ident, Meta, Result, Token, parse_macro_input};
+use syn::{DeriveInput, Error, Expr, Ident, Meta, Result, Token, parse_macro_input, parse_quote};
 
 /// Declares which `EventKind` a serde type is the payload of.
 ///
 /// The attribute takes the kind as an expression, `#[payload(EventKind::..)]`,
-/// and expands to `impl octoevents::Payload for Self { const KIND = .. }`,
-/// nothing more: the serde derive stays yours, and so does every field. A
-/// misspelled variant is reported by rustc at the literal, as any expression
-/// would be. `kind = EventKind::..` is accepted as the same thing spelled
-/// with a key.
+/// and expands to `impl octoevents::Payload for Self { const KIND = .. }`
+/// with `Self: serde::de::DeserializeOwned` as its one bound, nothing more:
+/// the serde derive stays yours, and so does every field. The bound is what
+/// makes a serde type a `FromEnvelope`, which `Payload` requires, so a
+/// generic view `View<T>` is a payload wherever `View<T>` deserializes, with
+/// nothing said about `T` beyond what the type itself declares. A misspelled
+/// variant is reported by rustc at the literal, as any expression would be.
+/// `kind = EventKind::..` is accepted as the same thing spelled with a key.
+///
+/// The bound names `::serde`, so the crate is expected under that name, as it
+/// is wherever `serde::Deserialize` is derived.
 ///
 /// ```
 /// use octoevents::{EventKind, Payload};
@@ -45,10 +51,24 @@ pub fn derive_payload(input: proc_macro::TokenStream) -> proc_macro::TokenStream
 }
 
 /// The `impl Payload` for one type, or the error the attribute earned.
+///
+/// The impl carries the type's own generics and bounds, plus `Self:
+/// DeserializeOwned`. `Payload` requires `FromEnvelope`, which a serde type
+/// has through the blanket impl over `Payload + DeserializeOwned`; without
+/// the bound spelled on the impl, a generic view `View<T>` would owe
+/// `FromEnvelope` for every `T`, including the ones that do not deserialize,
+/// and the impl would be refused. With it, `View<T>` is a payload wherever
+/// `View<T>` deserializes, and nothing further is said about `T`.
 fn expand_payload(input: &DeriveInput) -> Result<TokenStream> {
     let kind = declared_kind(input)?;
     let ident = &input.ident;
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let (_, ty_generics, _) = input.generics.split_for_impl();
+    let mut generics = input.generics.clone();
+    generics
+        .make_where_clause()
+        .predicates
+        .push(parse_quote!(#ident #ty_generics: ::serde::de::DeserializeOwned));
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     Ok(quote! {
         #[automatically_derived]
         impl #impl_generics ::octoevents::Payload for #ident #ty_generics #where_clause {
@@ -138,7 +158,9 @@ mod tests {
         })
         .unwrap();
 
-        assert!(tokens.contains("impl :: octoevents :: Payload for IssueOpened"));
+        assert!(tokens.contains(
+            "impl :: octoevents :: Payload for IssueOpened where IssueOpened : :: serde :: de :: DeserializeOwned {"
+        ));
         assert!(tokens.contains("const KIND : :: octoevents :: EventKind = EventKind :: Issues ;"));
     }
 
@@ -170,18 +192,29 @@ mod tests {
     }
 
     #[test]
-    fn generics_are_carried_onto_the_impl() {
+    fn generics_are_carried_onto_the_impl_beside_the_serde_bound() {
         let tokens = expand(&parse_quote! {
             #[payload(EventKind::Issues)]
             struct View<T: Clone> where T: Send { inner: T }
         })
         .unwrap();
 
-        assert!(
-            tokens.contains(
-                "impl < T : Clone > :: octoevents :: Payload for View < T > where T : Send"
-            )
-        );
+        assert!(tokens.contains(
+            "impl < T : Clone > :: octoevents :: Payload for View < T > where T : Send , View < T > : :: serde :: de :: DeserializeOwned {"
+        ));
+    }
+
+    #[test]
+    fn a_type_without_a_where_clause_gets_one_for_the_serde_bound() {
+        let tokens = expand(&parse_quote! {
+            #[payload(EventKind::Issues)]
+            struct View<T> { inner: T }
+        })
+        .unwrap();
+
+        assert!(tokens.contains(
+            "impl < T > :: octoevents :: Payload for View < T > where View < T > : :: serde :: de :: DeserializeOwned {"
+        ));
     }
 
     #[test]

@@ -154,7 +154,8 @@ impl FromEnvelope for Envelope {
 /// a second statement; taking it whole and reading `event.meta` and
 /// `event.payload` is the same thing:
 ///
-/// ```
+#[cfg_attr(feature = "derive", doc = "```")]
+#[cfg_attr(not(feature = "derive"), doc = "```ignore")]
 /// use octoevents::{Event, EventKind, Payload};
 ///
 /// #[derive(serde::Deserialize, Payload)]
@@ -226,7 +227,8 @@ impl<P: Payload> Payload for Event<P> {
 /// `installation`, `sender`, `repository` and `organization` objects to
 /// octocrab's `WebhookEvent`; each impl's docs say where to find them.
 ///
-/// ```
+#[cfg_attr(feature = "derive", doc = "```")]
+#[cfg_attr(not(feature = "derive"), doc = "```ignore")]
 /// use octoevents::{Event, EventKind, Payload};
 ///
 /// #[derive(serde::Deserialize, Payload)]
@@ -239,9 +241,13 @@ impl<P: Payload> Payload for Event<P> {
 /// assert_eq!(<Event<PullRequestNumber>>::KIND, EventKind::PullRequest);
 /// ```
 ///
-/// The derive expands to the impl below and nothing else. It comes with the
-/// `derive` feature, on by default; without the feature, the impl is written
-/// by hand:
+/// The derive expands to the impl below, with `Self: DeserializeOwned` as
+/// its where clause, and nothing else. The bound is what makes a serde type a
+/// `FromEnvelope`, so a generic view `View<T>` is a payload wherever `View<T>`
+/// deserializes, with nothing said about `T` beyond what the type declares.
+/// It comes with the `derive` feature, on by default; without the feature,
+/// the impl is written by hand, and on a type with no generics the bound
+/// goes without saying:
 ///
 /// ```
 /// use octoevents::{EventKind, Payload};
@@ -272,7 +278,8 @@ impl<P: Payload> Payload for Event<P> {
 /// The derive without its attribute is refused at the type name, "missing
 /// `#[payload(EventKind::..)]`: a payload declares the kind it decodes":
 ///
-/// ```compile_fail
+#[cfg_attr(feature = "derive", doc = "```compile_fail")]
+#[cfg_attr(not(feature = "derive"), doc = "```ignore")]
 /// use octoevents::Payload;
 ///
 /// #[derive(serde::Deserialize, Payload)]

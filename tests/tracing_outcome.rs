@@ -48,10 +48,13 @@ fn unwrapped_outcome<E>(outcome: Outcome<E>) -> (Match, Result<(), E>) {
     )
 }
 
-/// A view any `pull_request` payload satisfies.
-#[derive(serde::Deserialize, octoevents::Payload)]
-#[payload(EventKind::PullRequest)]
+/// A view any `pull_request` payload satisfies. Written by hand rather than
+/// derived so the file compiles without the `derive` feature.
+#[derive(serde::Deserialize)]
 struct AnyPullRequest {}
+impl octoevents::Payload for AnyPullRequest {
+    const KIND: EventKind = EventKind::PullRequest;
+}
 
 /// An envelope of `kind` whose payload carries `action`, or `{}` for none, so
 /// the meta the span records is what the payload says.

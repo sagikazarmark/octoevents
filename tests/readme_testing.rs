@@ -177,12 +177,15 @@ async fn a_kind_the_route_table_does_not_know_is_unmatched_by_kind() {
 #[tokio::test]
 async fn the_boxed_observer_reaches_the_serde_field_from_error_source_source() {
     /// A view whose `title` the payload below lacks; nothing reads it, the
-    /// decode is the point.
-    #[derive(serde::Deserialize, octoevents::Payload)]
-    #[payload(EventKind::Issues)]
+    /// decode is the point. The README derives its kind; here the impl is
+    /// written by hand so the file compiles without the `derive` feature.
+    #[derive(serde::Deserialize)]
     #[allow(dead_code)]
     struct IssueOpened {
         issue: Issue,
+    }
+    impl octoevents::Payload for IssueOpened {
+        const KIND: EventKind = EventKind::Issues;
     }
 
     #[derive(serde::Deserialize)]
