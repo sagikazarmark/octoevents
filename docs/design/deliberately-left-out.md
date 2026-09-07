@@ -7,9 +7,10 @@ the question is answered once. The evidence for the first five is in
 ecosystems ([`webhook-libraries.md`](../research/webhook-libraries.md)) and of
 dispatcher designs in Rust
 ([`rust-dispatch-designs.md`](../research/rust-dispatch-designs.md)); the rest
-were settled by compile probes during the pre-0.2.0 API review, and the
-compiler's answer is quoted where it decided the matter. Where a type's own
-docs also state the decision, the entry says so.
+were settled during the pre-0.2.0 API review, by compile probes, with the
+compiler's answer quoted where it decided the matter, or by what the four
+review personas ([`../review/`](../review/)) reached for and what they did
+not. Where a type's own docs also state the decision, the entry says so.
 
 ## No SHA-1 fallback
 
@@ -299,7 +300,10 @@ coerced to the `dyn Error` the event's `source` value needs. Two fields
 rather than the whole error as one value, for every shape alike, because a
 subscriber's error value must be `Error + 'static` and a `DispatchError`
 over a box is no `Error`; a borrowed view that made it one would not be
-`'static`. Recorded on `trace_errors` (the bound and the `Display`-only
+`'static`. A `Display`-bounded third method reopens if a run meets an error
+type that is only `Display`; `trace_boxed_errors` folds into `trace_errors`
+if std ever implements `Error` for the unsized box, the impl the E0119 note
+reserves. Recorded on `trace_errors` (the bound and the `Display`-only
 cost), `trace_boxed_errors` and `BoxedError` (the shapes admitted, and the
 two fields).
 
@@ -319,3 +323,139 @@ receiver's event whenever any observer is registered was declined: a
 metrics-only observer would have made failed deliveries invisible at ERROR,
 the silence #18 set out to end. Recorded on `on_error` and in the `Tracing`
 section of the crate front page.
+
+## `impl_payload!` is suggested for `EventMeta`: a note cannot be filtered on `Self`
+
+The single-trait redesign, #38, asked that `Payload`'s message, for an input
+that declares no kind (`EventMeta`, `Envelope`), lead with "register it with
+`on` and a matcher" and not suggest `impl_payload!` for a crate type. The
+first half holds; the second is unmet, by the mechanism rather than by
+omission. `assert_payload::<EventMeta>()` renders (abridged):
+
+```text
+error[E0277]: `EventMeta` is not a payload
+  |
+  = note: `Envelope`, `EventMeta` and a view over several kinds declare no kind: a handler over them is registered with `on` and a matcher instead of `on_payload`
+  = note: a serde view over one kind declares it with `octoevents::impl_payload!(EventMeta => EventKind::..)`
+```
+
+Stable `#[diagnostic::on_unimplemented]` takes `message`, `label` and `note`,
+and every note fires for every `Self`. The filter that would confine the
+second note to a serde type, `on(Self = "..", note = "..")`, belongs to the
+compiler-internal `#[rustc_on_unimplemented]`; on the stable attribute rustc
+refuses it:
+
+```text
+warning: malformed `diagnostic::on_unimplemented` attribute
+  |
+  |     on(Self = "EventMeta", note = "register a handler over it with `on` and a matcher"),
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ invalid option found here
+  |
+  = help: only `message`, `note` and `label` are allowed as options
+```
+
+Dropping the second note was declined: the `impl_payload!` hint is what a
+serde type that never declared its kind needs, "the best diagnostic in the
+crate" in #38's words (story 19), kept at the price of one inapplicable line
+under a crate type. The note names the case it applies to, "a serde view
+over one kind", and the line above it names `EventMeta` and `Envelope`
+outright, so the reader with one can see which line is theirs. Reopens if
+the `diagnostic` namespace gains a filter on `Self`. The `Payload` docs show
+the `EventMeta` case and its first note.
+
+## `Arc<H>` described on `Handler` only
+
+Two closed tickets disagree. #38's documentation section asked the README's
+Handlers section to show `Arc<H>` beside the struct form over `Event<P>`; the
+rustdoc consolidation, #33, asked that the impl be described on the handler
+trait only and that the front page and README stop mentioning it. #33 was
+sequenced after #38, on which it waited, and wins: the impl is documented on
+`Handler`, and the README and front page name `Arc` only as a test's shared
+`Mutex`, captured by a closure. Beyond sequence, the evidence was on #33's
+side. No persona used the `Arc<H>` impls in run 2 (0/4); neither the
+receiver nor the dispatcher needs the caller's `Arc`, since each holds its
+handlers behind its own and the receiver is `Clone` for any `H` without one;
+and the impl's job, one struct shared between a route, a tier and a test
+that reads its state, which is #38's user story for it, is met by the impl
+and is a fact about the trait rather than a shape a first program needs.
+Reopens if a persona reaches for `Arc<H>` and cannot find it. Recorded on
+`Handler`.
+
+## A payload view under a disagreeing `on` matcher fails at dispatch
+
+`on((EventKind::Issues, Action::Opened), welcome)`, with `welcome` over a
+view that declared `EventKind::PullRequest`, compiles; every delivery the
+route matches then fails with `DecodeError::KindMismatch`, which names both
+kinds and is attributed to that registration's site and handler. The
+Probot-migrant persona, for whom `on((kind, action), view)` is the natural
+spelling, asked for a compile error instead, or for the README to say there
+is none (run 3). The README sentence was written; the compile error was
+declined.
+
+`on` is bound on `FromEnvelope`, and most of its inputs have no kind to
+compare: `EventMeta`, `Envelope` and a view over several kinds are
+registered under a matcher because the matcher is the only place their kinds
+are said. A check for the inputs that do declare one, `I::KIND`, needs `on`
+to do something different when `I` is a `Payload` than when it is not, and
+the stable way to select behaviour by that distinction is a marker parameter
+on the trait, the mechanism declined above. Even with it, the matcher is a
+value built from `EventKind` at run time, and an enum is no stable const
+generic, so the two kinds could be compared at the `on` call at the
+earliest, not by the compiler. The spelling the compiler does check exists
+and is one registration away: `on_payload_action([Action::Opened], welcome)`
+takes the kind from the type and cannot be registered under the wrong one.
+Reopens with the marker, which would move the check from the dispatch to the
+registration call. Recorded on `on` and in the Routing section of the
+README.
+
+## `fallback` stays, with one job
+
+No persona registered a fallback in run 2 or run 3: 0/4 in each of the two
+runs since the raw tier and the meta handler were removed, 0/8 across them.
+The one production-shaped user, whom strictness exists for, chose the policy
+seam both times, because a fallback cannot see the match and dead-lettering
+needs to: whether the kind was unknown to the route table, or only the
+action, is in the `Outcome`, which only a handler wrapping `dispatch` reads
+(the short-circuit entry above). The architect leaned to removing the tier
+after run 2 and, after run 3, kept it as the first candidate to hide should
+the next run read 0 again.
+
+Kept, on three grounds. A cohort none of whom needed a strict fallback is
+weak evidence against a feature. The survey found opt-in strictness
+converged across the ecosystem: an unmatched delivery is a silent success by
+default in octokit, Probot, gidgethub and go-github, and the strict
+receivers are the exception. And the bot-builder persona's "nothing told me
+a delivery arrived and went nowhere" (run 2) is the fallback's job,
+undiscovered. It was re-documented rather than defended: its rustdoc says it
+cannot see the match and points at the wrapper for dead-lettering, its first
+example logs what nothing routed (`log_unrouted`) and its second rejects,
+and the README's routing block no longer presents it as a peer of the routed
+tiers. The trigger is set: the next run, a third, reading 0 hides it below
+the policy seam, off the documented surface, its two examples rewritten on
+the wrapper, which reads the outcome and can do both without the tier.
+Recorded on `fallback`.
+
+## No adapter from a routed handler to a `Handler<Envelope>`
+
+The edge persona, building a receiver for one kind, asked for a
+crate-provided adapter: a `Handler<Envelope>` made from a matcher and a
+handler over `Event<P>`, so that one route needs neither a hand-written
+adapter nor a dispatcher. His own count decided it. The hand-written adapter
+(a struct generic over the inner handler, `PhantomData<P>`, decode then
+forward) was 48 lines, 35 of code; a dispatcher with one
+`on_payload_action` registration was 25 lines, 19 of code, and buys the
+dispatch error (tier, handler name, registration site) and the outcome,
+which the adapter would have to reinvent. The third shape, a handler over
+`Envelope` that decodes its own view with `Envelope::decode_payload`, was
+22 lines, and is what the front page shows under "One event, one handler".
+What the adapter would save, the dispatcher already saves, in fewer lines
+and saying more.
+
+What made the adapter expensive was not its length but a bound: rustc
+suggested `Sync` for the inner handler, which compiled natively and failed
+on `wasm32` with the crate's own "is not a handler over `Envelope`". The
+`MaybeSync` supertrait on `Handler` (#46) removes that, so a consumer who
+wants the adapter writes it as first written, on both targets. Reopens if a
+run finds the one-route dispatcher itself the friction, now that the bound
+no longer is. The `Handler` docs point the one-kind case at
+`Envelope::decode_payload`.
