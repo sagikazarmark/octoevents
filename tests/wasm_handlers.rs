@@ -90,7 +90,7 @@ fn receive_accepts_a_single_threaded_body_and_handler() {
 
     /// A Worker-shaped body: holds a non-`Send`, non-`Sync` value.
     struct JsBody {
-        stream: Rc<Cell<bool>>,
+        polled: Rc<Cell<bool>>,
     }
 
     impl Body for JsBody {
@@ -101,7 +101,7 @@ fn receive_accepts_a_single_threaded_body_and_handler() {
             self: Pin<&mut Self>,
             _context: &mut Context<'_>,
         ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-            self.stream.set(true);
+            self.polled.set(true);
             Poll::Ready(None)
         }
     }
@@ -111,7 +111,7 @@ fn receive_accepts_a_single_threaded_body_and_handler() {
             calls: Rc::new(Cell::new(0)),
         });
     let request = Request::new(JsBody {
-        stream: Rc::new(Cell::new(false)),
+        polled: Rc::new(Cell::new(false)),
     });
 
     let _future = receiver.receive(request);

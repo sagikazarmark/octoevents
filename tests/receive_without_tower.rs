@@ -7,46 +7,40 @@
 //! closure. axum requires that closure's future to be `Send`, so the two
 //! compose only if `receive`'s future is `Send` for a dispatcher over the
 //! boxed error. These tests hold the receiver to that: a bare `Send`
-//! assertion on the future, and the README's wiring driven end to end.
+//! assertion on the future, and the README's wiring driven end to end with
+//! the README's hello world as the handler.
 
 #![cfg(all(feature = "http", not(target_arch = "wasm32")))]
 
-use std::error::Error;
+mod common;
 
 use axum::{Router, body::Body, extract::Request, routing::post};
 use bytes::Bytes;
-use hmac::{Hmac, KeyInit, Mac};
 use http::StatusCode;
-use octoevents::{Dispatcher, Envelope, Secret, Verifier, WebhookReceiver, WebhookReceiverBuilder};
-use sha2::Sha256;
+use octoevents::{
+    DispatchError, Dispatcher, Envelope, Secret, Verifier, WebhookReceiver, WebhookReceiverBuilder,
+};
 use tower::ServiceExt as _;
 
 /// The README's application error: no error enum, `?` converts anything.
-type BoxError = Box<dyn Error + Send + Sync>;
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 const SECRET: &str = "development-secret";
 
-/// The README's hello world receiver: a dispatcher over the boxed error whose
-/// always tier sees every verified delivery.
-fn hello_world() -> WebhookReceiver<Dispatcher<BoxError>> {
-    let dispatcher = Dispatcher::<BoxError>::builder()
-        .always(|_: Envelope| async { Ok::<(), BoxError>(()) })
-        .build();
-    WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET))).build(dispatcher)
+/// The README's hello world handler: an `async fn` item over the envelope.
+async fn print(envelope: Envelope) -> Result<(), BoxError> {
+    println!("{} {}", envelope.meta.delivery_id, envelope.meta.kind);
+    Ok(())
 }
 
-/// The `X-Hub-Signature-256` value GitHub would send for `body` under `secret`.
-fn signature(secret: &[u8], body: &[u8]) -> String {
-    use std::fmt::Write as _;
-
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret).unwrap();
-    mac.update(body);
-    let tag = mac.finalize().into_bytes();
-    let mut out = String::from("sha256=");
-    for byte in tag {
-        write!(out, "{byte:02x}").unwrap();
-    }
-    out
+/// The README's hello world receiver, verbatim: a dispatcher over the boxed
+/// error with `print` in its always tier, and an observer that says why a
+/// delivery failed.
+fn hello_world() -> WebhookReceiver<Dispatcher<BoxError>> {
+    let dispatcher = Dispatcher::<BoxError>::builder().always(print).build();
+    WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
+        .on_error(|_, error: &DispatchError<BoxError>| eprintln!("{error}: {}", error.source))
+        .build(dispatcher)
 }
 
 /// A signed request for `event` carrying `body`, as GitHub would send it.
@@ -57,13 +51,16 @@ fn signed(event: &str, body: &'static [u8]) -> Request<Body> {
         .header("content-type", "application/json")
         .header("x-github-delivery", "delivery")
         .header("x-github-event", event)
-        .header("x-hub-signature-256", signature(SECRET.as_bytes(), body))
+        .header(
+            "x-hub-signature-256",
+            common::signature(SECRET.as_bytes(), body),
+        )
         .body(Body::from(Bytes::from_static(body)))
         .unwrap()
 }
 
 #[test]
-fn receives_future_is_send_for_a_dispatcher_over_a_boxed_error() {
+fn the_receive_future_is_send_for_a_dispatcher_over_a_boxed_error() {
     fn assert_send<T: Send>(_: T) {}
 
     let webhook = hello_world();

@@ -286,9 +286,11 @@ where
     /// The future is `Send` on native targets whenever the handler and the
     /// body are, the bounds the `tower` `Service` impl places, so a plain
     /// axum handler calling `receive` accepts every handler `post_service`
-    /// does. That is promised here rather than left to an `async fn`: an
-    /// `async fn` borrowing `&self` leaves its `Send` proof to auto-trait
-    /// leakage over the concrete handler, and for a [`Dispatcher`] over
+    /// does.
+    ///
+    /// That is promised here rather than left to an `async fn`: an `async fn`
+    /// borrowing `&self` leaves its `Send` proof to auto-trait leakage over
+    /// the concrete handler, and for a [`Dispatcher`] over
     /// `Box<dyn Error + Send + Sync>`, whose error type the receiver's state
     /// names, that proof fails inside an `async move` block with
     /// "implementation of `Send` is not general enough".
