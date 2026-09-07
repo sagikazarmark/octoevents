@@ -207,7 +207,11 @@ impl FromStr for TargetType {
 /// sender wrote them (GitHub writes `X-GitHub-Delivery`), HTTP/2 and HTTP/3
 /// lowercase them, and a gateway in between may do either. A transport whose
 /// map keeps the sender's casing lowercases its keys, or compares
-/// case-insensitively, before looking up the lowercase constants.
+/// case-insensitively, before looking up the lowercase constants. Skip that
+/// step and every delivery is 401 with the secret correct: a map keyed
+/// `X-Hub-Signature-256` answers `None` for `x-hub-signature-256`, so the
+/// view has no signature and [`Envelope::from_signed`] refuses the request as
+/// [`VerifyError::MissingSignature`] before it reads anything else.
 #[derive(Clone, Default)]
 pub struct HeaderView<'a> {
     signature: Option<Cow<'a, str>>,
@@ -274,7 +278,11 @@ impl<'a> HeaderView<'a> {
     /// receives the lowercase name and the view compares nothing itself. A
     /// map that kept the sender's casing (HTTP/1.1 does) is lowercased
     /// first, or asked case-insensitively; see the type docs for which hops
-    /// do what.
+    /// do what. Forgotten, the mismatch is not a missing delivery ID or event
+    /// name but a 401 on every delivery, the secret notwithstanding: the map
+    /// answers `None` for `x-hub-signature-256` as for every other name, the
+    /// view has no signature, and [`Envelope::from_signed`] reports
+    /// [`VerifyError::MissingSignature`] before it looks at the rest.
     ///
     /// A string map cannot hold a header whose bytes are not a string, so
     /// this constructor never marks the signature malformed the way the
@@ -484,7 +492,12 @@ impl<'a> From<&'a http::HeaderMap> for HeaderView<'a> {
 /// - `raw_payload` is the exact payload bytes in standard base64 with
 ///   padding (RFC 4648 section 4), a string and not a nested object, so the
 ///   payload survives the hop without being re-encoded and still verifies
-///   against GitHub's signature.
+///   against GitHub's signature. The cost is size: `raw_payload` is 4/3 of
+///   the payload, and the meta beside it, some 300 bytes with every field
+///   present, repeats values the payload already carries (the action, the
+///   installation, the repository, the sender). The document therefore
+///   roughly doubles a small payload of a few hundred bytes, and settles
+///   toward 4/3 of the several-kilobyte payloads GitHub usually sends.
 /// - `kind`, `action` and `target_type` are GitHub's wire strings
 ///   (`"pull_request"`, `"opened"`, `"integration"`); a value this version
 ///   of the crate does not know reads back as the `Unknown` variant carrying
@@ -511,7 +524,8 @@ pub struct Envelope {
     /// over; [`Envelope::new`] and the `Deserialize` impl hold whatever they
     /// were given, with no such claim. Either way they are the bytes every
     /// decode reads. Serialized as standard base64 so an envelope survives a
-    /// JSON hop to an internal service without the payload being re-encoded.
+    /// JSON hop to an internal service without the payload being re-encoded;
+    /// the encoded field is 4/3 of the payload's size.
     #[serde(
         serialize_with = "serialize_bytes",
         deserialize_with = "deserialize_bytes"
@@ -835,7 +849,7 @@ pub enum ReceiveError {
 #[non_exhaustive]
 pub enum DecodeError {
     /// The envelope is of a kind the payload type does not cover.
-    #[error("expected a {expected} event, received {actual}")]
+    #[error("expected {} `{expected}` event, received `{actual}`", article(.expected))]
     KindMismatch {
         /// The kind the payload type declares.
         expected: EventKind,
@@ -869,6 +883,15 @@ pub enum DecodeError {
         #[source]
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
+}
+
+/// The indefinite article `kind`'s wire string takes: "an `issues` event",
+/// "a `push` event".
+fn article(kind: &EventKind) -> &'static str {
+    match kind.as_str().as_bytes().first() {
+        Some(b'a' | b'e' | b'i' | b'o' | b'u') => "an",
+        _ => "a",
+    }
 }
 
 impl DecodeError {
@@ -1458,6 +1481,29 @@ mod tests {
                 actual: EventKind::PullRequest,
             }
         ));
+    }
+
+    #[test]
+    fn kind_mismatch_displays_the_kinds_as_wire_strings_with_the_article_each_takes() {
+        // The kind's wire string is quoted, and the article agrees with it:
+        // no "a issues event", and no "an push event" either.
+        let issues = DecodeError::KindMismatch {
+            expected: EventKind::Issues,
+            actual: EventKind::PullRequest,
+        };
+        let push = DecodeError::KindMismatch {
+            expected: EventKind::Push,
+            actual: EventKind::Issues,
+        };
+
+        assert_eq!(
+            issues.to_string(),
+            "expected an `issues` event, received `pull_request`"
+        );
+        assert_eq!(
+            push.to_string(),
+            "expected a `push` event, received `issues`"
+        );
     }
 
     #[test]

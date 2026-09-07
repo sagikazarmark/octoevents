@@ -4,6 +4,15 @@
 //! Built without the `octocrab` feature (which is never on by default), so
 //! the routed handler decodes a consumer-defined view of the `installation`
 //! payload rather than octocrab's model.
+//!
+//! Built for `wasm32-unknown-unknown`, the target `worker-build` selects. A
+//! native `cargo check`, or rust-analyzer left on the host target, reports
+//! `Forward::handle`'s future as not `MaybeSend`, naming the `JsFuture`
+//! inside the fetch: `MaybeSend` is `Send` on native targets and empty on
+//! `wasm32`, and a JavaScript promise is `!Send`. Point the editor at the
+//! target the build uses, `"rust-analyzer.cargo.target":
+//! "wasm32-unknown-unknown"` in the workspace settings, and the diagnostic
+//! goes away; there is nothing to fix in the handler.
 
 // The handlers here log instead of awaiting a database or the GitHub API,
 // which is what a real `async fn handle` would do.
