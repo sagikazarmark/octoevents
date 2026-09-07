@@ -68,7 +68,7 @@ use crate::{MaybeSend, MaybeSync};
 ///
 #[cfg_attr(feature = "derive", doc = "```")]
 #[cfg_attr(not(feature = "derive"), doc = "```ignore")]
-/// use octoevents::{DecodeError, Dispatcher, Event, EventKind, Handler};
+/// use octoevents::{AnyAction, DecodeError, Dispatcher, Event, EventKind, Handler};
 ///
 /// #[derive(serde::Deserialize, octoevents::Payload)]
 /// #[payload(EventKind::PullRequest)]
@@ -96,7 +96,7 @@ use crate::{MaybeSend, MaybeSync};
 /// }
 ///
 /// let dispatcher = Dispatcher::<AppError>::builder()
-///     .on_payload(Labeler { label: "triage".into() })
+///     .on(AnyAction, Labeler { label: "triage".into() })
 ///     .build();
 /// # let _ = dispatcher;
 /// ```
@@ -123,7 +123,7 @@ use crate::{MaybeSend, MaybeSync};
 /// The trait is generic over the input, so one struct can implement it for
 /// several. Registration then needs a turbofish, because the struct alone no
 /// longer says which input is meant:
-/// `dispatcher.on_payload::<PullRequestNumber, _>(labeler)`. An `async fn` or
+/// `dispatcher.on::<PullRequestNumber, _, _>(AnyAction, labeler)`. An `async fn` or
 /// a closure fixes the input by its parameter type and needs none.
 ///
 /// `Arc<H>` is a handler when `H` is, so one handler struct can be shared

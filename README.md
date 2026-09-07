@@ -133,8 +133,8 @@ receives and what is decoded for it:
 | --- | --- | --- | --- |
 | `Envelope` | The meta and the exact payload bytes | Nothing | The receiver, `always`, `fallback`, `on` |
 | `EventMeta` | The meta alone | Nothing | `on` |
-| `P: Payload` | The payload as `P` | `P`, kind checked | `on_payload`, `on_payload_action`, `on` |
-| `Event<P>` | The meta beside the payload as `P` | `P`, kind checked | `on_payload`, `on_payload_action`, `on` |
+| `P: Payload` | The payload as `P` | `P`, kind checked | `on`, with the kind from `P` or spelled |
+| `Event<P>` | The meta beside the payload as `P` | `P`, kind checked | `on`, with the kind from `P` or spelled |
 
 A `Payload` is a serde view over the fields a handler reads, declaring the
 event kind it decodes with `#[derive(Payload)]` and `#[payload(EventKind::..)]`.
@@ -188,8 +188,8 @@ async fn notify(Event { meta, payload }: Event<IssueOpened>) -> Result<(), BoxEr
 let dispatcher = Dispatcher::<BoxError>::builder()
     .always(audit)                                          // every delivery
     .on((EventKind::Installation, Action::Deleted), revoke) // kind and action spelled here
-    .on_payload_action([Action::Opened], label)             // kind from `IssueOpened`
-    .on_payload_action([Action::Opened], notify)
+    .on(Action::Opened, label)                              // kind from `IssueOpened`
+    .on(Action::Opened, notify)
     .build();
 ```
 
@@ -203,7 +203,7 @@ struct keeps its own error type, and the dispatcher converts it into the
 application error through `From`:
 
 ```rust
-use octoevents::{Dispatcher, Event, EventKind, Handler, Payload};
+use octoevents::{AnyAction, Dispatcher, Event, EventKind, Handler, Payload};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -227,7 +227,7 @@ impl Handler<Event<IssueOpened>> for Labeler {
 }
 
 let dispatcher = Dispatcher::<BoxError>::builder()
-    .on_payload(Labeler { label: "triage".into() })
+    .on(AnyAction, Labeler { label: "triage".into() })
     .build();
 ```
 
@@ -261,7 +261,7 @@ three tiers in order:
 | Tier | Runs | Receives | Registered with |
 | --- | --- | --- | --- |
 | Always | First, for every delivery | `Envelope` | `always` |
-| Route | The handlers matching the kind and action, then those matching the kind | Any input | `on`, `on_payload`, `on_payload_action` |
+| Route | The handlers matching the kind and action, then those matching the kind | Any input | `on` |
 | Fallback | Only when no route matched | `Envelope` | `fallback` |
 
 Within a tier, handlers run in registration order, and the first error fails
@@ -269,12 +269,14 @@ the delivery. There are no priorities and no propagation control.
 
 ### Routing
 
-`on_payload` and `on_payload_action` take the kind from the payload type;
-`on` takes a matcher (a kind, several kinds, a kind with actions, or
-kind/action pairs) and a handler over any input, a payload view included.
+`on` takes a matcher and a handler over any input. A matcher that says its
+kinds (a kind, several kinds, a kind with actions, or kind/action pairs)
+routes any handler. For a handler over a payload type, the matcher may say
+actions alone (an `Action`, an array of them, or `AnyAction` for every
+action) and the kind comes from the type.
 
 ```rust
-use octoevents::{Action, Dispatcher, Envelope, EventKind, EventMeta, Payload};
+use octoevents::{Action, AnyAction, Dispatcher, Envelope, EventKind, EventMeta, Payload};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -312,21 +314,22 @@ let dispatcher = Dispatcher::<BoxError>::builder()
     // Always: first, for every delivery, bytes included.
     .always(audit)
     // Routes with the kind taken from the payload type...
-    .on_payload(notify)                                            // every `issues` action
-    .on_payload_action([Action::Opened, Action::Reopened], label)  // these actions only
+    .on(AnyAction, notify)                                  // every `issues` action
+    .on([Action::Opened, Action::Reopened], label)          // these actions only
     // ...or spelled at the registration, for a handler over any input.
-    .on((EventKind::Installation, Action::Deleted), revoke)        // meta only
-    .on([EventKind::Push, EventKind::Create], forward)             // bytes, for these kinds
+    .on((EventKind::Installation, Action::Deleted), revoke) // meta only
+    .on([EventKind::Push, EventKind::Create], forward)      // bytes, for these kinds
     // Fallback: only when no route matched. This one is strict.
     .fallback(reject)
     .build();
 ```
 
 `on((EventKind::Issues, Action::Opened), label)` is the Probot spelling of
-`on_payload_action([Action::Opened], label)`, with the kind said twice. The
-two are compared at dispatch, not at compile time: a matcher that disagrees
-with the view's kind fails every delivery it routes with
-`DecodeError::KindMismatch`.
+`on(Action::Opened, label)`, with the kind said twice. The two are compared
+at dispatch, not at compile time: a matcher that disagrees with the view's
+kind fails every delivery it routes with `DecodeError::KindMismatch`. Actions
+alone under a handler whose input declares no kind (`EventMeta`, `Envelope`)
+are refused at compile time, with a message that says to spell the kind.
 
 A routed handler decodes its input only when its route matched, so a handler
 registered for some actions decodes nothing for a delivery carrying another.
@@ -622,8 +625,8 @@ matching handler and aggregates.
 
 | Probot | octoevents |
 | --- | --- |
-| `app.on('issues.opened', h)` | `on((EventKind::Issues, Action::Opened), h)`, or `on_payload_action([Action::Opened], h)` with the kind taken from `h`'s payload type. There is no string route form |
-| `app.on('issues', h)` | `on(EventKind::Issues, h)`, or `on_payload(h)` |
+| `app.on('issues.opened', h)` | `on((EventKind::Issues, Action::Opened), h)`, or `on(Action::Opened, h)` with the kind taken from `h`'s payload type. There is no string route form |
+| `app.on('issues', h)` | `on(EventKind::Issues, h)`, or `on(AnyAction, h)` |
 | `app.onAny(h)` | `always(h)`: first, for every delivery, over the envelope; its error fails the delivery. Sees `ping` only with `handle_ping(true)` |
 | `app.onError(h)` | `on_error(h)` on the receiver builder |
 | `app.receive(event)` | `dispatcher.dispatch(envelope)` with an envelope from `Envelope::new`; see [Testing without GitHub](#testing-without-github) |

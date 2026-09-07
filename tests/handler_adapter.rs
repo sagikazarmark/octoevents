@@ -18,7 +18,9 @@
 
 use std::convert::Infallible;
 
-use octoevents::{Action, DecodeError, Dispatcher, Event, EventKind, Handler, MaybeSend};
+use octoevents::{
+    Action, AnyAction, DecodeError, Dispatcher, Event, EventKind, Handler, MaybeSend,
+};
 
 /// Forwards to `inner` once it has read the meta: the shape of an audit,
 /// timing or retry adapter. `H` carries no bound beyond the trait.
@@ -77,8 +79,8 @@ fn an_adapter_over_a_handler_needs_no_bound_on_it_beyond_the_trait() {
     }
 
     let _dispatcher = Dispatcher::<AppError>::builder()
-        .on_payload(Audited { inner: label })
-        .on_payload_action([Action::Opened], Audited { inner: label })
+        .on(AnyAction, Audited { inner: label })
+        .on([Action::Opened], Audited { inner: label })
         .on(EventKind::PullRequest, Audited { inner: label })
         .build();
 }
@@ -108,10 +110,13 @@ fn the_adapter_wraps_a_single_threaded_handler_on_wasm32() {
     }
 
     let _dispatcher = Dispatcher::<AppError>::builder()
-        .on_payload(Audited {
-            inner: Counter {
-                calls: Rc::new(Cell::new(0)),
+        .on(
+            AnyAction,
+            Audited {
+                inner: Counter {
+                    calls: Rc::new(Cell::new(0)),
+                },
             },
-        })
+        )
         .build();
 }

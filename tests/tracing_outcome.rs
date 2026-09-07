@@ -16,8 +16,8 @@
 mod common;
 
 use octoevents::{
-    Action, DecodeError, DispatchError, Dispatcher, Envelope, EventKind, Handler as _, Match,
-    Outcome,
+    Action, AnyAction, DecodeError, DispatchError, Dispatcher, Envelope, EventKind, Handler as _,
+    Match, Outcome,
 };
 
 #[derive(Debug, PartialEq)]
@@ -141,10 +141,10 @@ where
 
 fn dispatcher() -> Dispatcher<AppError> {
     Dispatcher::<AppError>::builder()
-        .on_payload_action([Action::Opened], |_: AnyPullRequest| async {
+        .on([Action::Opened], |_: AnyPullRequest| async {
             Ok::<_, AppError>(())
         })
-        .on_payload_action([Action::Closed], |_: AnyPullRequest| async {
+        .on([Action::Closed], |_: AnyPullRequest| async {
             Err::<(), _>("routed")
         })
         .fallback(|envelope: Envelope| async move {
@@ -211,8 +211,9 @@ fn a_failure_before_routing_is_labelled_by_the_match_the_route_table_decided() {
     // No fallback is registered: the label must not claim one ran. The
     // location is that of the registration method's name, so the failing
     // handler is registered on the line after `line!()`.
-    let builder = Dispatcher::<AppError>::builder()
-        .on_payload(|_: AnyPullRequest| async { Ok::<_, AppError>(()) });
+    let builder = Dispatcher::<AppError>::builder().on(AnyAction, |_: AnyPullRequest| async {
+        Ok::<_, AppError>(())
+    });
     let registration_line = line!() + 1;
     let dispatcher = builder.always(fail_audit).build();
 

@@ -40,7 +40,7 @@ handler gets and what is decoded for it: the `Envelope` (bytes included), the
 the payload. The receiver and the always and fallback tiers take a handler
 over the envelope; a routed handler is over any input. In prose, "a handler
 over `Envelope`", "a handler over `Event<P>`".
-_Avoid_: Callback, subscriber, webhook handler and event handler (the former two flavours; now one trait and an input type), typed handler, payload handler (survives only in `on_payload` and `on_payload_action`, which register a handler whose payload type fixes the kind), raw handler (raw named a removed tier), meta handler (removed; a handler over `EventMeta` receives only the metadata)
+_Avoid_: Callback, subscriber, webhook handler and event handler (the former two flavours; now one trait and an input type), typed handler, payload handler (a handler over a `Payload` is registered with `on` like any other; its type fixes the kind when the matcher gives actions alone), raw handler (raw named a removed tier), meta handler (removed; a handler over `EventMeta` receives only the metadata)
 
 **Event**:
 `Event<P>`: the envelope decoded for one handler, the `EventMeta` beside the
@@ -48,7 +48,7 @@ payload decoded as `P`, as the named fields `meta` and `payload`. Distinct
 from Envelope, whose payload is bytes. Meta and payload together is one
 input, destructured in the parameter: `Event { meta, payload }:
 Event<IssueOpened>`. When `P` is a `Payload`, so is `Event<P>`, of the same
-kind, so `on_payload` takes a handler over either.
+kind, so `on` under actions alone takes a handler over either.
 _Avoid_: Decoded envelope, typed envelope, context (implies ambient services)
 
 **Dispatcher**:
@@ -84,7 +84,7 @@ _Avoid_: Stage, phase (kept for decode versus handle inside one handler), layer 
 
 **Registration site**:
 The source location of the call that registered a handler (`always`, `on`,
-`on_payload`, `on_payload_action`, `fallback`), captured at compile time
+`fallback`), captured at compile time
 through `#[track_caller]`. What a dispatch error points an operator at,
 beside the handler name.
 _Avoid_: Call site (ambiguous with the handler's own calls), origin, registered at (reads as a time in code; fine in prose)
@@ -140,8 +140,13 @@ _Avoid_: Hit, handled (a matched delivery may still fail)
 **EventMatcher**:
 The kinds and actions one dispatcher registration selects: a kind, several
 kinds, a kind with actions, or kind/action pairs, expanding to slots of
-`(kind, Option<action>)`.
-_Avoid_: Filter, selector, route (a route is what a matcher registers)
+`(kind, Option<action>)`. `on` takes any `IntoMatcher` for its handler's
+input: those shapes, which say their kinds and fit any input, or, for a
+handler over a `Payload`, actions alone, an `Action`, an array of them or
+`AnyAction` for every action, the kind coming from the payload type. In
+prose, a matcher that says its kinds is *absolute*; one that takes the kind
+from the type is *relative*.
+_Avoid_: Filter, selector, route (a route is what a matcher registers), wildcard (for `AnyAction`; it selects every action of one kind, not every delivery)
 
 **Kind**:
 The parsed identity of an event, as the `EventKind` enum.

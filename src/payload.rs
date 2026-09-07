@@ -146,9 +146,8 @@ impl FromEnvelope for Envelope {
 /// Distinct from [`Envelope`], whose payload is bytes: here the payload is
 /// already decoded, and the handler has one source of truth for it. `P` is
 /// any [`FromEnvelope`]; the usual one is a [`Payload`] view, and
-/// `Event<P>` is then a `Payload` of the same kind, so `on_payload` and
-/// `on_payload_action` take a handler over it exactly as they take one over
-/// `P`.
+/// `Event<P>` is then a `Payload` of the same kind, so `on` takes a handler
+/// over it under actions alone exactly as it takes one over `P`.
 ///
 /// A parameter destructures it in place, giving the two halves names without
 /// a second statement; taking it whole and reading `event.meta` and
@@ -197,8 +196,8 @@ impl<P: FromEnvelope> FromEnvelope for Event<P> {
     }
 }
 
-/// `Event<P>` is routed by the kind `P` declares, so `on_payload` takes a
-/// handler over either.
+/// `Event<P>` is routed by the kind `P` declares, so `on` under actions alone
+/// takes a handler over either.
 impl<P: Payload> Payload for Event<P> {
     const KIND: EventKind = P::KIND;
 }
@@ -207,8 +206,9 @@ impl<P: Payload> Payload for Event<P> {
 ///
 /// A `Payload` type declares the kind it belongs to, so a
 /// [`Handler`](crate::Handler) over it, or over [`Event<P>`] of it, is bound
-/// to that kind by its type: registering it with `on_payload` needs no
-/// matcher, and it cannot be registered under the wrong kind. The whole JSON
+/// to that kind by its type: `on` takes it under actions alone, an
+/// [`Action`](crate::Action), an array of them or [`AnyAction`](crate::AnyAction),
+/// with no kind said, and it cannot be registered under the wrong kind. The whole JSON
 /// document GitHub sends is decoded into the type, so a payload type is free
 /// to name only the fields it needs. Every serde payload is a
 /// [`FromEnvelope`] whose decode checks the kind first.
@@ -300,7 +300,7 @@ impl<P: Payload> Payload for Event<P> {
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a payload",
     label = "expected a `serde::Deserialize` type that declares the event kind it decodes, or `Event<P>` over one",
-    note = "`Envelope`, `EventMeta` and a view over several kinds declare no kind: a handler over them is registered with `on` and a matcher instead of `on_payload`",
+    note = "`Envelope`, `EventMeta` and a view over several kinds declare no kind: a handler over them is registered with `on` and a matcher that says the kind",
     note = "a serde view over one kind declares it on the type: `#[derive(Payload)] #[payload(EventKind::..)]`",
     note = "with the `octocrab` feature, octocrab's per-kind `*WebhookEventPayload` structs are payloads; its `WebhookEvent` decodes for any kind, so it is a `FromEnvelope` registered with `on` instead"
 )]

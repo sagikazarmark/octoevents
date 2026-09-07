@@ -19,7 +19,7 @@
 #![allow(clippy::unused_async_trait_impl)]
 
 use octoevents::{
-    DecodeError, Dispatcher, Envelope, Event, EventKind, Handler, Secret, Verifier,
+    AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind, Handler, Secret, Verifier,
     WebhookReceiverBuilder,
 };
 use worker::{Context, Env, Fetch, HttpRequest, Method, Request, RequestInit, console_log, event};
@@ -125,7 +125,7 @@ async fn fetch(
 
     let dispatcher = Dispatcher::<AppError>::builder()
         .always(Forward { object_url })
-        .on_payload(InstallationLog)
+        .on(AnyAction, InstallationLog)
         .build();
 
     let receiver =

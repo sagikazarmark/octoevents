@@ -662,7 +662,7 @@ mod tests {
 
     use super::{WebhookReceiverBuilder, empty_response};
     use crate::{
-        Action, DecodeError, Dispatcher, Envelope, Event, EventKind, EventMeta, Handler,
+        Action, AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind, EventMeta, Handler,
         ResponseStatus, Secret, Verifier, test_support::AppError,
     };
 
@@ -1003,7 +1003,7 @@ mod tests {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let handler_seen = Arc::clone(&seen);
         let dispatcher = Dispatcher::<AppError>::builder()
-            .on_payload(move |Event { meta, payload }: Event<Zen>| {
+            .on(AnyAction, move |Event { meta, payload }: Event<Zen>| {
                 let seen = Arc::clone(&handler_seen);
                 async move {
                     seen.lock().unwrap().push((meta.kind, payload.zen));
@@ -1097,7 +1097,8 @@ mod tests {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let handler_seen = Arc::clone(&seen);
         let dispatcher = Dispatcher::<AppError>::builder()
-            .on_payload(
+            .on(
+                AnyAction,
                 move |Event { meta, payload }: Event<PullRequestWebhookEventPayload>| {
                     let seen = Arc::clone(&handler_seen);
                     async move {

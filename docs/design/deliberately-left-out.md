@@ -174,9 +174,9 @@ parameter as `Event { meta, payload }: Event<P>` or read as `event.meta` and
 `event.payload`, gives the two halves names without a second trait, and a
 handler that needs only the payload takes `P` alone with no dead meta
 parameter. `Payload: FromEnvelope` as a supertrait with
-`impl<P: Payload> Payload for Event<P>` lets `on_payload` accept a handler
-over `P` or `Event<P>` under one bound, with no helper trait to look through
-the wrapper. The four review personas compiled their programs against a
+`impl<P: Payload> Payload for Event<P>` lets a registration under actions
+alone accept a handler over `P` or `Event<P>` under one bound, with no
+helper trait to look through the wrapper. The four review personas compiled their programs against a
 prototype with no crate-caused failure at a registration. What was given up:
 a two-argument `async fn(meta, payload)` is no longer a handler, and rustc
 reports one passed to a registration method with its arity error (E0593)
@@ -382,7 +382,7 @@ omission. `assert_payload::<EventMeta>()` renders (abridged):
 ```text
 error[E0277]: `EventMeta` is not a payload
   |
-  = note: `Envelope`, `EventMeta` and a view over several kinds declare no kind: a handler over them is registered with `on` and a matcher instead of `on_payload`
+  = note: `Envelope`, `EventMeta` and a view over several kinds declare no kind: a handler over them is registered with `on` and a matcher that says the kind
   = note: a serde view over one kind declares it on the type: `#[derive(Payload)] #[payload(EventKind::..)]`
 ```
 
@@ -449,11 +449,64 @@ on the trait, the mechanism declined above. Even with it, the matcher is a
 value built from `EventKind` at run time, and an enum is no stable const
 generic, so the two kinds could be compared at the `on` call at the
 earliest, not by the compiler. The spelling the compiler does check exists
-and is one registration away: `on_payload_action([Action::Opened], welcome)`
-takes the kind from the type and cannot be registered under the wrong one.
+and is one token away: `on(Action::Opened, welcome)` takes the kind from the
+type and cannot be registered under the wrong one.
 Reopens with the marker, which would move the check from the dispatch to the
 registration call. Recorded on `on` and in the Routing section of the
 README.
+
+## One `on`; `on_payload` and `on_payload_action` removed
+
+`on_payload(handler)` and `on_payload_action(actions, handler)` registered a
+handler over a `Payload` under the kind its type declared, for every action
+or for the listed ones. Beside `on(matcher, handler)` they made three
+registration methods for one routed tier, and the split was by input rather
+than by what the registration said: `on_payload_action([Action::Opened],
+label)` and `on((EventKind::Issues, Action::Opened), label)` registered the
+same route, one with the kind said once and one with it said twice, under
+different names. The Probot-migrant persona read that as `issues.opened`
+"spelled across three places" (run 3), and the imbalance between `on` and
+`on_payload` was the friction that reopened the question.
+
+The two methods existed because `on`'s matcher, `impl Into<EventMatcher>`,
+could not see the handler's input type, so a matcher of actions alone had no
+kind to fill in. The matcher bound is now `IntoMatcher<I>`, generic over the
+input. Every shape that converts into an `EventMatcher` implements it for
+any `I` and says its kinds, as before. `Action`, `[Action; N]` and
+`AnyAction`, a unit struct, implement it only where `I: Payload`, and take
+the kind from `I::KIND`. So `on(Action::Opened, label)` is the former
+`on_payload_action`, `on(AnyAction, notify)` the former `on_payload`, and
+`on` is the one verb for the routed tier: *on (event and/or action), do
+this*. What the two methods checked, `on` still checks: actions alone under
+an input that declares no kind fail to compile, and the message rustc
+reaches is the `Payload` trait's own, whose first note says to spell the
+kind. The blanket impl and the three relative impls are disjoint because
+`Action`, `[Action; N]` and `AnyAction` do not convert into an
+`EventMatcher`, which they cannot without a kind, and rustc confirmed the
+coherence.
+
+Three spellings for "every action of the declared kind" were weighed.
+`on(notify)` alone is not expressible: no arity overloading, no default
+arguments. `on(.., notify)`, `RangeFull` as the matcher, compiles and is
+shortest, but is a pun that needs a sentence to say "all of what", and
+"everything" invites confusion with `always`; declined. `Action::Any`, a
+variant on the wire enum, was declined because `Action` is GitHub's value
+verbatim, held by `EventMeta::action` and round-tripped through serde: a
+variant no delivery can carry would give every `match` a dead arm and
+`as_str` a string GitHub might one day send. `AnyAction` is a value with no
+data whose name says what it selects, the pattern of `tower_http`'s
+`cors::Any`, and it matches the slot it registers under (`Slot::any_action`).
+A method beside `on` for this one case, keeping `on_payload` for it alone,
+was the last alternative; declined because it would keep the imbalance for
+the case the name least fits (what differs is "every action", not the
+input).
+
+What was given up: `on`'s signature gains a type parameter, `on::<I, H, M>`,
+so a struct handling several inputs names it with one more `_`; the
+`IntoMatcher` message cannot name the input, since rustc checks that bound
+before it has inferred `I` from the handler, so it renders `_` and the text
+does not try. Net surface: two methods removed, one trait and one unit struct
+added. Recorded on `on`, `IntoMatcher` and `AnyAction`.
 
 ## `fallback` stays, with one job
 
@@ -489,8 +542,8 @@ crate-provided adapter: a `Handler<Envelope>` made from a matcher and a
 handler over `Event<P>`, so that one route needs neither a hand-written
 adapter nor a dispatcher. His own count decided it. The hand-written adapter
 (a struct generic over the inner handler, `PhantomData<P>`, decode then
-forward) was 48 lines, 35 of code; a dispatcher with one
-`on_payload_action` registration was 25 lines, 19 of code, and buys the
+forward) was 48 lines, 35 of code; a dispatcher with one action-routed
+registration was 25 lines, 19 of code, and buys the
 dispatch error (tier, handler name, registration site) and the outcome,
 which the adapter would have to reinvent. The third shape, a handler over
 `Envelope` that decodes its own view with `Envelope::decode_payload`, was

@@ -18,7 +18,9 @@
 
 use std::convert::Infallible;
 
-use octoevents::{DecodeError, Dispatcher, Envelope, Event, EventKind, FromEnvelope as _, Payload};
+use octoevents::{
+    AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind, FromEnvelope as _, Payload,
+};
 
 #[derive(serde::Deserialize, Payload)]
 #[payload(EventKind::Issues)]
@@ -150,7 +152,7 @@ fn a_handler_over_a_generic_view_is_registered_by_the_views_kind() {
     }
 
     let _dispatcher = Dispatcher::<AppError>::builder()
-        .on_payload(number)
-        .on_payload(raw)
+        .on(AnyAction, number)
+        .on(AnyAction, raw)
         .build();
 }
