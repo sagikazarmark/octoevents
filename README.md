@@ -46,7 +46,7 @@ Probot runs every matching handler and aggregates.
 | `app.on('issues', h)` | `on_payload(h)` after the same `impl_payload!`, or `on(EventKind::Issues, h)` |
 | `app.onAny(h)` | `always(h)`: runs first, for every delivery, over the envelope; its error fails the delivery; sees `ping` only when the receiver is built with `handle_ping(true)` |
 | `app.onError(h)` | `on_error(h)` on the receiver builder |
-| `app.receive(event)` | `dispatcher.dispatch(envelope)` with an envelope built by hand; see [Testing without GitHub](#testing-without-github) |
+| `app.receive(event)` | `dispatcher.dispatch(envelope)` with an envelope from `Envelope::new`; see [Testing without GitHub](#testing-without-github) |
 
 A complete receiver that labels every opened issue, audits every delivery,
 and reports every failure with its causes:
@@ -273,13 +273,26 @@ the route table, beside the result.
 
 ## Testing without GitHub
 
-A handler is tested through `dispatch` with an envelope built by hand: an
-`EventMeta` for the delivery and the payload bytes as a literal. Nothing is
-signed, because nothing is verified on this path. In the same file as the
-program above:
+A handler is tested through `dispatch` with an envelope built by
+`Envelope::new`: the delivery ID, the kind, and the payload bytes as a
+literal. Nothing is signed, because nothing is verified on this path; what
+the constructor does do is read the action, installation ID, repository,
+organization and sender out of the bytes, the way the receiver does, so the
+meta a handler over `Event<P>` sees is what the body says rather than what
+the test remembered to assign. In the same file as the program above, with
+`label` widened to `Event<IssueOpened>` so it can read the installation:
 
 ```rust,ignore
-use octoevents::{Bytes, Match};
+use octoevents::{Event, Match};
+
+/// Runs for `issues.opened`, with the installation beside the payload.
+async fn label(Event { meta, payload }: Event<IssueOpened>) -> Result<(), AppError> {
+    println!(
+        "label #{} '{}' for installation {:?}",
+        payload.issue.number, payload.issue.title, meta.installation_id
+    );
+    Ok(())
+}
 
 #[tokio::test]
 async fn labels_an_opened_issue() {
@@ -287,12 +300,13 @@ async fn labels_an_opened_issue() {
         .on_payload_action([Action::Opened], label)
         .build();
 
-    let mut meta = EventMeta::new("delivery-1", EventKind::Issues);
-    meta.action = Some(Action::Opened);
-    let envelope = Envelope {
-        meta,
-        raw: Bytes::from_static(br#"{"action":"opened","issue":{"number":7,"title":"Add tests"}}"#),
-    };
+    let envelope = Envelope::new(
+        "delivery-1",
+        EventKind::Issues,
+        br#"{"action":"opened","installation":{"id":42},"issue":{"number":7,"title":"Add tests"}}"#,
+    );
+    assert_eq!(envelope.meta.action, Some(Action::Opened));
+    assert_eq!(envelope.meta.installation_id, Some(42));
 
     let outcome = dispatcher.dispatch(envelope).await;
 
@@ -300,6 +314,11 @@ async fn labels_an_opened_issue() {
     outcome.result.unwrap();
 }
 ```
+
+`Envelope` cannot be built as a struct literal outside the crate, so a meta
+cannot be paired with bytes that say something else. A field the bytes do not
+carry, the target type and ID from GitHub's headers, is assigned afterwards
+on a `mut` binding if the handler reads it.
 
 The receiver is tested with a signed synthetic request. GitHub's signature is
 `sha256=` followed by the lowercase hex HMAC-SHA256 of the body under the

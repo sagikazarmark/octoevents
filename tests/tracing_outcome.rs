@@ -15,10 +15,9 @@
 
 mod common;
 
-use bytes::Bytes;
 use octoevents::{
-    Action, DecodeError, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, Handler as _,
-    Match, Outcome,
+    Action, DecodeError, DispatchError, Dispatcher, Envelope, EventKind, Handler as _, Match,
+    Outcome,
 };
 
 #[derive(Debug, PartialEq)]
@@ -54,13 +53,22 @@ fn unwrapped_outcome<E>(outcome: Outcome<E>) -> (Match, Result<(), E>) {
 struct AnyPullRequest {}
 octoevents::impl_payload!(AnyPullRequest => EventKind::PullRequest);
 
+/// An envelope of `kind` whose body carries `action`, or `{}` for none, so
+/// the meta the span records is what the body says.
 fn envelope(kind: EventKind, action: Option<Action>) -> Envelope {
-    let mut meta = EventMeta::new("delivery", kind);
-    meta.action = action;
-    Envelope {
-        meta,
-        raw: Bytes::from_static(b"{}"),
+    Envelope::new("delivery", kind, body(action, None))
+}
+
+/// The smallest body carrying `action` and an installation ID.
+fn body(action: Option<Action>, installation_id: Option<u64>) -> Vec<u8> {
+    let mut fields = Vec::new();
+    if let Some(action) = action {
+        fields.push(format!(r#""action":"{}""#, action.as_str()));
     }
+    if let Some(id) = installation_id {
+        fields.push(format!(r#""installation":{{"id":{id}}}"#));
+    }
+    format!("{{{}}}", fields.join(",")).into_bytes()
 }
 
 /// The fields one span carried at one of its events, as the `fmt` subscriber
@@ -312,8 +320,11 @@ fn the_span_opens_with_the_delivery_id_and_event_and_the_action_and_installation
 
     // The fields are read from the span's `new` event, so they were there
     // before any handler ran, not recorded on the way out.
-    let mut with_both = envelope(EventKind::PullRequest, Some(Action::Opened));
-    with_both.meta.installation_id = Some(42);
+    let with_both = Envelope::new(
+        "delivery",
+        EventKind::PullRequest,
+        body(Some(Action::Opened), Some(42)),
+    );
     let (log, _) = common::traced(dispatcher.dispatch(with_both));
     let fields = span_fields(&log, "octoevents.dispatch", "new");
     assert_eq!(fields.rendered("delivery_id"), Some("\"delivery\""));

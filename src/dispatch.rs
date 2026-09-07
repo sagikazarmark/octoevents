@@ -2166,7 +2166,9 @@ mod tests {
             .build();
 
         // Nothing is decoded on the handler's behalf: a payload that is not
-        // even a JSON object still reaches it, meta in hand.
+        // even a JSON object still reaches it, meta in hand. The body carries
+        // no installation for the constructor to read, so this test assigns
+        // it, on purpose.
         let mut envelope = envelope_with_action(
             EventKind::Installation,
             Action::Deleted,
@@ -2581,15 +2583,13 @@ mod tests {
         );
         let dispatcher = dispatcher.build();
 
-        // A delivery carrying the installation reaches the handler as the ID.
-        // The synthetic envelope probes nothing, so the meta is set by hand,
-        // as the probe would have from the payload.
-        let mut envelope = envelope_with_action(
+        // A delivery carrying the installation reaches the handler as the ID,
+        // read from the body.
+        let envelope = envelope_with_action(
             EventKind::Installation,
             Action::Deleted,
-            br#"{"action":"deleted"}"#,
+            br#"{"action":"deleted","installation":{"id":42}}"#,
         );
-        envelope.meta.installation_id = Some(42);
         dispatcher.dispatch(envelope).await.result.unwrap();
         assert_eq!(seen.lock().await.as_slice(), [42]);
 
