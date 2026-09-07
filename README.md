@@ -279,20 +279,12 @@ literal. Nothing is signed, because nothing is verified on this path; what
 the constructor does do is read the action, installation ID, repository,
 organization and sender out of the bytes, the way the receiver does, so the
 meta a handler over `Event<P>` sees is what the payload says rather than what
-the test remembered to assign. In the same file as the program above, with
-`label` widened to `Event<IssueOpened>` so it can read the installation:
+the test remembered to assign. In the same file as the program above:
 
 ```rust,ignore
-use octoevents::{Event, Match};
+use std::sync::{Arc, Mutex};
 
-/// Runs for `issues.opened`, with the installation beside the payload.
-async fn label(Event { meta, payload }: Event<IssueOpened>) -> Result<(), AppError> {
-    println!(
-        "label #{} '{}' for installation {:?}",
-        payload.issue.number, payload.issue.title, meta.installation_id
-    );
-    Ok(())
-}
+use octoevents::{Event, Match};
 
 #[tokio::test]
 async fn labels_an_opened_issue() {
@@ -303,22 +295,48 @@ async fn labels_an_opened_issue() {
     let envelope = Envelope::new(
         "delivery-1",
         EventKind::Issues,
-        br#"{"action":"opened","installation":{"id":42},"issue":{"number":7,"title":"Add tests"}}"#,
+        br#"{"action":"opened","issue":{"number":7,"title":"Add tests"}}"#,
     );
-    assert_eq!(envelope.meta.action, Some(Action::Opened));
-    assert_eq!(envelope.meta.installation_id, Some(42));
 
     let outcome = dispatcher.dispatch(envelope).await;
 
     assert_eq!(outcome.matched, Match::Matched);
     outcome.result.unwrap();
 }
+
+/// The meta a handler over `Event<P>` receives is what the payload carries:
+/// the action routed it, and the installation ID is beside the decoded view.
+#[tokio::test]
+async fn the_installation_reaches_the_handler_from_the_payload() {
+    let seen = Arc::new(Mutex::new(None));
+    let dispatcher = Dispatcher::<AppError>::builder()
+        .on_payload_action([Action::Opened], {
+            let seen = Arc::clone(&seen);
+            move |Event { meta, payload }: Event<IssueOpened>| {
+                let seen = Arc::clone(&seen);
+                async move {
+                    *seen.lock().unwrap() = Some((meta.installation_id, payload.issue.number));
+                    Ok::<_, AppError>(())
+                }
+            }
+        })
+        .build();
+
+    let envelope = Envelope::new(
+        "delivery-2",
+        EventKind::Issues,
+        br#"{"action":"opened","installation":{"id":42},"issue":{"number":7,"title":"Add tests"}}"#,
+    );
+
+    dispatcher.dispatch(envelope).await.result.unwrap();
+    assert_eq!(*seen.lock().unwrap(), Some((Some(42), 7)));
+}
 ```
 
 `Envelope` cannot be built as a struct literal outside the crate, so a meta
-cannot be paired with bytes that say something else. A field the bytes do not
-carry, the target type and ID from GitHub's headers, is assigned afterwards
-on a `mut` binding if the handler reads it.
+cannot be paired with a payload that says something else. A field the payload
+does not carry, the target type and ID from GitHub's headers, is assigned
+afterwards on a `mut` binding if the handler reads it.
 
 The receiver is tested with a signed synthetic request. GitHub's signature is
 `sha256=` followed by the lowercase hex HMAC-SHA256 of the body under the
