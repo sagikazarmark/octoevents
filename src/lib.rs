@@ -22,7 +22,14 @@
 //! let dispatcher = Dispatcher::<BoxError>::builder().always(print).build();
 //! # #[cfg(feature = "http")] {
 //! let webhook = WebhookReceiverBuilder::new(Verifier::new(Secret::new("development-secret")))
-//!     .on_error(|_, error: &DispatchError<BoxError>| eprintln!("{error}: {}", error.source))
+//!     .on_error(|_, error: &DispatchError<BoxError>| {
+//!         eprintln!("{error}: {}", error.source);
+//!         let mut cause = error.source.source();
+//!         while let Some(error) = cause {
+//!             eprintln!("  caused by: {error}");
+//!             cause = error.source();
+//!         }
+//!     })
 //!     .build(dispatcher);
 //! # let _ = webhook;
 //! # }
@@ -33,14 +40,12 @@
 //! `post_service`, as the complete program below does.
 //!
 //! The application error is a boxed `dyn Error`, so no error enum is written
-//! and `?` converts any error inside a handler. The one cost:
-//! `Box<dyn Error + Send + Sync>` is not itself an `Error`, so neither is
-//! [`DispatchError`] over it, and the error the observer receives has no
-//! `source()` to call. The handler's error is the `source` field, and its
-//! chain continues from `error.source.source()`. With the `tracing` feature
-//! the closure gives way to `.trace_boxed_errors()` on the builder: the one
-//! ERROR event the receiver emits for a failed delivery then carries the
-//! error's text and its sources; see [Tracing](#tracing).
+//! and `?` converts any error inside a handler. The observer prints where the
+//! delivery failed, then the handler's error, then each cause beneath it,
+//! down to the field a payload was missing. Its walk starts at
+//! `error.source.source()` rather than `error.source()` because a boxed
+//! `dyn Error` is not itself an `Error`; the complete program's observer,
+//! over an error that is one, shows the difference below.
 //!
 //! **Coming from Probot?** The registrations map one to one. The rule that
 //! does not: handlers run one at a time and the first error fails the
@@ -48,7 +53,7 @@
 //!
 //! | Probot | octoevents |
 //! | --- | --- |
-//! | `app.on('issues.opened', h)` | `impl_payload!(IssueOpened => EventKind::Issues)` on a serde view of the payload, then `on_payload_action([Action::Opened], h)`; or `on((EventKind::Issues, Action::Opened), h)` for a handler over the envelope or the meta. There is no string route form |
+//! | `app.on('issues.opened', h)` | `impl_payload!(IssueOpened => EventKind::Issues)` on a serde view of the payload, then `on_payload_action([Action::Opened], h)`, or `on((EventKind::Issues, Action::Opened), h)` with the kind spelled at the registration; `on` also takes a handler over the envelope or the meta. There is no string route form |
 //! | `app.on('issues', h)` | `on_payload(h)` after the same `impl_payload!`, or `on(EventKind::Issues, h)` |
 //! | `app.onAny(h)` | `always(h)`: runs first, for every delivery, over the envelope; its error fails the delivery; sees `ping` only when the receiver is built with `handle_ping(true)` |
 //! | `app.onError(h)` | `on_error(h)` on the receiver builder |
@@ -160,6 +165,18 @@
 //! With the `tracing` feature, `.trace_errors()` on the receiver builder is
 //! `report` as fields on that one ERROR event, source chain included.
 //!
+//! `report` walks the chain from `error.source()`; the hello world's observer
+//! walked it from `error.source.source()`. `AppError` is an `Error`, so
+//! `DispatchError<AppError>` is one too, with the application error as its
+//! `source()`. `Box<dyn Error + Send + Sync>` is not itself an `Error`, so
+//! neither is [`DispatchError`] over it, and there is no `source()` to call
+//! on the error the observer receives: the handler's error is the `source`
+//! field, an `Error` in its own right, and the chain continues from there.
+//! For the same reason a receiver over the boxed error calls
+//! `.trace_boxed_errors()` where this one calls `.trace_errors()`: it takes
+//! an error behind a pointer, or a `DispatchError` over one, and puts the
+//! same text and sources on the event; see [Tracing](#tracing).
+//!
 //! Always pass the exact request bytes. Parsing, re-encoding, or normalizing
 //! the body before verification invalidates GitHub's signature.
 //!
@@ -194,10 +211,21 @@
 //! and its per-kind payload structs are payloads.
 //!
 //! A handler with dependencies is a struct implementing the trait, the
-//! dependencies its fields borrowed through `&self`:
+//! dependencies its fields borrowed through `&self`. A struct keeps its own
+//! error type, and the dispatcher converts it into the application error
+//! through `From`, so the `Dispatcher<AppError>` that `Labeler` registers on
+//! needs `AppError: From<std::io::Error>`, the `Io` variant here:
 //!
 //! ```
-//! use octoevents::{Event, EventKind, Handler};
+//! use octoevents::{DecodeError, Dispatcher, Event, EventKind, Handler};
+//!
+//! #[derive(Debug, thiserror::Error)]
+//! enum AppError {
+//!     #[error(transparent)]
+//!     Decode(#[from] DecodeError),
+//!     #[error(transparent)]
+//!     Io(#[from] std::io::Error),
+//! }
 //!
 //! #[derive(serde::Deserialize)]
 //! struct IssueOpened { issue: Issue }
@@ -217,11 +245,17 @@
 //!         Ok(())
 //!     }
 //! }
+//!
+//! let dispatcher = Dispatcher::<AppError>::builder()
+//!     .on_payload(Labeler { label: "triage".into() })
+//!     .build();
+//! # let _ = dispatcher;
 //! ```
 //!
-//! A struct keeps its own error type; the dispatcher converts it into the
-//! application error through `From`. Closures work too, with the annotations
-//! [`Handler`] describes.
+//! Without the `Io` variant the impl is fine and the registration is not:
+//! rustc reports E0277, "the trait bound `AppError: From<std::io::Error>` is
+//! not satisfied", at the `on_payload` call. Closures work too, with the
+//! annotations [`Handler`] describes.
 //!
 //! # Routing
 //!
@@ -230,11 +264,17 @@
 //! routed handlers registered for the delivery's kind and action, then for
 //! the kind, by the payload type (`on_payload`, `on_payload_action`) or by an
 //! [`EventMatcher`] over any `FromEnvelope` input (`on`); and `fallback`,
-//! only when nothing routed matched, receiving the envelope. A routed handler
-//! decodes its input only when its route matched; `always` and `fallback`
-//! decode nothing. Unmatched deliveries succeed unless a fallback fails them;
-//! a strict fallback that rejects every kind nothing routes is one
-//! [`fallback`](DispatcherBuilder::fallback) registration.
+//! only when nothing routed matched, receiving the envelope. A payload view
+//! is an input `on` takes too: `on((EventKind::Issues, Action::Opened), h)`
+//! is `on_payload_action([Action::Opened], h)` with the kind said twice, on
+//! the type and at the registration, and the two are compared at dispatch,
+//! not at compile time; a matcher that disagrees with the view's kind fails
+//! every delivery it routes with [`DecodeError::KindMismatch`], reported at
+//! that registration. A routed handler decodes its input only when its route
+//! matched; `always` and `fallback` decode nothing. Unmatched deliveries
+//! succeed unless a fallback fails them; a strict fallback that rejects every
+//! kind nothing routes is one [`fallback`](DispatcherBuilder::fallback)
+//! registration.
 //!
 //! A failure is a [`DispatchError`]: the application error wrapped with the
 //! [`Tier`], the delivery's ID, kind and action, the failing handler's name,
@@ -249,7 +289,9 @@
 //! literal. Nothing is verified on that path, so nothing is signed; what the
 //! constructor does is read the action, installation ID, repository,
 //! organization and sender out of the bytes, as the receiver would, so a
-//! handler over [`Event<P>`](Event) sees the installation the payload carries:
+//! handler over [`Event<P>`](Event) sees the installation the payload carries
+//! ([`EventMeta::new`] on its own reads no bytes; it is for a handler over
+//! the meta alone):
 //!
 //! ```
 //! use std::sync::{Arc, Mutex};
@@ -290,10 +332,17 @@
 //! # });
 //! ```
 //!
+//! [`Match::Matched`] has two unmatched siblings: [`Match::UnmatchedAction`]
+//! for a kind registered without that action (a payload without an `action`
+//! here) and [`Match::UnmatchedKind`] for a kind the route table never
+//! registered (a `push`); both leave the result `Ok`, since nothing ran.
+//!
 //! The receiver is tested through [`WebhookReceiver::receive`] with a
 //! synthetic request carrying the four headers under [`header`] and a
 //! signature of `sha256=` plus the lowercase hex HMAC-SHA256 of the body under
-//! the secret. The README shows both as `#[tokio::test]` functions.
+//! the secret; an `http::Request<String>` is such a request, since `receive`
+//! takes any `http_body::Body` over [`Bytes`] and `String` is one, so the test
+//! needs no axum. The README shows both as `#[tokio::test]` functions.
 //!
 //! # One event, one handler
 //!
@@ -318,8 +367,10 @@
 //!     if envelope.meta.action != Some(Action::Published) {
 //!         return Ok(());
 //!     }
+//!     // The repository is already on the meta; only the tag needs the payload.
+//!     let repository = envelope.meta.repository.as_ref().map_or("?", |r| r.full_name.as_str());
 //!     let payload = envelope.decode_payload::<ReleasePublished>()?;
-//!     println!("{}: released {}", envelope.meta.delivery_id, payload.release.tag_name);
+//!     println!("{repository} released {}", payload.release.tag_name);
 //!     Ok(())
 //! }
 //!
@@ -382,7 +433,11 @@
 //! dispatcher, persisting, answering a redelivery of a stored delivery ID
 //! with success, and dead-lettering an unmatched delivery all live in a
 //! handler wrapping `dispatch`, [the policy seam](Dispatcher#the-policy-seam),
-//! which the `dispatcher` example shows.
+//! which the `dispatcher` example shows. Once a wrapper persists and
+//! deduplicates, a redelivery requested for a failed delivery (red in the
+//! webhook's recent deliveries) arrives under the stored delivery ID and is
+//! skipped as a duplicate: the 500 is then a signal to the operator, not a
+//! request to GitHub, and the delivery is recovered from the store.
 //!
 //! The receiver answers a failed delivery with a bare 500 and never reads the
 //! error: the response is GitHub's delivery record, not a log. The observer
@@ -475,15 +530,20 @@
 //! this crate's public API: the `FromEnvelope` impl for its `WebhookEvent`,
 //! the `Payload` impls for its per-kind payload structs, and
 //! `Envelope::decode_event` expose octocrab's types, so an octocrab major
-//! bump is a breaking change for handlers over them. The core (envelope,
-//! verification, receiver, the handler trait and its inputs, and the whole
-//! dispatcher) does not depend on it.
+//! bump is a breaking change for handlers over them. octocrab goes in the
+//! consumer's own `[dependencies]` too, to name those types; this crate
+//! re-exports none of them. The core (envelope, verification, receiver, the
+//! handler trait and its inputs, and the whole dispatcher) does not depend on
+//! it.
 //!
 //! The trade-off of octocrab's types is whole-model decode: a field GitHub
 //! changes fails the delivery with 500, where a view fails only on the fields
-//! it names. Its per-kind payload structs omit the top-level `installation`,
-//! `sender`, `repository` and `organization` objects, which its
-//! `WebhookEvent` carries and [`EventMeta`] summarizes.
+//! it names, and a test fixture is a complete payload, since the structs
+//! decode no fragment. Some structs leave their main object untyped, as
+//! `serde_json::Value` (`check_suite`, `workflow_run`, `workflow_job`,
+//! `team`). Its per-kind payload structs omit the top-level
+//! `installation`, `sender`, `repository` and `organization` objects, which
+//! its `WebhookEvent` carries and [`EventMeta`] summarizes.
 // `doc_cfg` propagates each `#[cfg]` into the rendered docs on its own,
 // including from a gated module to the items inside it, so gated items carry
 // no separate `doc(cfg(...))`.

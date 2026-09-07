@@ -39,7 +39,14 @@ async fn print(envelope: Envelope) -> Result<(), BoxError> {
 fn hello_world() -> WebhookReceiver<Dispatcher<BoxError>> {
     let dispatcher = Dispatcher::<BoxError>::builder().always(print).build();
     WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
-        .on_error(|_, error: &DispatchError<BoxError>| eprintln!("{error}: {}", error.source))
+        .on_error(|_, error: &DispatchError<BoxError>| {
+            eprintln!("{error}: {}", error.source);
+            let mut cause = error.source.source();
+            while let Some(error) = cause {
+                eprintln!("  caused by: {error}");
+                cause = error.source();
+            }
+        })
         .build(dispatcher)
 }
 

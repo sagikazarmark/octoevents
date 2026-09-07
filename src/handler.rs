@@ -60,10 +60,13 @@ use crate::{MaybeSend, MaybeSync};
 ///
 /// A handler with dependencies is a struct implementing the trait, the
 /// dependencies its fields, with a plain `async fn handle`; the future
-/// borrows `&self`, so nothing is cloned per delivery:
+/// borrows `&self`, so nothing is cloned per delivery. The struct keeps its
+/// own error type, and the dispatcher it registers on converts it into the
+/// application error through `From`; without `AppError: From<std::io::Error>`
+/// below, the registration is what fails to compile, not the impl:
 ///
 /// ```
-/// use octoevents::{Event, EventKind, Handler};
+/// use octoevents::{DecodeError, Dispatcher, Event, EventKind, Handler};
 ///
 /// #[derive(serde::Deserialize)]
 /// struct PullRequestNumber { number: u64 }
@@ -81,6 +84,19 @@ use crate::{MaybeSend, MaybeSync};
 ///         Ok(())
 ///     }
 /// }
+///
+/// #[derive(Debug, thiserror::Error)]
+/// enum AppError {
+///     #[error(transparent)]
+///     Decode(#[from] DecodeError),
+///     #[error(transparent)]
+///     Io(#[from] std::io::Error),
+/// }
+///
+/// let dispatcher = Dispatcher::<AppError>::builder()
+///     .on_payload(Labeler { label: "triage".into() })
+///     .build();
+/// # let _ = dispatcher;
 /// ```
 ///
 /// Closures implement the trait too, with two annotations the `async fn`
