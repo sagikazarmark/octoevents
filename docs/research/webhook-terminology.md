@@ -514,10 +514,22 @@ func ParseWebHook(messageType string, payload []byte) (any, error) {
 func MessageTypes() []string
 ```
 
-`github/event.go`: "// Event represents a GitHub event." `type Event struct {
-Type *string `json:"type"`; Public *bool; RawPayload *json.RawMessage
-`json:"payload"`; Repo *Repository; Actor *User; Org *Organization; CreatedAt
-*Timestamp; ID *string }` (the Events-API timeline type, reused for webhooks);
+`github/event.go`: "// Event represents a GitHub event." The Events-API
+timeline type, reused for webhooks:
+
+```go
+type Event struct {
+	Type       *string          `json:"type"`
+	Public     *bool
+	RawPayload *json.RawMessage `json:"payload"`
+	Repo       *Repository
+	Actor      *User
+	Org        *Organization
+	CreatedAt  *Timestamp
+	ID         *string
+}
+```
+
 `ParsePayload()`: "parses the event payload. For recognized event types, a
 value of the corresponding struct type will be returned." with the comment "It
 would be nice if e.Type were the snake_case name of the event, but the
