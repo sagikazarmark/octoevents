@@ -278,7 +278,7 @@ A handler is tested through `dispatch` with an envelope built by
 literal. Nothing is signed, because nothing is verified on this path; what
 the constructor does do is read the action, installation ID, repository,
 organization and sender out of the bytes, the way the receiver does, so the
-meta a handler over `Event<P>` sees is what the body says rather than what
+meta a handler over `Event<P>` sees is what the payload says rather than what
 the test remembered to assign. In the same file as the program above, with
 `label` widened to `Event<IssueOpened>` so it can read the installation:
 

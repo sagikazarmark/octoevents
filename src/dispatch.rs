@@ -1242,8 +1242,8 @@ mod tests {
     use crate::{
         Action, DecodeError, Envelope, Event, EventKind, EventMatcher, EventMeta, Handler,
         test_support::{
-            AppError, check_run_completed, envelope_with_action, installation_created, ping,
-            pull_request, pull_request_opened, unknown, unrepresentable,
+            AppError, check_run_completed, envelope, envelope_with_action, installation_created,
+            ping, pull_request, pull_request_opened, unknown, unrepresentable,
         },
     };
 
@@ -1912,11 +1912,7 @@ mod tests {
         let dispatcher = builder.on_payload(needs_number).build();
 
         let error = dispatcher
-            .dispatch(envelope_with_action(
-                EventKind::PullRequest,
-                Action::Opened,
-                br#"{"action":"opened"}"#,
-            ))
+            .dispatch(envelope(EventKind::PullRequest, br#"{"action":"opened"}"#))
             .await
             .result
             .unwrap_err();
@@ -2166,9 +2162,9 @@ mod tests {
             .build();
 
         // Nothing is decoded on the handler's behalf: a payload that is not
-        // even a JSON object still reaches it, meta in hand. The body carries
-        // no installation for the constructor to read, so this test assigns
-        // it, on purpose.
+        // even a JSON object still reaches it, meta in hand. The payload
+        // carries no installation for the constructor to read, so this test
+        // assigns it, on purpose.
         let mut envelope = envelope_with_action(
             EventKind::Installation,
             Action::Deleted,
@@ -2340,11 +2336,7 @@ mod tests {
             .build();
 
         let error = dispatcher
-            .dispatch(envelope_with_action(
-                EventKind::PullRequest,
-                Action::Opened,
-                br#"{"action":"opened"}"#,
-            ))
+            .dispatch(envelope(EventKind::PullRequest, br#"{"action":"opened"}"#))
             .await
             .result
             .unwrap_err();
@@ -2522,11 +2514,7 @@ mod tests {
         // A payload the view does not fit fails at the view's route, as any
         // decode does; the first route over it, alone, is the one reported.
         let error = dispatcher
-            .dispatch(envelope_with_action(
-                EventKind::PullRequest,
-                Action::Opened,
-                br#"{"action":"opened"}"#,
-            ))
+            .dispatch(envelope(EventKind::PullRequest, br#"{"action":"opened"}"#))
             .await
             .result
             .unwrap_err();
@@ -2584,22 +2572,20 @@ mod tests {
         let dispatcher = dispatcher.build();
 
         // A delivery carrying the installation reaches the handler as the ID,
-        // read from the body.
-        let envelope = envelope_with_action(
+        // read from the payload.
+        let installed = envelope(
             EventKind::Installation,
-            Action::Deleted,
             br#"{"action":"deleted","installation":{"id":42}}"#,
         );
-        dispatcher.dispatch(envelope).await.result.unwrap();
+        dispatcher.dispatch(installed).await.result.unwrap();
         assert_eq!(seen.lock().await.as_slice(), [42]);
 
         // One without fails in the route tier at the handler's registration,
         // and the chain ends at the consumer's own message, not at a decode of
         // the payload.
         let error = dispatcher
-            .dispatch(envelope_with_action(
+            .dispatch(envelope(
                 EventKind::Installation,
-                Action::Deleted,
                 br#"{"action":"deleted"}"#,
             ))
             .await
@@ -2734,11 +2720,7 @@ mod tests {
 
         // An action this crate does not know yet: nothing registered cares,
         // so nothing is decoded, and the fallback answers.
-        let future = envelope_with_action(
-            EventKind::PullRequest,
-            Action::Unknown("future_action".into()),
-            br#"{"action":"future_action"}"#,
-        );
+        let future = envelope(EventKind::PullRequest, br#"{"action":"future_action"}"#);
         assert_eq!(
             unwrapped(dispatcher.dispatch(future).await),
             Err(AppError::Handler("unmatched"))
@@ -2764,9 +2746,8 @@ mod tests {
             .on_payload(record_payload(&calls, "view"))
             .build();
 
-        let future = envelope_with_action(
+        let future = envelope(
             EventKind::PullRequest,
-            Action::Unknown("future_action".into()),
             br#"{"action":"future_action","number":2}"#,
         );
         assert_eq!(dispatcher.dispatch(future.clone()).await.result, Ok(()));

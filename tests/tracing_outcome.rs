@@ -53,22 +53,23 @@ fn unwrapped_outcome<E>(outcome: Outcome<E>) -> (Match, Result<(), E>) {
 struct AnyPullRequest {}
 octoevents::impl_payload!(AnyPullRequest => EventKind::PullRequest);
 
-/// An envelope of `kind` whose body carries `action`, or `{}` for none, so
-/// the meta the span records is what the body says.
+/// An envelope of `kind` whose payload carries `action`, or `{}` for none, so
+/// the meta the span records is what the payload says.
 fn envelope(kind: EventKind, action: Option<Action>) -> Envelope {
-    Envelope::new("delivery", kind, body(action, None))
+    Envelope::new("delivery", kind, payload(action, None))
 }
 
-/// The smallest body carrying `action` and an installation ID.
-fn body(action: Option<Action>, installation_id: Option<u64>) -> Vec<u8> {
-    let mut fields = Vec::new();
+/// The smallest payload carrying `action` and an installation ID, each when
+/// given.
+fn payload(action: Option<Action>, installation_id: Option<u64>) -> Vec<u8> {
+    let mut document = serde_json::Map::new();
     if let Some(action) = action {
-        fields.push(format!(r#""action":"{}""#, action.as_str()));
+        document.insert("action".into(), action.as_str().into());
     }
     if let Some(id) = installation_id {
-        fields.push(format!(r#""installation":{{"id":{id}}}"#));
+        document.insert("installation".into(), serde_json::json!({ "id": id }));
     }
-    format!("{{{}}}", fields.join(",")).into_bytes()
+    serde_json::to_vec(&document).unwrap()
 }
 
 /// The fields one span carried at one of its events, as the `fmt` subscriber
@@ -323,7 +324,7 @@ fn the_span_opens_with_the_delivery_id_and_event_and_the_action_and_installation
     let with_both = Envelope::new(
         "delivery",
         EventKind::PullRequest,
-        body(Some(Action::Opened), Some(42)),
+        payload(Some(Action::Opened), Some(42)),
     );
     let (log, _) = common::traced(dispatcher.dispatch(with_both));
     let fields = span_fields(&log, "octoevents.dispatch", "new");

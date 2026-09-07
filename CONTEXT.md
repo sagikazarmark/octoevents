@@ -173,9 +173,9 @@ octocrab's `WebhookEvent` and a view over several kinds are not.
 _Avoid_: Body (reserved for the HTTP transport layer)
 
 **Probe**:
-The best-effort read of the payload bytes that fills the body-derived fields
-of an `EventMeta` (action, installation ID, repository, organization, sender)
-without decoding the rest of the document. Partial, and never fatal:
+The best-effort read of the payload bytes that fills the payload-derived
+fields of an `EventMeta` (action, installation ID, repository, organization,
+sender) without decoding the rest of the document. Partial, and never fatal:
 malformed JSON leaves every probed field empty, one malformed field clears
 only itself, and the bytes are kept either way. An implementation term for
 prose and internals, not an API: it runs inside both envelope constructors

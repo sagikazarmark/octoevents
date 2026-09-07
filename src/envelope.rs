@@ -60,7 +60,7 @@ impl EventMeta {
     /// This reads no bytes: the action, installation ID, repository,
     /// organization and sender are whatever the caller assigns. For a meta
     /// that agrees with a payload, build the envelope with [`Envelope::new`],
-    /// which extracts those fields from the bytes the way the receiver does.
+    /// which reads those fields from the payload the way the receiver does.
     /// This constructor is for a handler over `EventMeta` alone, or a test
     /// that wants the meta and nothing else.
     ///
@@ -402,13 +402,14 @@ impl<'a> From<&'a http::HeaderMap> for HeaderView<'a> {
 ///
 /// The crate produces envelopes and consumers read them. Outside the crate
 /// one comes from [`Envelope::from_signed`], which authenticates an untrusted
-/// request before it extracts, from [`Envelope::new`], which extracts the
-/// same fields from the bytes a test supplies and authenticates nothing, or
+/// request before it reads the payload, from [`Envelope::new`], which reads
+/// the payload a test supplies the same way and authenticates nothing, or
 /// from the serde `Deserialize` impl for one a trusted internal transport
 /// forwarded (see the wire format below). Only the first carries an
 /// authentication claim. The struct is `#[non_exhaustive]` so that a struct
-/// literal cannot pair a meta with bytes that say something else; the fields
-/// stay public, so reading them and destructuring with `..` work as before:
+/// literal cannot pair a meta with a payload that says something else; the
+/// fields stay public, so reading them and destructuring with `..` work as
+/// before:
 ///
 /// ```
 /// use octoevents::{Action, Envelope, EventKind};
@@ -419,13 +420,13 @@ impl<'a> From<&'a http::HeaderMap> for HeaderView<'a> {
 /// assert_eq!(meta.action, Some(Action::Opened));
 /// assert_eq!(envelope.raw.len(), 19);
 ///
-/// // A field the bytes cannot supply is assigned afterwards.
+/// // A field the payload cannot supply is assigned afterwards.
 /// let mut envelope = envelope;
 /// envelope.meta.target_id = Some(7);
 /// ```
 ///
 /// The literal is rejected outside the crate, where it could otherwise
-/// disagree with the bytes:
+/// disagree with the payload:
 ///
 /// ```compile_fail,E0639
 /// use octoevents::{Bytes, Envelope, EventKind, EventMeta};
@@ -523,10 +524,11 @@ impl Envelope {
     /// failure here, `NoContent` once the handler has succeeded, and
     /// `InternalServerError` when it has failed.
     ///
-    /// Probe parsing is best-effort and never fails the construction; the
-    /// rules are on [`Envelope::new`], which this constructor calls once the
-    /// body is authenticated and the headers are read. What this one adds is
-    /// the header-derived target type and ID.
+    /// The probe of the payload is best-effort and never fails the
+    /// construction; the rules are on [`Envelope::new`], which reads the
+    /// payload the same way. Once the body is authenticated and the headers
+    /// are read, this constructor adds what only the headers carry: the
+    /// target type and ID.
     ///
     /// The body must be `application/json`, which is a setting on the GitHub
     /// webhook; anything else is [`ReceiveError::UnsupportedContentType`]. The
@@ -624,7 +626,7 @@ impl Envelope {
         let event_name = required_header(headers.event_name.as_deref(), header::EVENT_NAME)?;
         let kind = EventKind::from_str(event_name).unwrap_or_else(|never| match never {});
 
-        let mut envelope = Self::over(delivery_id, kind, body);
+        let mut envelope = Self::probed(delivery_id, kind, body);
         envelope.meta.target_type = headers
             .target_type
             .as_deref()
@@ -644,15 +646,15 @@ impl Envelope {
     /// [`Dispatcher::dispatch`](crate::Dispatcher::dispatch) with an envelope
     /// built here, so nothing is signed and no [`Verifier`] is needed. The
     /// receiving path is [`Envelope::from_signed`], which authenticates the
-    /// body first and then calls this constructor with the header values.
+    /// request first and reads the payload the same way.
     ///
-    /// The meta carries what the receiver would have extracted from the same
-    /// bytes: the action, the installation ID, the repository, the
-    /// organization and the sender are read out of the payload here, so a
-    /// handler over [`Event<P>`](crate::Event) sees the `installation_id` the
-    /// body carries rather than whatever a test remembered to assign. The
-    /// target type and ID come from headers this constructor does not have,
-    /// so they stay `None`; assign them if the handler reads them.
+    /// The meta carries what the receiver would have read from the same
+    /// payload: the action, the installation ID, the repository, the
+    /// organization and the sender, so a handler over
+    /// [`Event<P>`](crate::Event) sees the `installation_id` the payload
+    /// carries rather than whatever a test remembered to assign. The target
+    /// type and ID come from headers this constructor does not have, so they
+    /// stay `None`; assign them if the handler reads them.
     ///
     /// The read of the payload is best-effort and never fails the
     /// construction. Malformed top-level JSON leaves every payload-derived
@@ -679,13 +681,15 @@ impl Envelope {
     /// ```
     #[must_use]
     pub fn new(delivery_id: impl Into<String>, kind: EventKind, payload: impl AsRef<[u8]>) -> Self {
-        Self::over(delivery_id, kind, Bytes::copy_from_slice(payload.as_ref()))
+        Self::probed(delivery_id, kind, Bytes::copy_from_slice(payload.as_ref()))
     }
 
-    /// [`Envelope::new`] over bytes already held as [`Bytes`], so the
-    /// receiving path shares the extraction without copying the body.
-    fn over(delivery_id: impl Into<String>, kind: EventKind, body: Bytes) -> Self {
-        let probe = serde_json::from_slice::<Probe<'_>>(&body).unwrap_or_default();
+    /// The probe: the meta's payload-derived fields read from `raw`, with the
+    /// header-derived target left empty. Both constructors come through here,
+    /// [`Envelope::new`] after copying a test's payload into [`Bytes`] and
+    /// [`Envelope::from_signed`] with the authenticated body as it holds it.
+    fn probed(delivery_id: impl Into<String>, kind: EventKind, raw: Bytes) -> Self {
+        let probe = serde_json::from_slice::<Probe<'_>>(&raw).unwrap_or_default();
 
         let mut meta = EventMeta::new(delivery_id, kind);
         meta.action = probe
@@ -709,7 +713,7 @@ impl Envelope {
             .and_then(parse_probe::<LoginOnly>)
             .map(|sender| sender.login);
 
-        Self { meta, raw: body }
+        Self { meta, raw }
     }
 
     /// Decodes the exact payload into a caller-defined view, checking nothing
@@ -1094,9 +1098,9 @@ mod tests {
     }
 
     #[test]
-    fn from_signed_adds_the_header_derived_target_to_what_new_extracts() {
+    fn from_signed_reads_the_target_from_the_headers_when_the_payload_yields_nothing() {
         // The target is the one thing the receiving path knows and the test
-        // path does not: it comes from headers, not from the body.
+        // path does not: it comes from headers, not from the payload.
         let body = Bytes::from_static(b"not json");
         let signature = signature(b"secret", &body);
 
@@ -1111,10 +1115,10 @@ mod tests {
     }
 
     #[test]
-    fn a_synthetic_envelope_carries_what_the_receiver_would_have_extracted() {
-        // The test path and the receiving path read the same bytes the same
-        // way; only the header-derived target differs, since `new` has no
-        // headers to read it from.
+    fn a_synthetic_envelope_carries_what_the_receiver_would_have_read() {
+        // The test path and the receiving path probe the same payload the
+        // same way; only the header-derived target differs, since `new` has
+        // no headers to read it from.
         let signature = signature(b"secret", BODY);
         let signed =
             Envelope::from_signed(&verifier(), &headers(&signature), Bytes::from_static(BODY))
@@ -1128,7 +1132,7 @@ mod tests {
         assert_eq!(synthetic.meta, expected);
         assert_eq!(synthetic.raw, signed.raw);
 
-        // What the body carried is now in the meta, not hand-assigned.
+        // What the payload carried is now in the meta, not hand-assigned.
         assert_eq!(synthetic.meta.action, Some(Action::Opened));
         assert_eq!(synthetic.meta.installation_id, Some(42));
         assert_eq!(
@@ -1324,10 +1328,7 @@ mod tests {
     fn omits_absent_optional_fields_from_the_serialized_envelope() {
         // A forwarded envelope says what it knows and nothing else, so a
         // consumer in another language reads a missing key, not a null.
-        let envelope = Envelope {
-            meta: EventMeta::new("delivery", EventKind::Push),
-            raw: Bytes::from_static(b"{}"),
-        };
+        let envelope = Envelope::new("delivery", EventKind::Push, b"{}");
 
         let value = serde_json::to_value(envelope).unwrap();
 
@@ -1358,10 +1359,7 @@ mod tests {
         assert_eq!(from_nulls, from_absent);
         assert_eq!(
             from_absent,
-            Envelope {
-                meta: EventMeta::new("delivery", EventKind::Push),
-                raw: Bytes::from_static(b"{}"),
-            }
+            Envelope::new("delivery", EventKind::Push, b"{}")
         );
     }
 

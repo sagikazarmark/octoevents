@@ -246,7 +246,7 @@
 //! literal. Nothing is verified on that path, so nothing is signed; what the
 //! constructor does is read the action, installation ID, repository,
 //! organization and sender out of the bytes, as the receiver would, so a
-//! handler over [`Event<P>`](Event) sees the installation the body carries:
+//! handler over [`Event<P>`](Event) sees the installation the payload carries:
 //!
 //! ```
 //! use std::sync::{Arc, Mutex};
