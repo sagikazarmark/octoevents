@@ -24,20 +24,19 @@ All writes go under the scratch directory named in your prompt. The repository i
 
 Your report is your only message back: one section per item above, then a **Baseline diff** marking each baseline item *resolved* / *persists* / *regressed* with evidence, and *new* findings.
 
-## Baseline (2026-09-06, `705e82c`)
+## Baseline (2026-09-07, `62cb533`)
 
-32 public items at the crate root (30 without `http`; octocrab adds none), plus six header constants; 24 glossary terms, five naming the flavour-by-tier grid. Doc-to-code 3.87 in the handler module (adapters left, prose stayed), 6.37 on the crate root; test-to-code 3.52 in the dispatcher module. Repetition: the "never skip / wrap the dispatcher" advice about twelve times across four files; the octocrab pre-1.0 caveat in three. Previous run: 14 resolved, 2 persist, 0 regressed.
+33 public items at the crate root with all features (31 without `http`; the one addition is `trace_error`), plus six header constants and `impl_payload!`; 25 glossary terms, none naming a flavour-by-tier grid. Doc-to-code 11.5 on the crate root and 5.17 in the handler module (prose for E0282, E0283 and E0593, which rustc cannot say), 1.77 in the dispatcher; test-to-code 4.68 in the dispatcher module. Repetition: the policy seam once with six links (was ~12 statements); the octocrab caveat twice; the `ping` short-circuit 19 times across `src`. Previous run: 8 resolved, 3 persist, 0 regressed.
 
-Verdict: the four-flavour grid, raw tier, adapters and matcher gating are gone and every persona compiled with zero or one crate-caused failure; residual over-building is a `fallback` tier nobody used, prose repeating a policy the types leave to a wrapper, and shipped examples still teaching a ritual the README avoids. Kept as justified: two flavours over an open decode bound, decode-at-route with registration site, outcome and match, `always`, the matcher's tuple catalogue, `E: From<DecodeError>` on the type, no bound on the observer's error, the platform-conditional bounds. Findings and probe results:
+Verdict: not over-built. Every registration method, tier and result type but `fallback` was exercised by a persona in one iteration, and the two frictions of consequence sit in the one guarantee, `Send`, that the types must state and the docs cannot. Kept as justified: one `Handler<I>` over `FromEnvelope`; the tiers, `Outcome` and `Match`; decode-at-route with handler name and registration site; `E: From<DecodeError>` on the type; no bound on the observer's error; the boxed `dyn Error` as the taught application error. Findings and probe results:
 
-- A marker parameter `EventHandler<P, Args = (EventMeta, P)>` is coherent (probed): admits a payload-only `Fn(P)` blanket, keeps struct impls unchanged, forwards through `Arc<H>`, and turns the E0593 arity error into the crate's own E0277 message. Deferred by the synthesizer as a second type parameter on the headline trait; `impl FromEnvelope for EventMeta` recommended instead.
-- Recording the error's `Display` inside the crate without a bound on `E` is not expressible (probed: autoref specialization resolves against the generic). Bound-free event without text, or an opt-in `Display`-bounded observer fn, are the options.
-- `Box<dyn Error + Send + Sync>` is the zero-ceremony application error today (probed) and is undocumented; `DispatchError` over it is not itself `Error`.
-- Moving `E: From<DecodeError>` off the type frees only a route-less dispatcher (probed); an infallible `()` through an associated error moves the `Infallible` ritual onto every `()` route (probed). Keep the bound where it is.
-- `H::Error = E` in place of `E: From<H::Error>` (probed): bare `Ok(())` infers, an `Infallible` struct becomes a one-token fix, a reusable handler with a foreign error is lost. Every `Infallible` hit this run traces to a crate-taught shape; fix the four sites, then re-measure.
-- The handler module carries a migration note and `compile_fail` for an octocrab-only trait that `v0.1.0` never shipped.
-- `fallback` cannot see the match; 0/4 used it. Synthesizer's call: keep, re-documented as "log unrouted / strict".
-- `Envelope::from_signed_headers` is a duplicate spelling called only by two internal tests.
-- `always` is glossed "every delivery" while the receiver short-circuits `ping` before it by default.
-- `DecodeError::Json`'s `Display` leaves the serde message to `source()`; the README's headline observer therefore prints a fieldless reason.
-- Release hygiene: manifest `0.1.0`, README `0.2`, no changelog, survey table stale, README `EventMeta` list incomplete.
+- `WebhookReceiver::receive` is an `async fn`, so its `Send` proof happens at the caller over the concrete `H`; for `Dispatcher<Box<dyn Error + Send + Sync>>` it fails "implementation of `Send` is not general enough" (probed; three necessary ingredients: `Inner<H: Handler>` with a `Config<H::Error>` field, `impl<E: 'static> Handler for Dispatcher<E>`, and `&self` held across an await). A fix probed green: `receive` returns `impl Future + MaybeSend` with `B: MaybeSend`. The `tower` path is immune because the `Box::pin` inside `call` is the proof. Dropping `E: 'static` instead hits E0311.
+- A `Handler<I>: MaybeSync` supertrait is coherent with the closure and `Arc<H>` blankets (probed, all tests green); a consumer adapter generic over another handler then compiles as written on native and `wasm32`, rustc stops suggesting `Sync`, and the `wasm32` mis-diagnosis ("is not a handler over `Envelope`") vanishes. It rejects only impls nothing can register today.
+- The `Labeler` example on the front page and the `Handler` rustdoc teaches `type Error = std::io::Error` and never registers it; the one `From` miss this run.
+- `trace_error` bounds `E: Error + 'static`, not the `Display` its ticket named; it refuses the hello world's boxed error; the deviation is unrecorded.
+- `fallback`: 0/4 for the second run (0/8 overall); first candidate for *hide* if the next run reads 0 again.
+- `DecodeError::Json`'s `Display` leaves the serde message to `source()`; the README's headline observer still prints a fieldless reason.
+- With `trace_error`, a failed delivery is two ERROR events.
+- The test path's `EventMeta::new` probes nothing from `raw`; the receiver probes.
+- A payload view under a disagreeing `on` matcher fails at dispatch, not at compile; a compile-time check needs the marker already declined.
+- Release hygiene: manifest `0.1.0`, README `0.2`, no changelog.

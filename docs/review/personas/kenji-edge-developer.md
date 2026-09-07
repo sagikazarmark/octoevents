@@ -25,17 +25,18 @@ A receiver that verifies the signature, forwards every verified envelope as JSON
 - **Sans-I/O verdict**: compile iterations, friction, documentation adequacy, wire-format assessment.
 - **Three shapes comparison**: lines and clarity per shape, with the code of the shortest.
 
-## Baseline (2026-09-06, `705e82c`)
+## Baseline (2026-09-07, `62cb533`)
 
-Unique crates: 30 no-default / 35 default / 163 with octocrab (previous run's 319 was a different counting method). No-default builds clean for `wasm32` in about five seconds cold; the crate adds about 61 KB of wasm over a serde-only baseline, the dispatcher about 14.5 KB more. Shapes: plain handler 23 lines, typed handler with a hand-written forward-then adapter 51, dispatcher 28. Every program compiled first time. Previous run: 9 resolved, 2 persist, 0 regressed.
+Unique crates: 30 no-default / 35 default / 163 with octocrab, unchanged. No-default builds clean for `wasm32` in about six seconds cold; the crate adds about 64.5 KB of wasm over a serde-only baseline, the dispatcher about 16 KB more. Shapes: plain handler 22 lines (15 code), typed handler with a hand-written forward-then adapter 48 (35), dispatcher 25 (19). The sans-I/O lib and its tests compiled first time from the `from_signed` snippet; the adapter took 2 (a `Sync` bound), the Workers crate 2 (an `on_error` closure before `build` fixes `E`, anticipated). Previous run: 5 resolved, 5 persist, 0 regressed.
 
-- Driving the async `dispatch` from a sync entry point is undocumented; wrote a noop-waker poll.
-- Building the header view from a string map is six per-constant lookups, twenty lines, with no constructor from a lookup or an iterator.
-- The header-name case sentence lives in rustdoc, not in the README's sans-I/O paragraph.
-- The three receiver-only behaviours are listed in prose on the signed constructor with no code snippet.
-- No combinator sequences two webhook handlers.
-- The worker example still carries `impl From<Infallible>`; a handler returning the application error needs none.
-- Base64 inflation (~35% on a small payload) is undocumented as a cost.
-- The README's `EventMeta` field list omits organization, target type and target ID.
+- A hand-written adapter generic over another handler needs `MaybeSync`; rustc suggests `Sync`, which compiles natively and fails on `wasm32` with the crate's own "is not a handler over `Envelope`" message. The `Handler` docs name `MaybeSend` only.
+- No combinator sequences two handlers; a typed handler handed to the receiver is 35 code lines of adapter, and the docs say so honestly.
+- Driving the async `dispatch` from a sync entry point is still a noop-waker poll written by hand; the README says only "awaits it on whatever executor it has".
+- Base64 inflation is undocumented as a cost: `raw` is +33.8% over the payload, the whole document +117.6% since the meta repeats payload fields.
+- Wrong header-name casing presents as 401 on every delivery; the docs warn about case three times but never name the symptom.
+- A plain envelope handler in a forward-everything receiver must guard on kind and action, or `decode_payload` fails every other kind; the README's one-event block guards on action only, right for its case and wrong for this one.
+- `http::Request<String>` is an axum-free body for `receive` in tests; found by reading the receiver's source, not the docs.
+- A native `cargo check` of a Workers crate fails on the `MaybeSend` bound, correctly; the worker example carries no rust-analyzer target hint.
+- The crate ships no signing helper; the README's recipe suffices and `hmac`/`sha2` are already in the tree.
 - README dependency snippet says `version = "0.2"` while the manifest says `0.1.0`.
-- The payload-declaring macro expands to a three-line impl; judged marginal but fine, kept for hygiene, zero proc-macro cost, and its diagnostic.
+- The payload-declaring macro expands to a three-line impl; judged marginal but fine, kept for its diagnostic.

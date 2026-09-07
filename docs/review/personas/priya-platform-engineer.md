@@ -37,18 +37,16 @@ The receiving edge of the App, meeting all of:
 - **Tracing verdict**: what is emitted, what is missing, whether the handler error is observable by default.
 - Replace "Your final code" with your final application error and dispatcher wiring, about fifty lines.
 
-## Baseline (2026-09-06, `705e82c`)
+## Baseline (2026-09-07, `62cb533`)
 
-Compile iterations for the whole application: 2, one of them mine. Zero crate-caused failures across the application, 14 tests, a no-octocrab no-http meta-only route, and a tracing probe. Previous run: 6 resolved, 3 persist (2 narrowed), 0 regressed.
+Compile iterations for the whole application: 1 (eight requirements, 14 tests, `tower` + `octocrab` + `tracing`); the no-octocrab no-http meta-only route 1; the tracing probe 1. Zero crate-caused failures; everything typed from the docs compiled as typed. Persist-and-dedup ended in a handler over the envelope wrapping `dispatch`, steered there by the docs; `fallback` stayed empty by choice. Previous run: 6 resolved, 5 persist, 0 regressed.
 
-- With `tracing` on, a failed delivery is an INFO span close carrying `tier` and `registration_site` but never the error's message; the crate emits no event at any level, so a level-based alert never fires without an observer.
-- `registration_site` is `file:line:col`; mapping it to a handler name means opening my own source.
-- A one-argument fn passed to `on`, or a two-argument fn to `always`, is an E0593 arity error naming the trait but offering no flavour hint.
-- Secret rotation (`Verifier::also`) is documented only in rustdoc, not in the README.
-- `fallback` cannot see the match, so dead-lettering had to go in the wrapper and `fallback` ended empty.
-- `always` never sees the duplicates the wrapper skips, so "every delivery" metrics belong at the wrapper's top, leaving `always` empty too; its rustdoc bills it for metrics without this caveat.
-- `outcome` is one field name on three spans with three vocabularies; `handler_error` partitions differently on the receive and dispatch spans.
-- All three spans are INFO per delivery; the verify span is noise at scale.
-- The shipped dispatcher example still carries `impl From<Infallible>`; my application had zero ritual by returning the application error from every handler.
-- octocrab's `installation` payload struct still lacks the top-level `installation` object; the crate now warns on every octocrab payload impl and a four-struct view worked first time.
+- A two-argument `(meta, payload)` fn passed to `on`, `on_payload_action` or `always` is a bare E0593 with no `Event<P>` hint; the `Handler` rustdoc names it as the one shape the crate's diagnostic cannot reach.
+- With `on_error(trace_error)`, a failed delivery is two ERROR lines, `handler failed` (fields, no text) and `handler error` (text and sources), that read alike.
+- Once a delivery is persisted and deduplicated, GitHub's redelivery of a red delivery is skipped as a duplicate and recovery must come from the store; stated only in the dispatcher example, not in the README or front-page "Delivery semantics".
+- octocrab's `check_suite` payload struct carries the body as `serde_json::Value`; the Features row warns about whole-model decode, not untyped fields.
+- `outcome` is one field name with a different vocabulary per span; now stated in the Tracing contract, still not aggregatable across spans.
+- The receive span's open line carries no fields; the identifying fields are recorded after open, so `FmtSpan::NEW` prints an empty line.
+- `fallback` cannot see the match, so dead-lettering lives in the wrapper and `fallback` is empty; by design and documented.
+- octocrab's `installation` payload struct still lacks the top-level `installation` object; a four-struct view compiled first time and the Features row now names the omission.
 - README dependency snippet says `version = "0.2"` while the manifest says `0.1.0`.
