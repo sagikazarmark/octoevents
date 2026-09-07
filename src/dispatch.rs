@@ -73,7 +73,8 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 /// decodes only when its route matches: a handler registered for some actions
 /// decodes nothing for a delivery carrying another.
 ///
-/// ```
+#[cfg_attr(feature = "derive", doc = "```")]
+#[cfg_attr(not(feature = "derive"), doc = "```ignore")]
 /// use octoevents::{Action, DecodeError, Dispatcher, Envelope, Event, EventKind};
 ///
 /// /// The application error every handler converts into. `From<DecodeError>`
@@ -86,9 +87,9 @@ type EnvelopeFn<E> = Arc<dyn Fn(Envelope) -> BoxFuture<Result<(), E>> + 'static>
 ///
 /// // A consumer view over the pull-request payload; the kind it declares is
 /// // the kind its handler is routed by.
-/// #[derive(serde::Deserialize)]
+/// #[derive(serde::Deserialize, octoevents::Payload)]
+/// #[payload(EventKind::PullRequest)]
 /// struct PullRequestNumber { number: u64 }
-/// octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
 ///
 /// async fn forward(envelope: Envelope) -> Result<(), AppError> {
 ///     println!("forward {} ({} bytes)", envelope.meta.delivery_id, envelope.raw_payload.len());
@@ -801,7 +802,7 @@ where
     ///    |     .on(EventKind::Issues, |sender: Sender| async move {
     ///    |      ^^ expected `Envelope`, `EventMeta`, a `Payload`, `Event<P>`, or a type that implements `FromEnvelope` itself
     ///    |
-    ///    = note: for a serde view over one kind, declare the kind with `octoevents::impl_payload!(Sender => EventKind::..)`: every serde `Payload` is a `FromEnvelope`
+    ///    = note: for a serde view over one kind, declare the kind on the type with `#[derive(Payload)] #[payload(EventKind::..)]`: every serde `Payload` is a `FromEnvelope`
     ///    = note: for a view over several kinds, implement `FromEnvelope` for `Sender` directly, decoding with `Envelope::decode`
     /// ```
     ///
@@ -851,9 +852,9 @@ where
     /// # struct AppError;
     /// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
     ///
-    /// #[derive(serde::Deserialize)]
+    /// #[derive(serde::Deserialize, octoevents::Payload)]
+    /// #[payload(EventKind::PullRequest)]
     /// struct PullRequestNumber { number: u64 }
-    /// octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
     ///
     /// async fn notify(meta: EventMeta, pr: PullRequestNumber) -> Result<(), AppError> {
     ///     println!("{}: PR #{}", meta.delivery_id, pr.number);
@@ -893,15 +894,16 @@ where
     /// catch-all, so a payload type built on them cannot decode an action they
     /// do not know.
     ///
-    /// ```
+    #[cfg_attr(feature = "derive", doc = "```")]
+    #[cfg_attr(not(feature = "derive"), doc = "```ignore")]
     /// use octoevents::{Dispatcher, Event, EventKind};
     /// # use octoevents::DecodeError;
     /// # struct AppError;
     /// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
     ///
-    /// #[derive(serde::Deserialize)]
+    /// #[derive(serde::Deserialize, octoevents::Payload)]
+    /// #[payload(EventKind::PullRequest)]
     /// struct PullRequestNumber { number: u64 }
-    /// octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
     ///
     /// async fn label(pr: PullRequestNumber) -> Result<(), AppError> {
     ///     println!("label PR #{}", pr.number);
@@ -925,7 +927,7 @@ where
     /// several needs the input named: `on_payload::<PullRequestNumber, _>(labeler)`.
     ///
     /// A serde type that has not declared its kind is reported as not a
-    /// payload, with the `impl_payload!` call that makes it one (abridged):
+    /// payload, with the derive that makes it one (abridged):
     ///
     /// ```text
     /// error[E0277]: `PullRequestNumber` is not a payload
@@ -933,7 +935,7 @@ where
     ///    |     .on_payload(|pr: PullRequestNumber| async move {
     ///    |      ^^^^^^^^^^ expected a `serde::Deserialize` type that declares the event kind it decodes, or `Event<P>` over one
     ///    |
-    ///    = note: a serde view over one kind declares it with `octoevents::impl_payload!(PullRequestNumber => EventKind::..)`
+    ///    = note: a serde view over one kind declares it on the type: `#[derive(Payload)] #[payload(EventKind::..)]`
     /// ```
     ///
     /// ```compile_fail,E0277
@@ -980,17 +982,18 @@ where
     /// duplicated, and runs before any kind-wide `on_payload` route for the
     /// same kind.
     ///
-    /// ```
+    #[cfg_attr(feature = "derive", doc = "```")]
+    #[cfg_attr(not(feature = "derive"), doc = "```ignore")]
     /// use octoevents::{Action, Dispatcher, EventKind};
     /// # use octoevents::DecodeError;
     /// # struct AppError;
     /// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
     ///
-    /// #[derive(serde::Deserialize)]
+    /// #[derive(serde::Deserialize, octoevents::Payload)]
+    /// #[payload(EventKind::Issues)]
     /// struct IssueOpened { issue: Issue }
     /// #[derive(serde::Deserialize)]
     /// struct Issue { number: u64 }
-    /// octoevents::impl_payload!(IssueOpened => EventKind::Issues);
     ///
     /// async fn label(issue: IssueOpened) -> Result<(), AppError> {
     ///     println!("label #{}", issue.issue.number);
@@ -1025,11 +1028,11 @@ where
     /// # struct AppError;
     /// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
     ///
-    /// #[derive(serde::Deserialize)]
+    /// #[derive(serde::Deserialize, octoevents::Payload)]
+    /// #[payload(EventKind::Issues)]
     /// struct IssueOpened { issue: Issue }
     /// #[derive(serde::Deserialize)]
     /// struct Issue { number: u64 }
-    /// octoevents::impl_payload!(IssueOpened => EventKind::Issues);
     ///
     /// async fn label(meta: EventMeta, issue: IssueOpened) -> Result<(), AppError> {
     ///     println!("{:?}: label #{}", meta.action, issue.issue.number);
@@ -1365,7 +1368,9 @@ mod tests {
     /// route for that kind can be registered with or without octocrab.
     #[derive(serde::Deserialize)]
     struct AnyPullRequest {}
-    crate::impl_payload!(AnyPullRequest => EventKind::PullRequest);
+    impl crate::Payload for AnyPullRequest {
+        const KIND: EventKind = EventKind::PullRequest;
+    }
 
     /// A `pull_request` view the fixtures cannot satisfy, for tests that need
     /// a decode to fail at a known route.
@@ -1377,7 +1382,9 @@ mod tests {
         )]
         number: u64,
     }
-    crate::impl_payload!(Number => EventKind::PullRequest);
+    impl crate::Payload for Number {
+        const KIND: EventKind = EventKind::PullRequest;
+    }
 
     /// The handlers' result with the dispatch error unwrapped to its source,
     /// for tests that check which handler failed rather than where it was
@@ -1680,7 +1687,9 @@ mod tests {
     async fn a_strict_fallback_reports_its_own_error_for_an_unmatched_unrepresentable_payload() {
         #[derive(serde::Deserialize)]
         struct AnyCheckRun {}
-        crate::impl_payload!(AnyCheckRun => EventKind::CheckRun);
+        impl crate::Payload for AnyCheckRun {
+            const KIND: EventKind = EventKind::CheckRun;
+        }
 
         let calls = Calls::default();
         let dispatcher = Dispatcher::<AppError>::builder()
@@ -2362,7 +2371,9 @@ mod tests {
         struct CheckRunConclusion {
             conclusion: String,
         }
-        crate::impl_payload!(Conclusion => EventKind::CheckRun);
+        impl crate::Payload for Conclusion {
+            const KIND: EventKind = EventKind::CheckRun;
+        }
 
         let seen = Arc::new(Mutex::new(Vec::new()));
         let kind_wide = Arc::clone(&seen);
@@ -3008,7 +3019,9 @@ mod tests {
             conclusion: String,
         }
 
-        crate::impl_payload!(Conclusion => EventKind::CheckRun);
+        impl crate::Payload for Conclusion {
+            const KIND: EventKind = EventKind::CheckRun;
+        }
 
         let seen = Arc::new(Mutex::new(Vec::new()));
         let handler_seen = Arc::clone(&seen);
@@ -3250,7 +3263,9 @@ mod tests {
     async fn a_struct_handling_two_payloads_is_registered_with_a_turbofish() {
         #[derive(serde::Deserialize)]
         struct AnyCheckRun {}
-        crate::impl_payload!(AnyCheckRun => EventKind::CheckRun);
+        impl crate::Payload for AnyCheckRun {
+            const KIND: EventKind = EventKind::CheckRun;
+        }
 
         struct Labeler {
             calls: Calls,

@@ -684,7 +684,7 @@ mod tests {
     }
 
     /// A consumer-defined view of an `issues` payload: three fields, no
-    /// octocrab dependency, bound to its kind by `impl_payload!`.
+    /// octocrab dependency, bound to its kind by its `Payload` impl.
     #[derive(serde::Deserialize)]
     struct IssueView {
         action: String,
@@ -696,7 +696,9 @@ mod tests {
         number: u64,
     }
 
-    crate::impl_payload!(IssueView => EventKind::Issues);
+    impl crate::Payload for IssueView {
+        const KIND: EventKind = EventKind::Issues;
+    }
 
     /// The single-handler path: a handler over the envelope that decodes one
     /// kind's view itself with `decode_payload`, so a delivery of another
@@ -994,7 +996,9 @@ mod tests {
         struct Zen {
             zen: String,
         }
-        crate::impl_payload!(Zen => EventKind::Ping);
+        impl crate::Payload for Zen {
+            const KIND: EventKind = EventKind::Ping;
+        }
 
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let handler_seen = Arc::clone(&seen);

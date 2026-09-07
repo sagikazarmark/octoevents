@@ -43,11 +43,15 @@ where
     }
 }
 
+/// Written by hand rather than derived so the file compiles under
+/// `--no-default-features` too; the derive has its own test file.
 #[derive(serde::Deserialize)]
 struct PullRequestNumber {
     number: u64,
 }
-octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
+impl octoevents::Payload for PullRequestNumber {
+    const KIND: EventKind = EventKind::PullRequest;
+}
 
 /// The application error a dispatcher under test converts every handler's
 /// error into.

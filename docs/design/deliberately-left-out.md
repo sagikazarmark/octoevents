@@ -42,8 +42,8 @@ the header. Recorded on `EventKind`.
 
 ## Consumer-defined views, not one blessed struct per kind
 
-A `Payload` is any serde type that declares its kind with `impl_payload!`, so
-a handler names the fields it reads and nothing else. go-playground/webhooks
+A `Payload` is any serde type that declares its kind with `#[derive(Payload)]`,
+so a handler names the fields it reads and nothing else. go-playground/webhooks
 ships one hand-written struct per kind, and its issue tracker is a record of
 fields those structs lack and per-action variance they cannot follow.
 GitHub's payloads differ by action and gain fields over time, so a library's
@@ -120,19 +120,19 @@ appears before the first local type (`Envelope`)
 
 `TryFrom` is a foreign trait and `T` is uncovered, and the impl would in any
 case overlap core's `impl<T, U: Into<T>> TryFrom<U> for T`. So `Payload` and
-the handler bound would decouple: `impl_payload!` could emit a `TryFrom` impl
-per type, but a hand-written `impl Payload` would not be a valid handler
+the handler bound would decouple: the `Payload` derive could emit a `TryFrom`
+impl per type, but a hand-written `impl Payload` would not be a valid handler
 input, and kind-from-type would hold for some payloads and not others.
 
 A std trait cannot carry the `#[diagnostic::on_unimplemented]` note that
-tells a consumer with a serde type to call `impl_payload!`, or with a
+tells a consumer with a serde type to derive `Payload`, or with a
 cross-kind view to implement the trait directly. And `TryFrom<Envelope>`
 names a general conversion, while the bound has a specific contract: decode
 the payload for a handler, checking the kind first for a `Payload`, and
 report a `DecodeError` the dispatcher attributes to that registration.
 
-Emitting `TryFrom<Envelope>` impls from `impl_payload!` as interop, beside
-the bound rather than as it, remains possible and is not planned.
+Emitting `TryFrom<Envelope>` impls from the derive as interop, beside the
+bound rather than as it, remains possible and is not planned.
 
 ## Not `Event` as the bound's name, nor `EventDecoder`
 
@@ -217,7 +217,7 @@ also_meta: EventMeta)`, and a one-argument blanket beside the two-argument
 one is E0119; the one-argument shape needs either the marker above or the
 single trait.
 
-## No handler attribute macro, no derives
+## No handler attribute macro; `#[derive(Payload)]` (reversed)
 
 `#[octoevents::handler]` on an `async fn`, admitting any parameter list by
 generating the trait impl, was prototyped (about 200 lines of `syn`, no new
@@ -229,11 +229,58 @@ the fn as a struct in rustdoc; the tier a handler belongs to is decided by
 the spelling of a parameter type, so `use Envelope as Env` silently unfits
 it for `always`; and errors inside the generated impl are reported several
 times at the attribute, with the crate's own notes advising a struct impl
-the user never wrote. `#[derive(Payload)]` and `#[derive(FromEnvelope)]`
-expand to the same lines `impl_payload!` and a three-line impl write, and
-`impl_payload!` already reports a misspelled kind at the literal. Revisit the
-attribute only as a diagnostic aid in the `#[debug_handler]` sense, if arity
-errors keep appearing in reviews.
+the user never wrote. Revisit the attribute only as a diagnostic aid in the
+`#[debug_handler]` sense, if arity errors keep appearing in reviews.
+
+`#[derive(Payload)]` was declined at the same time, on the ground that it
+expands to the same three lines the `impl_payload!` macro wrote and that the
+macro already reported a misspelled kind at the literal. That weighed what
+the derive generates and not where it sits, and the decision was reversed
+once the second was weighed. The kind is a fact about the view, like its
+fields, and the derive puts it on the view, in the derive list every serde
+user already reads, `#[derive(serde::Deserialize, Payload)]
+#[payload(EventKind::Issues)]`; the macro put it one statement away in a
+grammar of its own, `Type => kind`, that nothing else in Rust uses. Same
+line count, the same generated impl but for one bound (below), same rustc
+error at a misspelled variant; a missing attribute is reported at the type
+name and a malformed one at the token, in the derive's own words. What it
+costs: a second crate, `octoevents-derive`, published beside this one and
+pinned exactly, with `syn` and `quote` behind it, which every consumer with
+`serde`'s derive already builds. It is the `derive` feature, on by default,
+so a minimal build can leave it out and write the three lines by hand; the
+`Payload` docs show that impl as what the derive expands to.
+
+The one thing the derive adds to those three lines is `where Self:
+DeserializeOwned`. `Payload` requires `FromEnvelope`, which a serde type has
+through the blanket impl over `Payload + DeserializeOwned`, so an impl on a
+generic view `View<T>` carrying only the type's own bounds owes
+`FromEnvelope` for every `T`, deserializable or not, and rustc refuses it; a
+hand-written generic impl needs the same clause. The bound is on every
+expansion rather than only the generic ones, so the derive has one shape,
+and so that a type that forgot `serde::Deserialize` is told the bound is
+unsatisfied, at the `Payload` in its derive list, rather than that it
+"cannot be decoded from an `Envelope`" with a note advising the derive it
+already wrote. The bound names `::serde`, the name every consumer deriving
+`serde::Deserialize` has; a hidden re-export of serde for a renamed one was
+considered and not added, since the three-line impl already serves that
+case.
+
+`impl_payload!` was removed rather than kept beside the derive. It could
+attach a kind only to a type the consumer owns, the same types the derive
+reaches, since the orphan rule forbids an `impl Payload` for another crate's
+type either way, so keeping it would have been a second spelling for the
+same situation and nothing more. octocrab's per-kind structs keep their
+crate-private macro, which exists for the shared rustdoc on each impl.
+
+The attribute takes the kind as an expression, `#[payload(EventKind::..)]`,
+and also as `#[payload(kind = EventKind::..)]`. The positional form is the
+documented one, everywhere the attribute is shown or named in a diagnostic;
+the keyed form parses as the same thing and is not documented. It is there
+so that, should the attribute ever carry a second datum, the grammar has a
+place for it without the positional form having to go. `#[derive(FromEnvelope)]`
+stays declined: a cross-kind view's decode is one line of the consumer's,
+`envelope.decode()`, and a derive would have to guess it. Recorded on
+`Payload`.
 
 ## No generic no-kind-check input, no `Deref` on `Event`
 
@@ -324,11 +371,11 @@ metrics-only observer would have made failed deliveries invisible at ERROR,
 the silence #18 set out to end. Recorded on `on_error` and in the `Tracing`
 section of the crate front page.
 
-## `impl_payload!` is suggested for `EventMeta`: a note cannot be filtered on `Self`
+## The derive is suggested for `EventMeta`: a note cannot be filtered on `Self`
 
 The single-trait redesign, #38, asked that `Payload`'s message, for an input
 that declares no kind (`EventMeta`, `Envelope`), lead with "register it with
-`on` and a matcher" and not suggest `impl_payload!` for a crate type. The
+`on` and a matcher" and not suggest declaring a kind on a crate type. The
 first half holds; the second is unmet, by the mechanism rather than by
 omission. `assert_payload::<EventMeta>()` renders (abridged):
 
@@ -336,7 +383,7 @@ omission. `assert_payload::<EventMeta>()` renders (abridged):
 error[E0277]: `EventMeta` is not a payload
   |
   = note: `Envelope`, `EventMeta` and a view over several kinds declare no kind: a handler over them is registered with `on` and a matcher instead of `on_payload`
-  = note: a serde view over one kind declares it with `octoevents::impl_payload!(EventMeta => EventKind::..)`
+  = note: a serde view over one kind declares it on the type: `#[derive(Payload)] #[payload(EventKind::..)]`
 ```
 
 Stable `#[diagnostic::on_unimplemented]` takes `message`, `label` and `note`,
@@ -354,8 +401,8 @@ warning: malformed `diagnostic::on_unimplemented` attribute
   = help: only `message`, `note` and `label` are allowed as options
 ```
 
-Dropping the second note was declined: the `impl_payload!` hint is what a
-serde type that never declared its kind needs, "the best diagnostic in the
+Dropping the second note was declined: the derive hint is what a serde type
+that never declared its kind needs, "the best diagnostic in the
 crate" in #38's words (story 19), kept at the price of one inapplicable line
 under a crate type. The note names the case it applies to, "a serde view
 over one kind", and the line above it names `EventMeta` and `Envelope`

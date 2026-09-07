@@ -1080,6 +1080,7 @@ dependencies = [
  "http-body",
  "http-body-util",
  "octocrab",
+ "octoevents-derive",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -1091,6 +1092,17 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zeroize",
+]
+
+[[package]]
+name = "octoevents-derive"
+version = "0.1.0"
+dependencies = [
+ "octoevents",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "syn 2.0.119",
 ]
 
 [[package]]

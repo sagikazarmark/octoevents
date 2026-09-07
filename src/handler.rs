@@ -21,12 +21,13 @@ use crate::{MaybeSend, MaybeSync};
 /// `Result<(), E>`; the receiver and the dispatcher accept the function
 /// itself, and the parameter's type is what fixes `I`:
 ///
-/// ```
+#[cfg_attr(feature = "derive", doc = "```")]
+#[cfg_attr(not(feature = "derive"), doc = "```ignore")]
 /// use octoevents::{Envelope, Event, EventKind, EventMeta, Handler};
 ///
-/// #[derive(serde::Deserialize)]
+/// #[derive(serde::Deserialize, octoevents::Payload)]
+/// #[payload(EventKind::PullRequest)]
 /// struct PullRequestNumber { number: u64 }
-/// octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
 ///
 /// // Bytes included: what the receiver and the `always` tier take.
 /// async fn audit(envelope: Envelope) -> Result<(), std::io::Error> {
@@ -65,12 +66,13 @@ use crate::{MaybeSend, MaybeSync};
 /// application error through `From`; without `AppError: From<std::io::Error>`
 /// below, the registration is what fails to compile, not the impl:
 ///
-/// ```
+#[cfg_attr(feature = "derive", doc = "```")]
+#[cfg_attr(not(feature = "derive"), doc = "```ignore")]
 /// use octoevents::{DecodeError, Dispatcher, Event, EventKind, Handler};
 ///
-/// #[derive(serde::Deserialize)]
+/// #[derive(serde::Deserialize, octoevents::Payload)]
+/// #[payload(EventKind::PullRequest)]
 /// struct PullRequestNumber { number: u64 }
-/// octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
 ///
 /// struct Labeler {
 ///     label: String, // stands in for a GitHub API client

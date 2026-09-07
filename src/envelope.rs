@@ -764,14 +764,15 @@ impl Envelope {
     /// through as a handler input. The kind check reports a wrong payload
     /// type at the kind, not as a missing field somewhere in the JSON:
     ///
-    /// ```
+    #[cfg_attr(feature = "derive", doc = "```")]
+    #[cfg_attr(not(feature = "derive"), doc = "```ignore")]
     /// use octoevents::{DecodeError, Envelope, EventKind};
     ///
-    /// #[derive(serde::Deserialize)]
+    /// #[derive(serde::Deserialize, octoevents::Payload)]
+    /// #[payload(EventKind::Issues)]
     /// struct IssueNumber { issue: Numbered }
     /// #[derive(serde::Deserialize)]
     /// struct Numbered { number: u64 }
-    /// octoevents::impl_payload!(IssueNumber => EventKind::Issues);
     ///
     /// let envelope = Envelope::new("delivery", EventKind::PullRequest, br#"{"issue":{"number":7}}"#);
     ///
@@ -1464,7 +1465,9 @@ mod tests {
         number: u64,
     }
 
-    crate::impl_payload!(IssueNumber => EventKind::Issues);
+    impl crate::Payload for IssueNumber {
+        const KIND: EventKind = EventKind::Issues;
+    }
 
     #[test]
     fn decode_payload_refuses_an_envelope_of_another_kind_at_the_kind() {

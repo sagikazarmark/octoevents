@@ -96,7 +96,7 @@ use crate::{DecodeError, Envelope, EventKind, EventMeta};
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be decoded from an `Envelope`",
     label = "expected `Envelope`, `EventMeta`, a `Payload`, `Event<P>`, or a type that implements `FromEnvelope` itself",
-    note = "for a serde view over one kind, declare the kind with `octoevents::impl_payload!({Self} => EventKind::..)`: every serde `Payload` is a `FromEnvelope`",
+    note = "for a serde view over one kind, declare the kind on the type with `#[derive(Payload)] #[payload(EventKind::..)]`: every serde `Payload` is a `FromEnvelope`",
     note = "for a view over several kinds, implement `FromEnvelope` for `{Self}` directly, decoding with `Envelope::decode`"
 )]
 pub trait FromEnvelope: Sized {
@@ -154,12 +154,13 @@ impl FromEnvelope for Envelope {
 /// a second statement; taking it whole and reading `event.meta` and
 /// `event.payload` is the same thing:
 ///
-/// ```
-/// use octoevents::{Event, EventKind};
+#[cfg_attr(feature = "derive", doc = "```")]
+#[cfg_attr(not(feature = "derive"), doc = "```ignore")]
+/// use octoevents::{Event, EventKind, Payload};
 ///
-/// #[derive(serde::Deserialize)]
+/// #[derive(serde::Deserialize, Payload)]
+/// #[payload(EventKind::PullRequest)]
 /// struct PullRequestNumber { number: u64 }
-/// octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
 ///
 /// async fn notify(Event { meta, payload }: Event<PullRequestNumber>) -> Result<(), std::io::Error> {
 ///     println!("{}: PR #{} {:?}", meta.delivery_id, payload.number, meta.action);
@@ -212,9 +213,9 @@ impl<P: Payload> Payload for Event<P> {
 /// to name only the fields it needs. Every serde payload is a
 /// [`FromEnvelope`] whose decode checks the kind first.
 ///
-/// Implement it for your own serde view with [`impl_payload!`]; with the
-/// `octocrab` feature, octocrab's per-kind payload structs implement it
-/// already.
+/// Derive it on your own serde view, naming the kind in the `#[payload]`
+/// attribute beside the fields it describes; with the `octocrab` feature,
+/// octocrab's per-kind payload structs implement it already.
 ///
 /// Views are the design, rather than one struct per kind owned by this crate.
 /// GitHub's payloads differ by action and gain fields over time, so a
@@ -226,22 +227,43 @@ impl<P: Payload> Payload for Event<P> {
 /// `installation`, `sender`, `repository` and `organization` objects to
 /// octocrab's `WebhookEvent`; each impl's docs say where to find them.
 ///
-/// ```
+#[cfg_attr(feature = "derive", doc = "```")]
+#[cfg_attr(not(feature = "derive"), doc = "```ignore")]
 /// use octoevents::{Event, EventKind, Payload};
+///
+/// #[derive(serde::Deserialize, Payload)]
+/// #[payload(EventKind::PullRequest)]
+/// struct PullRequestNumber {
+///     number: u64,
+/// }
+///
+/// assert_eq!(PullRequestNumber::KIND, EventKind::PullRequest);
+/// assert_eq!(<Event<PullRequestNumber>>::KIND, EventKind::PullRequest);
+/// ```
+///
+/// The derive expands to the impl below, with `Self: DeserializeOwned` as
+/// its where clause, and nothing else. The bound is what makes a serde type a
+/// `FromEnvelope`, so a generic view `View<T>` is a payload wherever `View<T>`
+/// deserializes, with nothing said about `T` beyond what the type declares.
+/// It comes with the `derive` feature, on by default; without the feature,
+/// the impl is written by hand, and on a type with no generics the bound
+/// goes without saying:
+///
+/// ```
+/// use octoevents::{EventKind, Payload};
 ///
 /// #[derive(serde::Deserialize)]
 /// struct PullRequestNumber {
 ///     number: u64,
 /// }
 ///
-/// octoevents::impl_payload!(PullRequestNumber => EventKind::PullRequest);
-///
-/// assert_eq!(PullRequestNumber::KIND, EventKind::PullRequest);
-/// assert_eq!(<Event<PullRequestNumber>>::KIND, EventKind::PullRequest);
+/// impl Payload for PullRequestNumber {
+///     const KIND: EventKind = EventKind::PullRequest;
+/// }
 /// ```
 ///
 /// A serde type that has not declared its kind is reported as not a payload,
-/// with the macro call that makes it one:
+/// with the derive that makes it one:
 ///
 /// ```compile_fail,E0277
 /// use octoevents::Payload;
@@ -251,6 +273,17 @@ impl<P: Payload> Payload for Event<P> {
 /// #[derive(serde::Deserialize)]
 /// struct PullRequestNumber { number: u64 }
 /// assert_payload::<PullRequestNumber>();
+/// ```
+///
+/// The derive without its attribute is refused at the type name, "missing
+/// `#[payload(EventKind::..)]`: a payload declares the kind it decodes":
+///
+#[cfg_attr(feature = "derive", doc = "```compile_fail")]
+#[cfg_attr(not(feature = "derive"), doc = "```ignore")]
+/// use octoevents::Payload;
+///
+/// #[derive(serde::Deserialize, Payload)]
+/// struct PullRequestNumber { number: u64 }
 /// ```
 ///
 /// An input that declares no kind, the [`EventMeta`] or the [`Envelope`], is
@@ -264,48 +297,14 @@ impl<P: Payload> Payload for Event<P> {
 ///
 /// assert_payload::<EventMeta>();
 /// ```
-///
-/// [`impl_payload!`]: crate::impl_payload
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a payload",
     label = "expected a `serde::Deserialize` type that declares the event kind it decodes, or `Event<P>` over one",
     note = "`Envelope`, `EventMeta` and a view over several kinds declare no kind: a handler over them is registered with `on` and a matcher instead of `on_payload`",
-    note = "a serde view over one kind declares it with `octoevents::impl_payload!({Self} => EventKind::..)`",
+    note = "a serde view over one kind declares it on the type: `#[derive(Payload)] #[payload(EventKind::..)]`",
     note = "with the `octocrab` feature, octocrab's per-kind `*WebhookEventPayload` structs are payloads; its `WebhookEvent` decodes for any kind, so it is a `FromEnvelope` registered with `on` instead"
 )]
 pub trait Payload: FromEnvelope {
     /// The event kind whose deliveries decode into this type.
     const KIND: EventKind;
-}
-
-/// Declares which [`EventKind`] each listed type is the payload of.
-///
-/// Each entry is `Type => kind_expression`, producing an `impl Payload` for
-/// the type. Several entries may be listed, separated by commas.
-///
-/// ```
-/// use octoevents::EventKind;
-///
-/// #[derive(serde::Deserialize)]
-/// struct IssueView { action: String }
-///
-/// #[derive(serde::Deserialize)]
-/// struct CommentView { action: String }
-///
-/// octoevents::impl_payload! {
-///     IssueView => EventKind::Issues,
-///     CommentView => EventKind::IssueComment,
-/// }
-/// ```
-///
-/// [`EventKind`]: crate::EventKind
-#[macro_export]
-macro_rules! impl_payload {
-    ($($payload:ty => $kind:expr),+ $(,)?) => {
-        $(
-            impl $crate::Payload for $payload {
-                const KIND: $crate::EventKind = $kind;
-            }
-        )+
-    };
 }
