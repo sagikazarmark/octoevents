@@ -109,6 +109,14 @@ impl<E> WebhookReceiverBuilder<E> {
     }
 
     /// Controls whether verified `ping` events reach the handler.
+    ///
+    /// GitHub sends a `ping` when a webhook is created. By default the
+    /// receiver answers a verified one with 204 before any handler runs, so
+    /// a [`Dispatcher`](crate::Dispatcher) never routes it and its `always`
+    /// tier never sees it. `handle_ping(true)` passes it through instead, for
+    /// an `always` handler that records every delivery to record that one
+    /// too. An unsigned `ping` is 401 either way, and a short-circuited one
+    /// never reaches the [`on_error`](Self::on_error) observer.
     #[must_use]
     pub const fn handle_ping(mut self, handle: bool) -> Self {
         self.config.handle_ping = handle;
@@ -263,8 +271,8 @@ impl<E> WebhookReceiverBuilder<E> {
     /// dispatch error's text, saying where, and `source` the boxed error,
     /// saying why, with its chain rendered by the subscriber.
     ///
-    /// The crate front page's receiver, whose handlers return
-    /// `Box<dyn Error + Send + Sync>`:
+    /// A receiver whose handlers return `Box<dyn Error + Send + Sync>`, as
+    /// the crate front page's does:
     ///
     /// ```
     /// use octoevents::{Dispatcher, Envelope, Secret, Verifier, WebhookReceiverBuilder};
@@ -381,6 +389,52 @@ where
     H: Handler<Envelope> + MaybeSend + MaybeSync + 'static,
 {
     /// Authenticates, bounds, and dispatches one request.
+    ///
+    /// The request is any `http::Request` whose body yields [`Bytes`]:
+    /// axum's, a Cloudflare Worker's, or a `String` in a test, which drives
+    /// the receiver with a signed synthetic request and no server. GitHub's
+    /// signature is `sha256=` followed by the lowercase hex HMAC-SHA256 of
+    /// the body under the secret, and a request needs the four headers
+    /// [`header`](crate::header) names:
+    ///
+    /// ```
+    /// use hmac::{Hmac, KeyInit as _, Mac as _};
+    /// use octoevents::{Dispatcher, Secret, Verifier, WebhookReceiverBuilder, header};
+    /// use sha2::Sha256;
+    ///
+    /// type BoxError = Box<dyn std::error::Error + Send + Sync>;
+    ///
+    /// /// What GitHub puts in `X-Hub-Signature-256`.
+    /// fn sign(secret: &str, body: &[u8]) -> String {
+    ///     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+    ///     mac.update(body);
+    ///     let hex: String = mac.finalize().into_bytes().iter().map(|byte| format!("{byte:02x}")).collect();
+    ///     format!("sha256={hex}")
+    /// }
+    ///
+    /// # tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
+    /// let dispatcher = Dispatcher::<BoxError>::builder().build();
+    /// let webhook = WebhookReceiverBuilder::new(Verifier::new(Secret::new("test-secret")))
+    ///     .build(dispatcher);
+    ///
+    /// let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
+    /// let request = http::Request::builder()
+    ///     .method("POST")
+    ///     .uri("/webhook")
+    ///     .header(header::CONTENT_TYPE, "application/json")
+    ///     .header(header::DELIVERY_ID, "delivery-1")
+    ///     .header(header::EVENT_NAME, "issues")
+    ///     .header(header::SIGNATURE, sign("test-secret", body.as_bytes()))
+    ///     .body(body.to_string())
+    ///     .unwrap();
+    ///
+    /// let response = webhook.receive(request).await;
+    ///
+    /// assert_eq!(response.status(), 204);
+    /// # });
+    /// ```
+    ///
+    /// Change the secret on either side and the same request is answered 401.
     ///
     /// This path never boxes and never crosses a Tower or native executor
     /// boundary, so on `wasm32` a Cloudflare Worker can hand an
