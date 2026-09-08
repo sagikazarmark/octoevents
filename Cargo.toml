@@ -8,6 +8,8 @@ exclude = ["examples/worker"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+# 1.88 stabilised `<[T]>::as_chunks`, which `verify` reads the signature's hex
+# pairs with; `just msrv` checks the claim on that toolchain.
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/sagikazarmark/octoevents"

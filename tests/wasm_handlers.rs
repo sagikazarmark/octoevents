@@ -3,8 +3,9 @@
 //! Cloudflare Workers are single-threaded and hand handlers JavaScript values
 //! and `Rc` state. `MaybeSend`/`MaybeSync` relax the handler bounds there, and
 //! this file proves handlers over every input compile through the full
-//! erasure path with such state. Build it with
-//! `cargo build --test wasm_handlers --target wasm32-unknown-unknown --features octocrab,tower`;
+//! erasure path with such state. It compiles with the rest of the crate's
+//! tests under `just wasm`, that is
+//! `cargo check --tests --target wasm32-unknown-unknown --features octocrab,tower`;
 //! it is never run, and it must not compile natively. Every test needs a
 //! receiver or the octocrab model, so the file is empty without `http` or
 //! `octocrab` rather than a set of orphaned definitions.

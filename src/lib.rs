@@ -80,7 +80,7 @@
 //! - [`WebhookReceiver`]: authenticates, bounds and dispatches one request.
 //!   Built with [`WebhookReceiverBuilder`], which takes the [`Verifier`], the
 //!   body limit, `ping` handling and the
-//!   [`on_error`](WebhookReceiverBuilder::on_error) observer.
+//!   [`on_error`][WebhookReceiverBuilder::on_error] observer.
 //! - [`Verifier`] and [`Secret`]: the configured secrets and the HMAC
 //!   comparison; [`Verifier::also`] opens a rotation window, and
 //!   [`Verifier::sign`] signs a test's synthetic request.
@@ -185,6 +185,26 @@
 //! `team`). Its per-kind payload structs omit the top-level
 //! `installation`, `sender`, `repository` and `organization` objects, which
 //! its `WebhookEvent` carries and [`EventMeta`] summarizes.
+//!
+// The receiver types exist only under `http`, and the front page names them
+// under every feature set, so their link definitions are chosen by cfg: an
+// intra-doc path when the item is compiled in, so a renamed or removed item
+// still fails `cargo doc`, and its docs.rs URL when it is not, so the links
+// resolve under `--no-default-features` rather than being dropped.
+#![cfg_attr(
+    feature = "http",
+    doc = "[`WebhookReceiver`]: WebhookReceiver",
+    doc = "[`WebhookReceiver::receive`]: WebhookReceiver::receive",
+    doc = "[`WebhookReceiverBuilder`]: WebhookReceiverBuilder",
+    doc = "[WebhookReceiverBuilder::on_error]: WebhookReceiverBuilder::on_error"
+)]
+#![cfg_attr(
+    not(feature = "http"),
+    doc = "[`WebhookReceiver`]: https://docs.rs/octoevents/latest/octoevents/struct.WebhookReceiver.html",
+    doc = "[`WebhookReceiver::receive`]: https://docs.rs/octoevents/latest/octoevents/struct.WebhookReceiver.html#method.receive",
+    doc = "[`WebhookReceiverBuilder`]: https://docs.rs/octoevents/latest/octoevents/struct.WebhookReceiverBuilder.html",
+    doc = "[WebhookReceiverBuilder::on_error]: https://docs.rs/octoevents/latest/octoevents/struct.WebhookReceiverBuilder.html#method.on_error"
+)]
 // `doc_cfg` propagates each `#[cfg]` into the rendered docs on its own,
 // including from a gated module to the items inside it, so gated items carry
 // no separate `doc(cfg(...))`.
