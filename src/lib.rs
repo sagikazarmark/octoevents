@@ -190,6 +190,8 @@
 // no separate `doc(cfg(...))`.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+#[cfg(all(feature = "http", feature = "tracing"))]
+mod boxed_error;
 #[cfg(feature = "octocrab")]
 mod decode;
 mod dispatch;
@@ -209,6 +211,8 @@ mod test_support;
 mod trace;
 mod verify;
 
+#[cfg(all(feature = "http", feature = "tracing"))]
+pub use boxed_error::BoxedError;
 pub use dispatch::{DispatchError, Dispatcher, DispatcherBuilder, Match, Outcome, Tier};
 pub use envelope::{
     DecodeError, Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef, TargetType,
@@ -226,8 +230,6 @@ pub use runtime::{MaybeSend, MaybeSync};
 pub use secret::Secret;
 #[cfg(feature = "http")]
 pub use service::{WebhookReceiver, WebhookReceiverBuilder};
-#[cfg(feature = "tracing")]
-pub use trace::BoxedError;
 pub use verify::{Verifier, VerifyError};
 
 /// The byte buffer type of [`Envelope::raw_payload`] and of the body

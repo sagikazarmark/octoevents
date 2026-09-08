@@ -5,25 +5,29 @@
 //! they impose no bound and allow futures and handlers containing JS values.
 //!
 //! Every `target_arch = "wasm32"` split in the crate's bounds lives here,
-//! except the `dyn Fn` aliases in `dispatch` and `service`, which cannot be
-//! expressed through these traits because a trait object admits only one
-//! non-auto trait. Test modules that need tokio are gated on native separately.
+//! except the `dyn Fn` alias for the receiver's error observer in `service`,
+//! which cannot be expressed through these traits because a trait object
+//! admits only one non-auto trait. Test modules that need tokio are gated on
+//! native separately.
 
 use std::{future::Future, pin::Pin};
 
-/// A boxed `'static` future that is `Send` on native targets and unconstrained
-/// on `wasm32`.
+/// A boxed future that is `Send` on native targets and unconstrained on
+/// `wasm32`.
 ///
 /// The boxed counterpart of [`MaybeSend`]: wherever a handler's future is
 /// erased behind a `dyn Future`, this alias carries the same platform split so
-/// a `MaybeSend` future can be boxed on either target.
+/// a `MaybeSend` future can be boxed on either target. The lifetime is what
+/// the future borrows: `'static` for the receiver's `tower` future, which owns
+/// its state, and the handler's borrow for a dispatcher route, whose future
+/// runs while the route table is held.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
+pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// A boxed `'static` future that is `Send` on native targets and unconstrained
-/// on `wasm32`.
+/// A boxed future that is `Send` on native targets and unconstrained on
+/// `wasm32`.
 #[cfg(target_arch = "wasm32")]
-pub(crate) type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
+pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 /// `Send` on native targets; no requirement on `wasm32`.
 ///

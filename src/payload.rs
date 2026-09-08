@@ -115,8 +115,8 @@ pub trait FromEnvelope: Sized {
 // Every serde payload decodes through `decode_payload`: the kind check, then
 // the bytes. The serde bound is here rather than on `Payload` so that
 // `Event<P>`, which is a `Payload` but not a serde type, has its own impl
-// below without overlapping this one: `Event<P>: DeserializeOwned` is
-// knowably false, since `Event` is local and derives no `Deserialize`.
+// below without overlapping this one; the struct says why it never derives
+// `Deserialize`.
 //
 // `do_not_recommend` keeps rustc from explaining a type that is neither a
 // payload nor a `FromEnvelope` as "not a payload" through this impl: the
@@ -137,6 +137,60 @@ impl FromEnvelope for EventMeta {
 impl FromEnvelope for Envelope {
     fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError> {
         Ok(envelope.clone())
+    }
+}
+
+// The kind-checked decode is the payload's concern, so it lives here as an
+// inherent impl from another module, the way `decode_event` does under the
+// `octocrab` feature: `envelope` then imports nothing from this module, and
+// only this module knows what a `Payload` is.
+impl Envelope {
+    /// Decodes the payload as `P` after checking that the envelope is of
+    /// `P`'s kind.
+    ///
+    /// This is the decode of a single-purpose receiver: a handler over the
+    /// [`Envelope`] for one kind calls it instead of matching on
+    /// [`EventMeta::kind`] itself, and it is what a serde [`Payload`] decodes
+    /// through as a handler input. The kind check reports a wrong payload
+    /// type at the kind, not as a missing field somewhere in the JSON:
+    ///
+    #[cfg_attr(feature = "derive", doc = "```")]
+    #[cfg_attr(not(feature = "derive"), doc = "```ignore")]
+    /// use octoevents::{DecodeError, Envelope, EventKind};
+    ///
+    /// #[derive(serde::Deserialize, octoevents::Payload)]
+    /// #[payload(EventKind::Issues)]
+    /// struct IssueNumber { issue: Numbered }
+    /// #[derive(serde::Deserialize)]
+    /// struct Numbered { number: u64 }
+    ///
+    /// let envelope = Envelope::new("delivery", EventKind::PullRequest, br#"{"issue":{"number":7}}"#);
+    ///
+    /// // The bytes would fit the view; the kind is what is wrong.
+    /// assert!(matches!(
+    ///     envelope.decode_payload::<IssueNumber>(),
+    ///     Err(DecodeError::KindMismatch {
+    ///         expected: EventKind::Issues,
+    ///         actual: EventKind::PullRequest,
+    ///     })
+    /// ));
+    /// ```
+    ///
+    /// To decode a view that is not bound to a kind, call [`Envelope::decode`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecodeError::KindMismatch`] when [`EventMeta::kind`] is not
+    /// [`P::KIND`](Payload::KIND), and [`DecodeError::Json`] when the payload
+    /// does not fit `P`.
+    pub fn decode_payload<P: Payload + DeserializeOwned>(&self) -> Result<P, DecodeError> {
+        if self.meta.kind != P::KIND {
+            return Err(DecodeError::KindMismatch {
+                expected: P::KIND,
+                actual: self.meta.kind.clone(),
+            });
+        }
+        self.decode()
     }
 }
 
@@ -179,6 +233,11 @@ impl FromEnvelope for Envelope {
 /// test builds one by hand and a consumer crate destructures it without
 /// `..`. There is no `Deref` to `P`: the payload is `payload`, so a view
 /// field named `meta` is never shadowed.
+// Never `Deserialize`, on purpose. The `FromEnvelope` impl for `Event<P>`
+// below is disjoint from the blanket over `Payload + DeserializeOwned` only
+// because `Event<P>: DeserializeOwned` is knowably false: `Event` is local and
+// derives no `Deserialize`. Deriving it would make the two impls overlap and
+// the crate stop compiling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Event<P> {
     /// The delivery's routing metadata.
@@ -307,4 +366,61 @@ impl<P: Payload> Payload for Event<P> {
 pub trait Payload: FromEnvelope {
     /// The event kind whose deliveries decode into this type.
     const KIND: EventKind;
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{DecodeError, EventKind, test_support};
+
+    /// A view over an `issues` payload, bound to its kind by its `Payload`
+    /// impl: what `decode_payload` checks before it reads the bytes.
+    #[derive(Debug, serde::Deserialize)]
+    struct IssueNumber {
+        issue: Numbered,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct Numbered {
+        number: u64,
+    }
+
+    impl crate::Payload for IssueNumber {
+        const KIND: EventKind = EventKind::Issues;
+    }
+
+    #[test]
+    fn decode_payload_refuses_an_envelope_of_another_kind_at_the_kind() {
+        // The bytes would decode into the view; the kind is what is wrong, and
+        // that is what the error names rather than a missing field.
+        let envelope = test_support::envelope(EventKind::PullRequest, br#"{"issue":{"number":7}}"#);
+
+        let error = envelope.decode_payload::<IssueNumber>().unwrap_err();
+
+        assert!(matches!(
+            error,
+            DecodeError::KindMismatch {
+                expected: EventKind::Issues,
+                actual: EventKind::PullRequest,
+            }
+        ));
+    }
+
+    #[test]
+    fn decode_payload_decodes_an_envelope_of_the_payloads_kind() {
+        let envelope = test_support::envelope(EventKind::Issues, br#"{"issue":{"number":7}}"#);
+
+        let payload = envelope.decode_payload::<IssueNumber>().unwrap();
+
+        assert_eq!(payload.issue.number, 7);
+    }
+
+    #[test]
+    fn decode_payload_reports_a_payload_that_does_not_fit_as_json() {
+        // Right kind, wrong shape: the kind check passed, serde did not.
+        let envelope = test_support::envelope(EventKind::Issues, br#"{"issue":{}}"#);
+
+        let error = envelope.decode_payload::<IssueNumber>().unwrap_err();
+
+        assert!(matches!(error, DecodeError::Json(_)));
+    }
 }

@@ -377,11 +377,13 @@ is for a wrapper to read.
 ## Error handling
 
 The dispatcher is `Dispatcher<E>` over one application error `E`. Two
-conversions are required: `E: From<DecodeError>`, because the dispatcher
-decodes payloads on the handlers' behalf and reports a payload that does not
-fit through `E`, and `E: From<H::Error>` for every registered handler.
-`Box<dyn Error + Send + Sync>` satisfies both, which is why the quickstart
-needed no error type of its own. The named alternative is an enum:
+conversions are required: `E: From<H::Error>` for every registered handler,
+and `E: From<DecodeError>` for every handler registered with `on`, because
+the dispatcher decodes a routed handler's input on its behalf and reports a
+payload that does not fit through `E` (`always` and `fallback` decode
+nothing and ask nothing of `E`). `Box<dyn Error + Send + Sync>` satisfies
+both, which is why the quickstart needed no error type of its own. The named
+alternative is an enum:
 
 ```rust
 use std::error::Error as _;
