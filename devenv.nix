@@ -9,6 +9,7 @@
     lld
     cargo-audit
     cargo-deny
+    cargo-hack
     cargo-release
     cargo-watch
   ];

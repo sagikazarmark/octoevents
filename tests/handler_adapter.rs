@@ -5,10 +5,10 @@
 //! `Send` only if `H` is `Sync`. `Handler<I>: MaybeSync` states that once, on
 //! the trait, so the adapter compiles as first written, with no bound on `H`
 //! beyond the trait, on native targets and on `wasm32`. Run it natively with
-//! `cargo test --test handler_adapter` and build it for `wasm32` with
-//! `cargo build --test handler_adapter --target wasm32-unknown-unknown`. On
-//! `wasm32` the same adapter also wraps a handler holding `Rc` state, which
-//! `H: Sync`, the bound rustc would otherwise suggest, refuses.
+//! `cargo test --test handler_adapter`; for `wasm32` it compiles with the rest
+//! of the crate's tests under `just wasm`. On `wasm32` the same adapter also
+//! wraps a handler holding `Rc` state, which `H: Sync`, the bound rustc would
+//! otherwise suggest, refuses.
 //!
 //! The input is another matter: an `async fn`'s future owns its arguments
 //! from creation, so an adapter generic over the payload bounds it
