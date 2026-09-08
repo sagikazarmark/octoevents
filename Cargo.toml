@@ -80,7 +80,8 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 # `cargo release` turns the Unreleased section of CHANGELOG.md into the
-# version's and opens a new one. On this package alone: the workspace's two
+# version's and opens a new one, and pins the README's dependency snippet to
+# the version being released. On this package alone: the workspace's two
 # crates share one version and one changelog, and a workspace-level entry
 # would run the replacements once per crate.
 [package.metadata.release]
@@ -90,6 +91,7 @@ pre-release-replacements = [
   { file = "CHANGELOG.md", search = "ReleaseDate", replace = "{{date}}", min = 1 },
   { file = "CHANGELOG.md", search = "<!-- next-header -->", replace = "<!-- next-header -->\n\n## [Unreleased] - ReleaseDate", exactly = 1 },
   { file = "CHANGELOG.md", search = "<!-- next-url -->", replace = "<!-- next-url -->\n[Unreleased]: https://github.com/sagikazarmark/octoevents/compare/{{tag_name}}...HEAD", exactly = 1 },
+  { file = "README.md", search = "octoevents = \\{ version = \"[^\"]+\"", replace = "octoevents = { version = \"{{version}}\"", exactly = 1 },
 ]
 
 [[example]]
