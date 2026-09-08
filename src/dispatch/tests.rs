@@ -25,7 +25,7 @@ impl Payload for AnyPullRequest {
 /// a decode to fail at a known route.
 #[derive(serde::Deserialize)]
 struct Number {
-    #[allow(
+    #[expect(
         dead_code,
         reason = "the field is required so the decode fails; nothing reads it"
     )]
