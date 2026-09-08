@@ -83,6 +83,15 @@ unsafe_code = "forbid"
 all = "warn"
 pedantic = "warn"
 
+# Line tables keep file and line in panics and backtraces, which is all a test
+# failure needs; variable and type debuginfo is only for a debugger and is most
+# of what the linker copies on every incremental test build. Dropping it takes
+# a quarter to a half off the edit-to-green cycle and shrinks the test binaries
+# to a third. For a debugger session, override for one build:
+# `CARGO_PROFILE_DEV_DEBUG=2 cargo test ...`.
+[profile.dev]
+debug = "line-tables-only"
+
 # The two crates carry one version: `octoevents` pins `octoevents-derive`
 # exactly, so a release bumps and publishes both.
 [workspace.metadata.release]
