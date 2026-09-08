@@ -277,7 +277,7 @@ where
 {
     type Error = E;
 
-    #[allow(refining_impl_trait)]
+    #[expect(refining_impl_trait)]
     fn handle(&self, input: I) -> Fut {
         self(input)
     }

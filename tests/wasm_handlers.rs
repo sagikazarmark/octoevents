@@ -12,7 +12,7 @@
 #![cfg(all(target_arch = "wasm32", any(feature = "http", feature = "octocrab")))]
 // The handlers here bump a counter instead of awaiting a JavaScript binding,
 // which is what a real `async fn handle` would do.
-#![allow(clippy::unused_async_trait_impl)]
+#![expect(clippy::unused_async_trait_impl)]
 
 use std::{cell::Cell, rc::Rc};
 

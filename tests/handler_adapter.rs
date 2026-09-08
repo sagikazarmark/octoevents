@@ -99,7 +99,7 @@ fn the_adapter_wraps_a_single_threaded_handler_on_wasm32() {
 
     // Bumps a counter instead of awaiting a JavaScript binding, which is what
     // a real `async fn handle` would do.
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(clippy::unused_async_trait_impl)]
     impl Handler<Event<PullRequestNumber>> for Counter {
         type Error = Infallible;
 

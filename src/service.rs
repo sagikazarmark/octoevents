@@ -3,7 +3,7 @@ use std::{
     convert::Infallible,
     task::{Context, Poll},
 };
-use std::{fmt, future::Future, marker::PhantomData, sync::Arc};
+use std::{fmt, future::Future, marker::PhantomData, pin::pin, sync::Arc};
 
 use bytes::{Bytes, BytesMut};
 use http::{Request, Response};
@@ -449,13 +449,13 @@ where
     /// [`Dispatcher`]: crate::Dispatcher
     // Written as `fn -> impl Future` for the bound on the return type; the
     // body is the `async` block an `async fn` would desugar to.
-    #[allow(clippy::manual_async_fn)]
+    #[expect(clippy::manual_async_fn)]
     pub fn receive<B>(
         &self,
         request: Request<B>,
     ) -> impl Future<Output = ServiceResponse> + MaybeSend
     where
-        B: Body<Data = Bytes> + MaybeSend + Unpin,
+        B: Body<Data = Bytes> + MaybeSend,
     {
         async move { empty_response(self.inner.process(request).await) }
     }
@@ -480,9 +480,12 @@ where
     )]
     async fn process<B>(&self, request: Request<B>) -> ResponseStatus
     where
-        B: Body<Data = Bytes> + Unpin,
+        B: Body<Data = Bytes>,
     {
-        let (parts, mut body) = request.into_parts();
+        let (parts, body) = request.into_parts();
+        // Pinned here, where the body is polled, so `B` owes no `Unpin` to the
+        // caller: a transport's body type is whatever it is.
+        let mut body = pin!(body);
         let headers = HeaderView::from(&parts.headers);
         record_headers(&headers);
 
@@ -593,7 +596,7 @@ where
 impl<H, B> Service<Request<B>> for WebhookReceiver<H>
 where
     H: Handler<Envelope> + MaybeSend + MaybeSync + 'static,
-    B: Body<Data = Bytes> + MaybeSend + Unpin + 'static,
+    B: Body<Data = Bytes> + MaybeSend + 'static,
 {
     type Response = ServiceResponse;
     type Error = Infallible;
@@ -765,7 +768,7 @@ impl<E> ErrorFields<E> {
 // The stubs are methods, as the struct doc says, so the receiver reads a
 // setting that does not exist without the feature through the same calls.
 #[cfg(not(feature = "tracing"))]
-#[allow(clippy::unused_self)]
+#[expect(clippy::unused_self)]
 impl<E> ErrorFields<E> {
     /// Emits nothing: the `tracing` feature is disabled.
     fn handler_failed(self, _meta: &EventMeta, _error: &E, _status: u16) {}
@@ -842,7 +845,7 @@ mod tests {
         type Error = std::convert::Infallible;
 
         // A real handler awaits its dependencies; this one only counts.
-        #[allow(clippy::unused_async_trait_impl)]
+        #[expect(clippy::unused_async_trait_impl)]
         async fn handle(&self, _envelope: Envelope) -> Result<(), Self::Error> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             Ok(())
@@ -877,7 +880,7 @@ mod tests {
     impl Handler<Envelope> for IssueRecorder {
         type Error = DecodeError;
 
-        #[allow(clippy::unused_async_trait_impl)]
+        #[expect(clippy::unused_async_trait_impl)]
         async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
             let payload = envelope.decode_payload::<IssueView>()?;
             self.seen.lock().unwrap().push((
@@ -1291,6 +1294,43 @@ mod tests {
             StatusCode::NO_CONTENT,
             "a total exactly at the limit is within it"
         );
+    }
+
+    #[tokio::test]
+    async fn receives_a_body_that_is_not_unpin() {
+        // A transport's body type is whatever it is; the receiver pins it
+        // where it polls it and asks nothing of the caller. This body cannot
+        // be moved once pinned, so the test compiles only while `receive`
+        // places no `Unpin` bound on `B`.
+        struct Pinned {
+            frames: std::sync::Mutex<VecDeque<Frame<Bytes>>>,
+            _pinned: std::marker::PhantomPinned,
+        }
+
+        impl http_body::Body for Pinned {
+            type Data = Bytes;
+            type Error = std::convert::Infallible;
+
+            fn poll_frame(
+                self: Pin<&mut Self>,
+                _context: &mut Context<'_>,
+            ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+                Poll::Ready(self.frames.lock().unwrap().pop_front().map(Ok))
+            }
+        }
+
+        let body = Pinned {
+            frames: std::sync::Mutex::new(VecDeque::from([Frame::data(Bytes::from_static(b"{}"))])),
+            _pinned: std::marker::PhantomPinned,
+        };
+        let receiver =
+            WebhookReceiverBuilder::new(verifier()).build(|_: Envelope| async { Ok::<_, ()>(()) });
+
+        let response = receiver
+            .receive(request_over(body, "push", &verifier().sign(b"{}")))
+            .await;
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]

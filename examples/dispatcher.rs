@@ -43,7 +43,7 @@
 
 // The handlers here print instead of awaiting a database or the GitHub API,
 // which is what a real `async fn handle` would do.
-#![allow(clippy::unused_async_trait_impl)]
+#![expect(clippy::unused_async_trait_impl)]
 
 use std::{error::Error as _, sync::Mutex};
 

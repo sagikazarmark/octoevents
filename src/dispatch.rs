@@ -584,6 +584,27 @@ pub enum Match {
     UnmatchedKind,
 }
 
+impl Match {
+    /// The match as a label: `matched`, `unmatched_action` or
+    /// `unmatched_kind`, in the `snake_case` the dispatch span's `outcome`
+    /// labels use, so a policy that logs which it saw beside them reads as
+    /// one vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Matched => "matched",
+            Self::UnmatchedAction => "unmatched_action",
+            Self::UnmatchedKind => "unmatched_kind",
+        }
+    }
+}
+
+impl fmt::Display for Match {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 /// The error of a failed dispatch: the application error, and where in the
 /// dispatch and in the consumer's source it came from.
 ///
@@ -1399,7 +1420,7 @@ mod tests {
     /// a decode to fail at a known route.
     #[derive(serde::Deserialize)]
     struct Number {
-        #[allow(
+        #[expect(
             dead_code,
             reason = "the field is required so the decode fails; nothing reads it"
         )]
@@ -1889,6 +1910,16 @@ mod tests {
                 result: Ok(()),
             }
         );
+    }
+
+    #[test]
+    fn a_match_displays_as_the_label_a_policy_logs() {
+        // The span vocabulary, snake_case, so a policy that prints the match
+        // beside the dispatch span's `outcome` reads as one set of labels.
+        assert_eq!(Match::Matched.to_string(), "matched");
+        assert_eq!(Match::UnmatchedAction.to_string(), "unmatched_action");
+        assert_eq!(Match::UnmatchedKind.to_string(), "unmatched_kind");
+        assert_eq!(Match::UnmatchedKind.as_str(), "unmatched_kind");
     }
 
     #[tokio::test]
