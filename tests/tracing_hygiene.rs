@@ -7,7 +7,7 @@
 //! from the secret; so is the ERROR event a failed delivery emits, with or
 //! without the error `trace_errors` puts on it.
 
-#![cfg(all(feature = "tracing", feature = "tower", not(target_arch = "wasm32")))]
+#![cfg(all(feature = "tracing", feature = "http", not(target_arch = "wasm32")))]
 
 mod common;
 
@@ -17,7 +17,6 @@ use bytes::Bytes;
 use http::Request;
 use http_body_util::Full;
 use octoevents::{EventMeta, Secret, Verifier, WebhookReceiverBuilder};
-use tower::ServiceExt as _;
 
 const SECRET: &str = "It's a Secret to Everybody";
 const BODY: &[u8] = br#"{"action":"opened","installation":{"id":42}}"#;
@@ -26,11 +25,11 @@ const BODY: &[u8] = br#"{"action":"opened","installation":{"id":42}}"#;
 fn spans_record_routing_metadata_but_never_the_signature_or_secret() {
     let (signature, request) = signed_request();
 
-    let service = WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
+    let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
         .build(|_| async { Ok::<_, ()>(()) });
 
-    let (logged, response) = common::traced(service.oneshot(request));
-    assert_eq!(response.unwrap().status(), 204);
+    let (logged, response) = common::traced(receiver.receive(request));
+    assert_eq!(response.status(), 204);
 
     // The useful fields are present...
     assert!(logged.contains("d34db33f-delivery"), "logged: {logged}");
@@ -47,14 +46,14 @@ fn the_error_observer_and_the_spans_see_nothing_secret_derived_on_a_failed_deliv
 
     let observed = Arc::new(Mutex::new(String::new()));
     let observer_record = Arc::clone(&observed);
-    let service = WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
+    let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
         .on_error(move |meta: &EventMeta, error: &&str| {
             *observer_record.lock().unwrap() = format!("{meta:?} {error}");
         })
         .build(|_| async { Err::<(), _>("handler failed") });
 
-    let (logged, response) = common::traced(service.oneshot(request));
-    assert_eq!(response.unwrap().status(), 500);
+    let (logged, response) = common::traced(receiver.receive(request));
+    assert_eq!(response.status(), 500);
 
     assert!(logged.contains("d34db33f-delivery"), "logged: {logged}");
     assert!(logged.contains("500"), "logged: {logged}");
@@ -77,12 +76,12 @@ struct Database;
 fn the_event_with_the_error_on_it_carries_nothing_secret_derived() {
     let (signature, request) = signed_request();
 
-    let service = WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
+    let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
         .trace_errors()
         .build(|_| async { Err::<(), _>(Database) });
 
-    let (logged, response) = common::traced(service.oneshot(request));
-    assert_eq!(response.unwrap().status(), 500);
+    let (logged, response) = common::traced(receiver.receive(request));
+    assert_eq!(response.status(), 500);
 
     assert!(logged.contains("d34db33f-delivery"), "logged: {logged}");
     assert!(logged.contains("database is down"), "logged: {logged}");

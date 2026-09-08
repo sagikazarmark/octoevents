@@ -1177,6 +1177,41 @@ mod tests {
     }
 
     #[test]
+    fn the_probe_reads_the_action_and_installation_of_every_corpus_fixture() {
+        // Real payloads, not the synthetic `BODY`: what GitHub sends is what
+        // the probe must read. The ping carries neither field.
+        let corpus = [
+            (
+                test_support::pull_request_opened(),
+                Some(Action::Opened),
+                Some(7_777_777),
+            ),
+            (
+                test_support::check_run_completed(),
+                Some(Action::Completed),
+                None,
+            ),
+            (
+                test_support::installation_created(),
+                Some(Action::Created),
+                Some(39_593_433),
+            ),
+            (
+                test_support::installation_repositories_removed(),
+                Some(Action::Removed),
+                Some(7_777_777),
+            ),
+            (test_support::ping(), None, None),
+        ];
+
+        for (envelope, action, installation_id) in corpus {
+            let meta = &envelope.meta;
+            assert_eq!(meta.action, action, "{}", meta.kind);
+            assert_eq!(meta.installation_id, installation_id, "{}", meta.kind);
+        }
+    }
+
+    #[test]
     fn a_repository_ref_is_built_from_its_constructor() {
         let repository = RepositoryRef::new(1, "repo", "octo/repo", "octo");
 

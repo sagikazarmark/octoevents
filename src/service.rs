@@ -662,8 +662,8 @@ mod tests {
 
     use super::{WebhookReceiverBuilder, empty_response};
     use crate::{
-        Action, AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind, EventMeta, Handler,
-        ResponseStatus, Secret, Verifier, test_support::AppError,
+        Action, DecodeError, Dispatcher, Envelope, EventKind, EventMeta, Handler, ResponseStatus,
+        Secret, Verifier, test_support::AppError,
     };
 
     /// A production-shaped handler: dependencies as fields, borrowed through
@@ -701,8 +701,9 @@ mod tests {
     }
 
     /// The single-handler path: a handler over the envelope that decodes one
-    /// kind's view itself with `decode_payload`, so a delivery of another
-    /// kind or a payload that does not fit the view fails the delivery.
+    /// kind's view itself with `decode_payload`. What a kind mismatch or a
+    /// payload that does not fit the view does is `decode_payload`'s own
+    /// test; here it is one handler the receiver hands the envelope to.
     struct IssueRecorder {
         seen: Arc<std::sync::Mutex<Vec<(String, String, u64)>>>,
     }
@@ -873,91 +874,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_single_kind_handler_fails_a_delivery_of_another_kind() {
-        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
-            IssueRecorder {
-                seen: Arc::clone(&seen),
-            },
-        );
-
-        // The body would decode as an IssueView; only the kind is wrong.
-        let response = receiver
-            .receive(request(
-                br#"{"action":"opened","issue":{"number":7}}"#,
-                "pull_request",
-            ))
-            .await;
-
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(seen.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_single_kind_handler_fails_a_delivery_whose_payload_does_not_decode() {
-        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
-            IssueRecorder {
-                seen: Arc::clone(&seen),
-            },
-        );
-
-        let response = receiver
-            .receive(request(br#"{"action":"opened"}"#, "issues"))
-            .await;
-
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(seen.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn an_always_handler_runs_for_a_payload_no_routed_handler_can_decode() {
-        type Seen = Arc<std::sync::Mutex<Vec<(String, EventKind, Option<Action>)>>>;
-
-        struct Auditor {
-            seen: Seen,
-        }
-
-        impl Handler<Envelope> for Auditor {
-            type Error = std::convert::Infallible;
-
-            #[allow(clippy::unused_async_trait_impl)]
-            async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
-                let meta = envelope.meta;
-                self.seen
-                    .lock()
-                    .unwrap()
-                    .push((meta.delivery_id, meta.kind, meta.action));
-                Ok(())
-            }
-        }
-
-        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let dispatcher = Dispatcher::<AppError>::builder()
-            .always(Auditor {
-                seen: Arc::clone(&seen),
-            })
-            .build();
-        let receiver =
-            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(dispatcher);
-
-        // A pull request octocrab cannot represent: nothing is decoded on the
-        // always tier's behalf, so the delivery still succeeds.
-        let response = receiver
-            .receive(request(
-                include_bytes!("../tests/fixtures/unrepresentable.json"),
-                "pull_request",
-            ))
-            .await;
-
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-        assert_eq!(
-            seen.lock().unwrap().as_slice(),
-            [("delivery".to_owned(), EventKind::PullRequest, None)]
-        );
-    }
-
-    #[tokio::test]
     async fn the_always_tier_receives_the_exact_bytes_the_receiver_verified() {
         // Irregular whitespace and a trailing newline: any re-encoding between
         // verification and the always tier would normalize them away.
@@ -989,153 +905,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn accepts_a_dispatcher_as_its_handler() {
-        // A consumer view over the ping payload: the dispatcher routes it by
-        // the kind the view declares, with no octocrab in the picture.
-        #[derive(serde::Deserialize)]
-        struct Zen {
-            zen: String,
-        }
-        impl crate::Payload for Zen {
-            const KIND: EventKind = EventKind::Ping;
-        }
-
-        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let handler_seen = Arc::clone(&seen);
-        let dispatcher = Dispatcher::<AppError>::builder()
-            .on(AnyAction, move |Event { meta, payload }: Event<Zen>| {
-                let seen = Arc::clone(&handler_seen);
-                async move {
-                    seen.lock().unwrap().push((meta.kind, payload.zen));
-                    Ok::<_, std::convert::Infallible>(())
-                }
-            })
-            .build();
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
-            .handle_ping(true)
-            .build(dispatcher);
-
-        let response = receiver
-            .receive(request(
-                include_bytes!("../tests/fixtures/ping.json"),
-                "ping",
-            ))
-            .await;
-
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-        assert_eq!(
-            seen.lock().unwrap().as_slice(),
-            [(EventKind::Ping, "Design for failure.".to_owned())]
-        );
-    }
-
-    #[cfg(feature = "octocrab")]
-    #[tokio::test]
-    async fn a_handler_over_event_of_webhook_event_receives_octocrabs_decoded_event_with_the_metadata()
-     {
-        use octocrab::models::webhook_events::{WebhookEvent, WebhookEventPayload};
-
-        type Seen = Arc<std::sync::Mutex<Vec<(String, Option<u64>, u64)>>>;
-
-        struct EventRecorder {
-            seen: Seen,
-        }
-
-        impl Handler<Event<WebhookEvent>> for EventRecorder {
-            type Error = std::convert::Infallible;
-
-            #[allow(clippy::unused_async_trait_impl)]
-            async fn handle(
-                &self,
-                Event { meta, payload }: Event<WebhookEvent>,
-            ) -> Result<(), Self::Error> {
-                let WebhookEventPayload::PullRequest(pull_request) = payload.specific else {
-                    panic!("expected a pull request payload");
-                };
-                self.seen.lock().unwrap().push((
-                    meta.delivery_id,
-                    meta.installation_id,
-                    pull_request.number,
-                ));
-                Ok(())
-            }
-        }
-
-        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let dispatcher = Dispatcher::<AppError>::builder()
-            .on(
-                EventKind::PullRequest,
-                EventRecorder {
-                    seen: Arc::clone(&seen),
-                },
-            )
-            .build();
-        let receiver =
-            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(dispatcher);
-
-        let response = receiver
-            .receive(request(
-                include_bytes!("../tests/fixtures/pull_request.opened.json"),
-                "pull_request",
-            ))
-            .await;
-
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-        assert_eq!(
-            seen.lock().unwrap().as_slice(),
-            [("delivery".to_owned(), Some(7_777_777), 2)]
-        );
-    }
-
-    #[cfg(feature = "octocrab")]
-    #[tokio::test]
-    async fn a_handler_over_octocrabs_payload_receives_it_for_its_kind() {
-        use octocrab::models::webhook_events::payload::{
-            PullRequestWebhookEventAction, PullRequestWebhookEventPayload,
-        };
-
-        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let handler_seen = Arc::clone(&seen);
-        let dispatcher = Dispatcher::<AppError>::builder()
-            .on(
-                AnyAction,
-                move |Event { meta, payload }: Event<PullRequestWebhookEventPayload>| {
-                    let seen = Arc::clone(&handler_seen);
-                    async move {
-                        seen.lock().unwrap().push((
-                            meta.delivery_id,
-                            payload.number,
-                            payload.action,
-                            payload.pull_request.title,
-                        ));
-                        Ok::<_, std::convert::Infallible>(())
-                    }
-                },
-            )
-            .build();
-        let receiver =
-            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(dispatcher);
-
-        let response = receiver
-            .receive(request(
-                include_bytes!("../tests/fixtures/pull_request.opened.json"),
-                "pull_request",
-            ))
-            .await;
-
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-        assert_eq!(
-            seen.lock().unwrap().as_slice(),
-            [(
-                "delivery".to_owned(),
-                2,
-                PullRequestWebhookEventAction::Opened,
-                Some("[do not merge] test commit".to_owned()),
-            )]
-        );
-    }
-
-    #[tokio::test]
     async fn short_circuits_ping_unless_enabled() {
         let calls = Arc::new(AtomicUsize::new(0));
         let handler_calls = Arc::clone(&calls);
@@ -1162,43 +931,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn maps_authentication_and_request_errors() {
-        let receiver = || {
-            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
-                .build(|_: Envelope| async { Ok::<_, ()>(()) })
-        };
+    async fn answers_a_receive_failure_with_the_status_the_contract_maps_it_to() {
+        // The receiver's one test dedicated to the mapping. Which failure a
+        // request earns is pinned on `Envelope::from_signed`, and which
+        // status each failure maps to on `ResponseStatus::for_receive_error`,
+        // so one failure through HTTP shows the receiver answers with the
+        // mapped status; the refusal before the body is read has its own
+        // test below.
+        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+            .build(|_: Envelope| async { Ok::<_, ()>(()) });
 
         let mismatch = with_header(b"{}", "push", "x-hub-signature-256", WRONG_SIGNATURE);
-        assert_eq!(
-            receiver().receive(mismatch).await.status(),
-            StatusCode::UNAUTHORIZED
-        );
+        let response = receiver.receive(mismatch).await;
 
-        let mut sha1_only = without_header(b"{}", "push", "x-hub-signature-256");
-        sha1_only
-            .headers_mut()
-            .insert("x-hub-signature", "sha1=legacy".parse().unwrap());
-        assert_eq!(
-            receiver().receive(sha1_only).await.status(),
-            StatusCode::UNAUTHORIZED
-        );
-
-        let malformed = with_header(b"{}", "push", "x-hub-signature-256", "invalid");
-        assert_eq!(
-            receiver().receive(malformed).await.status(),
-            StatusCode::BAD_REQUEST
-        );
-
-        let form = with_header(
-            b"{}",
-            "push",
-            "content-type",
-            "application/x-www-form-urlencoded",
-        );
-        assert_eq!(
-            receiver().receive(form).await.status(),
-            StatusCode::BAD_REQUEST
-        );
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.body().size_hint().exact(), Some(0));
     }
 
     #[tokio::test]
@@ -1235,7 +982,8 @@ mod tests {
                 .header("x-github-event", "push");
             match signature {
                 Some(signature) => builder.header("x-hub-signature-256", signature),
-                None => builder,
+                // GitHub's legacy SHA-1 header alone does not sign a request.
+                None => builder.header("x-hub-signature", "sha1=legacy"),
             }
             .body(FailingBody)
             .unwrap()
@@ -1276,30 +1024,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_dispatch_error_is_still_a_bare_internal_server_error() {
-        // The dispatcher's error names the tier, the handler and the
-        // registration site; none of it reaches the response, which stays
-        // GitHub's delivery record. The `on_error` observer is where a
-        // consumer reads it.
-        let dispatcher = Dispatcher::<AppError>::builder()
-            .always(|_: Envelope| async { Err::<(), _>("audit") })
-            .build();
-        let receiver =
-            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(dispatcher);
+    async fn the_error_observer_receives_the_event_meta_and_a_dispatchers_error_before_the_500() {
+        use crate::DispatchError;
 
-        let response = receiver.receive(request(b"{}", "push")).await;
-
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(response.body().size_hint().exact(), Some(0));
-    }
-
-    #[tokio::test]
-    async fn the_error_observer_sees_the_event_meta_and_the_dispatch_error_before_the_500() {
-        use crate::{DispatchError, Tier};
-
-        type Seen = Arc<std::sync::Mutex<Vec<(EventMeta, DispatchError<AppError>)>>>;
-
-        let seen: Seen = Arc::default();
+        // With a dispatcher as the receiver's handler, the observer's error is
+        // the dispatcher's, `DispatchError<E>`; what that error says about the
+        // tier and the registration site is the dispatcher's own test to pin.
+        // This one pins the observer's side: it runs once, with the meta the
+        // receiver built, probed fields included, and the error whose source
+        // is the handler's own failure; and the response stays GitHub's
+        // delivery record, a bare 500 that says nothing of either.
+        let seen: Arc<std::sync::Mutex<Vec<(EventMeta, AppError)>>> = Arc::default();
         let dispatcher = Dispatcher::<AppError>::builder()
             .always(|_: Envelope| async { Err::<(), _>("audit") })
             .build();
@@ -1309,7 +1044,7 @@ mod tests {
                 observer_seen
                     .lock()
                     .unwrap()
-                    .push((meta.clone(), error.clone()));
+                    .push((meta.clone(), error.clone().into_source()));
             })
             .build(dispatcher);
 
@@ -1320,21 +1055,18 @@ mod tests {
             ))
             .await;
 
-        // The response is still GitHub's delivery record: a bare 500.
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(response.body().size_hint().exact(), Some(0));
 
         let seen = seen.lock().unwrap();
-        let [(meta, error)] = seen.as_slice() else {
+        let [(meta, source)] = seen.as_slice() else {
             panic!("expected the observer to run once, saw {}", seen.len());
         };
         assert_eq!(meta.delivery_id, "delivery");
         assert_eq!(meta.kind, EventKind::PullRequest);
         assert_eq!(meta.action, Some(Action::Opened));
         assert_eq!(meta.installation_id, Some(42));
-        assert_eq!(error.tier, Tier::Always);
-        assert_eq!(error.source, AppError::Handler("audit"));
-        assert_eq!(error.delivery_id, "delivery");
+        assert_eq!(*source, AppError::Handler("audit"));
     }
 
     #[tokio::test]

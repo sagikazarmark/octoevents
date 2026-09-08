@@ -67,6 +67,15 @@ pub(crate) fn installation_created() -> Envelope {
     )
 }
 
+/// The `installation_repositories.removed` fixture, its action read from the
+/// payload.
+pub(crate) fn installation_repositories_removed() -> Envelope {
+    envelope(
+        EventKind::InstallationRepositories,
+        include_bytes!("../tests/fixtures/installation_repositories.removed.json"),
+    )
+}
+
 pub(crate) fn ping() -> Envelope {
     envelope(
         EventKind::Ping,
@@ -74,10 +83,13 @@ pub(crate) fn ping() -> Envelope {
     )
 }
 
+/// The ping fixture's bytes delivered under an event name the crate does not
+/// know: a real payload, an unknown kind. No file of its own; the kind is the
+/// only difference from [`ping`].
 pub(crate) fn unknown() -> Envelope {
     envelope(
         EventKind::Unknown("future_event".into()),
-        include_bytes!("../tests/fixtures/unknown.json"),
+        include_bytes!("../tests/fixtures/ping.json"),
     )
 }
 

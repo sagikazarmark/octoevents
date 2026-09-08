@@ -81,24 +81,51 @@ impl From<ResponseStatus> for http::StatusCode {
 
 #[cfg(test)]
 mod tests {
-    use crate::{ReceiveError, ResponseStatus, VerifyError};
+    use crate::{ReceiveError, ResponseStatus, VerifyError, header};
 
     #[test]
-    fn maps_the_receive_contract() {
-        assert_eq!(
-            ResponseStatus::for_receive_error(&ReceiveError::Verify(VerifyError::MissingSignature)),
-            ResponseStatus::Unauthorized
-        );
-        assert_eq!(
-            ResponseStatus::for_receive_error(&ReceiveError::Verify(
-                VerifyError::MalformedSignature
-            )),
-            ResponseStatus::BadRequest
-        );
-        assert_eq!(
-            ResponseStatus::for_receive_error(&ReceiveError::BodyTooLarge { limit: 1 }),
-            ResponseStatus::PayloadTooLarge
-        );
+    fn maps_every_receive_error_to_the_status_the_contract_names() {
+        // The whole table: an absent or mismatched signature is the client's
+        // authentication failing (401); a signature that is not `sha256=` and
+        // 64 hex characters, a missing required header and a form-encoded
+        // body are malformed requests (400); the body limit is its own code
+        // (413). One row per `ReceiveError` shape the match above has an arm
+        // for. Which failure a request earns is `Envelope::from_signed`'s
+        // test; that the receiver answers with the mapped status is its own.
+        let table = [
+            (
+                ReceiveError::Verify(VerifyError::MissingSignature),
+                ResponseStatus::Unauthorized,
+            ),
+            (
+                ReceiveError::Verify(VerifyError::Mismatch),
+                ResponseStatus::Unauthorized,
+            ),
+            (
+                ReceiveError::Verify(VerifyError::MalformedSignature),
+                ResponseStatus::BadRequest,
+            ),
+            (
+                ReceiveError::MissingHeader(header::DELIVERY_ID),
+                ResponseStatus::BadRequest,
+            ),
+            (
+                ReceiveError::UnsupportedContentType,
+                ResponseStatus::BadRequest,
+            ),
+            (
+                ReceiveError::BodyTooLarge { limit: 1 },
+                ResponseStatus::PayloadTooLarge,
+            ),
+        ];
+
+        for (error, status) in table {
+            assert_eq!(
+                ResponseStatus::for_receive_error(&error),
+                status,
+                "{error:?}"
+            );
+        }
     }
 
     #[cfg(feature = "http")]
