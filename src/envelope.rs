@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_json::value::RawValue;
 use thiserror::Error;
 
-use crate::{Action, EventKind, SignatureError, TargetType, Verifier, header};
+use crate::{Action, EventKind, Signature, SignatureError, TargetType, Verifier, header};
 
 /// The routing metadata of a webhook: everything in an [`Envelope`] except
 /// the payload bytes.
@@ -155,16 +155,19 @@ impl RepositoryRef {
 /// [`SignatureError::Missing`] before it reads anything else.
 #[derive(Clone, Default)]
 pub struct HeaderView<'a> {
-    signature: Option<Cow<'a, str>>,
+    // The header's bytes as they arrived, parsed into a `Signature` by
+    // `require_signature`, the one way to reach them, so a value that is not
+    // a string (the `http::HeaderMap` path can hand one over) is kept and
+    // refused as malformed rather than dropped and refused as missing, and so
+    // the value cannot be recorded by accident.
+    signature: Option<Cow<'a, [u8]>>,
     // Crate-visible so the receiver can record them on its span before
-    // verification; the signature stays private and is reached only through
-    // `require_signature`, so it cannot be recorded by accident.
+    // verification.
     pub(crate) delivery_id: Option<Cow<'a, str>>,
     pub(crate) event_name: Option<Cow<'a, str>>,
     content_type: Option<Cow<'a, str>>,
     target_type: Option<Cow<'a, str>>,
     target_id: Option<Cow<'a, str>>,
-    malformed_signature: bool,
 }
 
 impl fmt::Debug for HeaderView<'_> {
@@ -177,7 +180,6 @@ impl fmt::Debug for HeaderView<'_> {
             .field("content_type", &self.content_type)
             .field("target_type", &self.target_type)
             .field("target_id", &self.target_id)
-            .field("malformed_signature", &self.malformed_signature)
             .finish()
     }
 }
@@ -225,12 +227,13 @@ impl<'a> HeaderView<'a> {
     /// view has no signature, and [`Envelope::from_signed`] reports
     /// [`SignatureError::Missing`] before it looks at the rest.
     ///
-    /// A string map cannot hold a header whose bytes are not a string, so
-    /// this constructor never marks the signature malformed the way the
-    /// `From<&http::HeaderMap>` conversion (`http` feature) does for a
-    /// header value that is not visible ASCII. A signature that is present
-    /// but not `sha256=` followed by 64 hexadecimal characters is still
-    /// [`SignatureError::Malformed`], from the verifier.
+    /// A string map holds only strings, so a signature header whose bytes are
+    /// not one never reaches this constructor; the `From<&http::HeaderMap>`
+    /// conversion (`http` feature) can meet one, since an `http::HeaderValue`
+    /// need not be a string. Both refuse a value that is not a signature the
+    /// same way: the header is parsed when it is needed, and anything that is
+    /// not `sha256=` followed by 64 hexadecimal digits is
+    /// [`SignatureError::Malformed`], whichever constructor held it.
     ///
     /// ```
     /// use std::collections::HashMap;
@@ -257,20 +260,19 @@ impl<'a> HeaderView<'a> {
         S: Into<Cow<'a, str>>,
     {
         Self {
-            signature: lookup(header::SIGNATURE).map(Into::into),
+            signature: lookup(header::SIGNATURE).map(|value| bytes_of(value.into())),
             delivery_id: lookup(header::DELIVERY_ID).map(Into::into),
             event_name: lookup(header::EVENT_NAME).map(Into::into),
             content_type: lookup(header::CONTENT_TYPE).map(Into::into),
             target_type: lookup(header::TARGET_TYPE).map(Into::into),
             target_id: lookup(header::TARGET_ID).map(Into::into),
-            malformed_signature: false,
         }
     }
 
     /// Sets the `X-Hub-Signature-256` value.
     #[must_use]
     pub fn signature(mut self, value: impl Into<Cow<'a, str>>) -> Self {
-        self.signature = Some(value.into());
+        self.signature = Some(bytes_of(value.into()));
         self
     }
 
@@ -309,17 +311,28 @@ impl<'a> HeaderView<'a> {
         self
     }
 
-    /// The signature to verify, or the header failure [`Envelope::from_signed`]
-    /// reports for it.
+    /// The signature to verify, parsed, or the header failure
+    /// [`Envelope::from_signed`] reports for it: [`SignatureError::Missing`]
+    /// when the header is absent, [`SignatureError::Malformed`] when its
+    /// bytes are not a signature. Both are decided here and nowhere else;
+    /// [`Verifier::verify`] takes the parsed value and can only mismatch.
     ///
-    /// Decidable from the headers alone, so the receiver uses it to refuse an
-    /// unsigned request before reading the body, and `from_signed` uses it so
-    /// both paths agree on which failure a header earns.
-    pub(crate) fn require_signature(&self) -> Result<&str, SignatureError> {
-        if self.malformed_signature {
-            return Err(SignatureError::Malformed);
-        }
-        self.signature.as_deref().ok_or(SignatureError::Missing)
+    /// Decidable from the headers alone, so the receiver uses it to refuse
+    /// an unsigned or malformed request before reading the body, and
+    /// `from_signed` uses it so both paths agree on which failure a header
+    /// earns.
+    pub(crate) fn require_signature(&self) -> Result<Signature, SignatureError> {
+        let bytes = self.signature.as_deref().ok_or(SignatureError::Missing)?;
+        Signature::try_from(bytes)
+    }
+}
+
+/// A header value as the bytes [`HeaderView`] keeps for the signature, the
+/// borrow kept when the string was borrowed.
+fn bytes_of(value: Cow<'_, str>) -> Cow<'_, [u8]> {
+    match value {
+        Cow::Borrowed(value) => Cow::Borrowed(value.as_bytes()),
+        Cow::Owned(value) => Cow::Owned(value.into_bytes()),
     }
 }
 
@@ -328,12 +341,13 @@ impl<'a> From<&'a http::HeaderMap> for HeaderView<'a> {
     fn from(headers: &'a http::HeaderMap) -> Self {
         let mut view =
             Self::from_lookup(|name| headers.get(name).and_then(|value| value.to_str().ok()));
-        // A header value that is not visible ASCII has no `str` to look up,
-        // so the lookup left the signature unset; this is what tells a
-        // malformed one apart from an absent one.
-        view.malformed_signature = headers
+        // The lookup reads each header as a `str`, which a value that is not
+        // visible ASCII has none of; the signature is kept as bytes instead,
+        // so such a value is parsed and found malformed rather than found
+        // missing.
+        view.signature = headers
             .get(header::SIGNATURE)
-            .is_some_and(|value| value.to_str().is_err());
+            .map(|value| Cow::Borrowed(value.as_bytes()));
         view
     }
 }
@@ -511,7 +525,7 @@ impl Envelope {
     ///
     /// use octoevents::{
     ///     Bytes, DEFAULT_BODY_LIMIT, Envelope, EventKind, Handler, HeaderView, ReceiveError,
-    ///     ResponseStatus, SignatureError, Verifier, header,
+    ///     ResponseStatus, Signature, SignatureError, Verifier, header,
     /// };
     ///
     /// async fn receive<H: Handler<Envelope>>(
@@ -520,13 +534,17 @@ impl Envelope {
     ///     body: Bytes,
     ///     handler: &H,
     /// ) -> ResponseStatus {
-    ///     // Header-only rejection: an unsigned request is 401 before the
-    ///     // body is read, so it never occupies memory. Decidable from the
-    ///     // headers, so a transport that streams runs it before buffering;
+    ///     // Header-only rejection: a request whose signature header is
+    ///     // absent (401) or not a signature (400) is refused before the body
+    ///     // is read, so it never occupies memory. Decidable from the headers,
+    ///     // so a transport that streams runs it before buffering;
     ///     // `from_signed` reaches the same answer for one that does not.
-    ///     if received.get(header::SIGNATURE).is_none() {
-    ///         let error = ReceiveError::from(SignatureError::Missing);
-    ///         return ResponseStatus::for_receive_error(&error);
+    ///     let signature = received
+    ///         .get(header::SIGNATURE)
+    ///         .ok_or(SignatureError::Missing)
+    ///         .and_then(|value| value.parse::<Signature>());
+    ///     if let Err(error) = signature {
+    ///         return ResponseStatus::for_receive_error(&ReceiveError::from(error));
     ///     }
     ///
     ///     // The body limit: 413 past GitHub's 25 MiB cap. The receiver stops
@@ -567,15 +585,19 @@ impl Envelope {
     ///
     /// # Errors
     ///
-    /// Returns an authentication error first, followed by content-type and
-    /// required-header errors for an authenticated request.
+    /// Returns an authentication error first, [`ReceiveError::Signature`]:
+    /// [`SignatureError::Missing`] when the header is absent,
+    /// [`SignatureError::Malformed`] when it does not parse as a
+    /// [`Signature`], [`SignatureError::Mismatch`] when no configured secret
+    /// produced it for `body`, in that order. Then content-type and
+    /// required-header errors, for an authenticated request.
     pub fn from_signed(
         verifier: &Verifier,
         headers: &HeaderView<'_>,
         body: Bytes,
     ) -> Result<Self, ReceiveError> {
         let signature = headers.require_signature()?;
-        verifier.verify(signature, &body)?;
+        verifier.verify(&signature, &body)?;
 
         if !headers
             .content_type

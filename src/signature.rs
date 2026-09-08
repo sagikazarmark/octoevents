@@ -1,12 +1,13 @@
 //! The `X-Hub-Signature-256` signature: the secret it is computed under, the
-//! verifier that checks (and, for a test, produces) it, and the failures a
-//! signature can have. The secret's bytes leave this module only as an HMAC.
+//! parsed value itself, the verifier that checks (and, for a test, produces)
+//! it, and the failures a signature can have. The secret's bytes are read in
+//! one method, the secret's own `sign`, and leave it only as an HMAC.
 
 use std::{fmt, str::FromStr, sync::Arc};
 
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
-use subtle::ConstantTimeEq;
+use subtle::{Choice, ConstantTimeEq};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
@@ -78,9 +79,19 @@ impl WebhookSecret {
         Ok(Self(Zeroizing::new(bytes)))
     }
 
-    /// The key bytes, for [`hmac_sha256`] alone.
-    fn expose(&self) -> &[u8] {
-        self.0.as_slice()
+    /// The HMAC-SHA256 of `body` under this secret: the signature GitHub
+    /// would send for the body if this were the webhook's secret.
+    ///
+    /// The one place the key bytes are read, and they leave it only as the
+    /// HMAC: the verifier compares what this produces with what arrived, and
+    /// never sees the key.
+    fn sign(&self, body: &[u8]) -> Signature {
+        // HMAC takes a key of any length: a long one is hashed to fit and a
+        // short one is padded, so the key is never invalid.
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(&self.0).expect("HMAC accepts a key of any length");
+        mac.update(body);
+        Signature(mac.finalize().into_bytes().into())
     }
 }
 
@@ -122,21 +133,136 @@ impl fmt::Debug for WebhookSecret {
 }
 
 /// A failure to authenticate a webhook body by its signature.
+///
+/// Each variant is decided in one place, in the order a delivery meets them.
+/// [`Missing`](Self::Missing) is decided from the headers, before anything is
+/// parsed; [`Malformed`](Self::Malformed) by parsing the header into a
+/// [`Signature`]; [`Mismatch`](Self::Mismatch) by [`Verifier::verify`], which
+/// takes the parsed signature and so has no format left to refuse. Kept
+/// apart from [`WebhookSecretError`], a configuration failure found before
+/// any delivery arrives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Error)]
 #[non_exhaustive]
 pub enum SignatureError {
     /// The `X-Hub-Signature-256` header was absent.
     ///
-    /// Envelope constructors produce this variant while extracting headers;
-    /// [`Verifier::verify`] itself accepts an already-extracted header value.
+    /// Decided from the headers alone: the receiver reports it before the
+    /// body is read, [`Envelope::from_signed`] before it reads anything else,
+    /// and [`Verifier::verify`], which is handed a [`Signature`], never sees
+    /// an absent one.
+    ///
+    /// [`Envelope::from_signed`]: crate::Envelope::from_signed
     #[error("missing X-Hub-Signature-256 header")]
     Missing,
-    /// The signature was not `sha256=` followed by exactly 64 hexadecimal characters.
+    /// The header was present but not `sha256=` followed by exactly 64
+    /// hexadecimal digits.
+    ///
+    /// Decided by parsing the header into a [`Signature`], through
+    /// [`str::parse`] or `TryFrom<&[u8]>`, and nowhere else: bytes that are
+    /// not visible ASCII, another algorithm's prefix, an uppercase prefix
+    /// and a wrong length are all this variant. [`Verifier::verify`] cannot
+    /// produce it, since a [`Signature`] has already parsed.
     #[error("malformed X-Hub-Signature-256 header")]
     Malformed,
-    /// None of the configured secrets matched the signature.
+    /// None of the configured secrets produced the signature for the body.
+    ///
+    /// Decided by [`Verifier::verify`], the one failure it has.
     #[error("webhook signature mismatch")]
     Mismatch,
+}
+
+/// A parsed `X-Hub-Signature-256` value: the 32 MAC bytes.
+///
+/// The one form a signature takes once it has left the wire. A header value
+/// becomes one through [`str::parse`], or `TryFrom<&[u8]>` for a transport
+/// that has the header's bytes and no string (an `http::HeaderValue` need
+/// not be one), and either refuses anything that is not `sha256=` followed
+/// by 64 hexadecimal digits as [`SignatureError::Malformed`]; the digits are
+/// read in either case, the prefix in lowercase only, as GitHub sends it.
+/// [`Verifier::sign`] produces one, and [`Verifier::verify`] takes one, so
+/// what reaches the verifier has a settled format and the verifier's one
+/// failure is a mismatch.
+///
+/// `Display` renders the header value back, `sha256=` and lowercase hex:
+/// what a test puts on its synthetic request, and the inverse of parsing.
+/// `Debug` is redacted: the value is secret-derived, and the crate records
+/// nothing computed from the secret. Equality is
+/// [`subtle::ConstantTimeEq`], the comparison the verifier folds over its
+/// secrets.
+///
+/// ```
+/// use octoevents::{Signature, SignatureError};
+///
+/// let signature: Signature =
+///     "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17".parse()?;
+/// assert_eq!(
+///     signature.to_string(),
+///     "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17"
+/// );
+/// assert_eq!(format!("{signature:?}"), "Signature([REDACTED])");
+///
+/// assert_eq!(
+///     "sha1=757107ea0eb2509fc211221cce984b8a37570b6d".parse::<Signature>().unwrap_err(),
+///     SignatureError::Malformed
+/// );
+/// # Ok::<(), SignatureError>(())
+/// ```
+#[derive(Clone)]
+pub struct Signature([u8; SHA256_BYTES]);
+
+/// Parses the header's bytes, for a transport that has them and no string.
+///
+/// # Errors
+///
+/// Returns [`SignatureError::Malformed`] for anything that is not `sha256=`
+/// followed by 64 hexadecimal digits, bytes that are not ASCII included.
+impl TryFrom<&[u8]> for Signature {
+    type Error = SignatureError;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        parse_signature(value)
+            .map(Self)
+            .ok_or(SignatureError::Malformed)
+    }
+}
+
+/// Parses the header value.
+///
+/// # Errors
+///
+/// Returns [`SignatureError::Malformed`] for anything that is not `sha256=`
+/// followed by 64 hexadecimal digits.
+impl FromStr for Signature {
+    type Err = SignatureError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::try_from(value.as_bytes())
+    }
+}
+
+/// The header value: `sha256=` followed by the MAC as lowercase hex.
+impl fmt::Display for Signature {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(SHA256_PREFIX)?;
+        for byte in self.0 {
+            write!(formatter, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Redacted: the MAC is secret-derived.
+impl fmt::Debug for Signature {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Signature([REDACTED])")
+    }
+}
+
+/// Constant-time comparison of the MAC bytes.
+impl ConstantTimeEq for Signature {
+    fn ct_eq(&self, other: &Self) -> Choice {
+        self.0.ct_eq(&other.0)
+    }
 }
 
 /// The configured secrets, and the HMAC comparison they authenticate with.
@@ -194,30 +320,35 @@ impl Verifier {
         self
     }
 
-    /// Verifies a GitHub HMAC-SHA256 signature over the exact body bytes.
+    /// Verifies a parsed `X-Hub-Signature-256` value over the exact body
+    /// bytes.
     ///
-    /// Every secret is evaluated even after a match. This provides
+    /// Every secret is evaluated even after a match, so timing reveals
+    /// neither the secret nor which one matched. This provides
     /// authentication but not replay protection; deduplicate downstream using
     /// `X-GitHub-Delivery`.
     ///
-    /// The `sha256=` prefix is matched case-sensitively because that is what
-    /// GitHub sends; the hexadecimal digits after it accept either case. An
-    /// uppercase prefix is [`SignatureError::Malformed`], not a mismatch.
+    /// The signature arrives parsed: a header value becomes a [`Signature`]
+    /// through [`str::parse`], which is where a value that is not `sha256=`
+    /// and 64 hexadecimal digits is refused as [`SignatureError::Malformed`].
+    /// By the time a signature reaches this method its format is settled, so
+    /// the only failure left is that no secret produced it.
     ///
     /// ```
-    /// use octoevents::{Verifier, WebhookSecret};
+    /// use octoevents::{Signature, Verifier, WebhookSecret};
     ///
     /// let verifier = Verifier::new(WebhookSecret::new("It's a Secret to Everybody"));
-    /// let signature = "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17";
-    /// verifier.verify(signature, b"Hello, World!")?;
+    /// let signature: Signature =
+    ///     "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17".parse()?;
+    /// verifier.verify(&signature, b"Hello, World!")?;
     /// # Ok::<(), octoevents::SignatureError>(())
     /// ```
     ///
     /// # Errors
     ///
-    /// Returns [`SignatureError::Malformed`] for any value not matching
-    /// GitHub's `sha256=<64 hex characters>` format and
-    /// [`SignatureError::Mismatch`] when no secret matches.
+    /// Returns [`SignatureError::Mismatch`] when no configured secret
+    /// produced the signature for `body`. Nothing else: the format was
+    /// checked when the signature was parsed.
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(
@@ -227,22 +358,13 @@ impl Verifier {
             fields(secret_count = self.secrets.len(), body_len = body.len(), outcome = tracing::field::Empty)
         )
     )]
-    pub fn verify(&self, signature_header: &str, body: &[u8]) -> Result<(), SignatureError> {
-        let received = match decode_signature(signature_header) {
-            Ok(received) => received,
-            Err(error) => {
-                trace::record("outcome", "malformed");
-                return Err(error);
-            }
-        };
-        let mut matched = 0_u8;
-
+    pub fn verify(&self, signature: &Signature, body: &[u8]) -> Result<(), SignatureError> {
+        let mut matched = Choice::from(0);
         for secret in self.secrets.iter() {
-            let computed = hmac_sha256(secret, body);
-            matched |= computed[..].ct_eq(&received).unwrap_u8();
+            matched |= secret.sign(body).ct_eq(signature);
         }
 
-        if matched == 1 {
+        if bool::from(matched) {
             trace::record("outcome", "verified");
             Ok(())
         } else {
@@ -251,15 +373,17 @@ impl Verifier {
         }
     }
 
-    /// The `X-Hub-Signature-256` value GitHub would send for `body`: `sha256=`
-    /// followed by the lowercase hex HMAC-SHA256 of the body under the first
-    /// configured secret.
+    /// The signature GitHub would send for `body`: its HMAC-SHA256 under the
+    /// first configured secret, as a [`Signature`] whose `Display` is the
+    /// `X-Hub-Signature-256` header value, `sha256=` followed by lowercase
+    /// hex.
     ///
     /// A test aid for the receiving side. A test drives the receiver with a
     /// synthetic request, and that request needs the signature GitHub would
     /// have put on it, so the test signs the body with the verifier the
-    /// receiver was built with. The crate sends nothing; the method exists so
-    /// the test needs no HMAC code of its own.
+    /// receiver was built with and puts `.to_string()` of the result on the
+    /// header. The crate sends nothing; the method exists so the test needs
+    /// no HMAC code of its own.
     ///
     /// A rotated verifier ([`Verifier::also`]) signs under its first secret,
     /// the one [`Verifier::new`] received. To sign under a secret it was
@@ -274,63 +398,37 @@ impl Verifier {
     /// let verifier = Verifier::new(WebhookSecret::new("It's a Secret to Everybody"));
     /// let signature = verifier.sign(b"Hello, World!");
     ///
-    /// assert_eq!(signature, "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17");
+    /// assert_eq!(
+    ///     signature.to_string(),
+    ///     "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17"
+    /// );
     /// verifier.verify(&signature, b"Hello, World!")?;
     /// # Ok::<(), octoevents::SignatureError>(())
     /// ```
     #[must_use]
-    pub fn sign(&self, body: &[u8]) -> String {
+    pub fn sign(&self, body: &[u8]) -> Signature {
         // `new` puts one secret in and nothing takes one out.
-        let tag = hmac_sha256(&self.secrets[0], body);
-        encode_signature(&tag)
+        self.secrets[0].sign(body)
     }
 }
 
-/// The HMAC-SHA256 of `body` under `secret`.
-fn hmac_sha256(secret: &WebhookSecret, body: &[u8]) -> [u8; SHA256_BYTES] {
-    // HMAC takes a key of any length: a long one is hashed to fit and a short
-    // one is padded, so the key is never invalid.
-    let mut mac =
-        Hmac::<Sha256>::new_from_slice(secret.expose()).expect("HMAC accepts a key of any length");
-    mac.update(body);
-    mac.finalize().into_bytes().into()
-}
-
-/// `sha256=` followed by `tag` as lowercase hex: the header value GitHub
-/// sends, and the inverse of [`decode_signature`].
-fn encode_signature(tag: &[u8; SHA256_BYTES]) -> String {
-    let mut out = String::with_capacity(SHA256_PREFIX.len() + SHA256_HEX_CHARS);
-    out.push_str(SHA256_PREFIX);
-    for &byte in tag {
-        out.push(hex_digit(byte >> 4));
-        out.push(hex_digit(byte & 0x0f));
-    }
-    out
-}
-
-/// The lowercase hex digit for a nibble; the inverse of [`hex_nibble`].
-fn hex_digit(nibble: u8) -> char {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    char::from(DIGITS[usize::from(nibble & 0x0f)])
-}
-
-fn decode_signature(value: &str) -> Result<[u8; SHA256_BYTES], SignatureError> {
-    let hex = value
-        .strip_prefix(SHA256_PREFIX)
-        .ok_or(SignatureError::Malformed)?;
+/// The MAC bytes of a `sha256=<64 hex digits>` header value, or `None` for
+/// anything else: another prefix, a wrong length, a byte that is not a hex
+/// digit, a byte that is not ASCII at all. The one decision behind
+/// [`SignatureError::Malformed`]; the inverse of `Signature`'s `Display`.
+fn parse_signature(value: &[u8]) -> Option<[u8; SHA256_BYTES]> {
+    let hex = value.strip_prefix(SHA256_PREFIX.as_bytes())?;
     if hex.len() != SHA256_HEX_CHARS {
-        return Err(SignatureError::Malformed);
+        return None;
     }
 
     // The length check above guarantees an exact number of pairs and no remainder.
-    let (pairs, _) = hex.as_bytes().as_chunks::<2>();
+    let (pairs, _) = hex.as_chunks::<2>();
     let mut decoded = [0_u8; SHA256_BYTES];
     for (output, &[high, low]) in decoded.iter_mut().zip(pairs) {
-        let high = hex_nibble(high).ok_or(SignatureError::Malformed)?;
-        let low = hex_nibble(low).ok_or(SignatureError::Malformed)?;
-        *output = (high << 4) | low;
+        *output = (hex_nibble(high)? << 4) | hex_nibble(low)?;
     }
-    Ok(decoded)
+    Some(decoded)
 }
 
 const fn hex_nibble(byte: u8) -> Option<u8> {

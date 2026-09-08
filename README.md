@@ -76,7 +76,8 @@ itself reads the envelope's meta, returns a boxed error, and needs neither.
 Every request goes through three steps:
 
 1. **Verify.** `X-Hub-Signature-256` is checked against the exact body bytes
-   with the secret. An unsigned request is refused before its body is read.
+   with the secret. A request whose signature header is absent or malformed
+   is refused before its body is read.
 2. **Route.** The dispatcher matches the delivery's kind and action: `thank`
    runs for `issues.opened`; any other delivery succeeds with nothing run.
 3. **Answer.** GitHub gets a bare status and no body:
@@ -511,11 +512,12 @@ cannot be paired with a payload that says something else. The target type and
 ID come from headers, so they stay `None` unless assigned.
 
 The receiver is tested with a signed synthetic request. `Verifier::sign`
-gives the `X-Hub-Signature-256` value GitHub would send for a body, so the
-test signs with the verifier the receiver is built with; a request needs four
-headers, whose names `octoevents::header` spells. `receive` takes any
-`http_body::Body` over `Bytes`, and `String` is one, so the test needs no
-axum. With `http = "1"` as a dev-dependency:
+gives the `Signature` GitHub would send for a body, whose `to_string()` is
+the `X-Hub-Signature-256` value, so the test signs with the verifier the
+receiver is built with; a request needs four headers, whose names
+`octoevents::header` spells. `receive` takes any `http_body::Body` over
+`Bytes`, and `String` is one, so the test needs no axum. With `http = "1"` as
+a dev-dependency:
 
 ```rust,ignore
 use octoevents::header;
@@ -529,13 +531,14 @@ async fn accepts_a_signed_delivery() {
     let webhook = WebhookReceiverBuilder::new(verifier.clone()).build(dispatcher);
 
     let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
+    let signature = verifier.sign(body.as_bytes());
     let request = http::Request::builder()
         .method("POST")
         .uri("/webhook")
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::DELIVERY_ID, "delivery-1")
         .header(header::EVENT_NAME, "issues")
-        .header(header::SIGNATURE, verifier.sign(body.as_bytes()))
+        .header(header::SIGNATURE, signature.to_string())
         .body(body.to_string())
         .unwrap();
 
@@ -604,14 +607,14 @@ recorded anywhere. The full contract, span by span and field by field, is
 ## Security
 
 - **Signed requests only.** A `Verifier` is required to build a receiver, so
-  a deployment without a secret cannot be expressed. An unsigned request is
-  refused before its body is read; a signed one is verified against the exact
-  bytes GitHub sent. Only `X-Hub-Signature-256` is checked, never the SHA-1
-  header beside it.
+  a deployment without a secret cannot be expressed. A request whose
+  signature header is absent or malformed is refused before its body is read;
+  a signed one is verified against the exact bytes GitHub sent. Only
+  `X-Hub-Signature-256` is checked, never the SHA-1 header beside it.
 - **Constant-time comparison.** Every configured secret is evaluated against
   a well-formed signature, a match included, so timing reveals neither the
-  secret nor which one matched. A malformed signature header is refused
-  before any secret is used.
+  secret nor which one matched. The header is parsed into a `Signature`
+  before any secret is used, so a malformed one never reaches the comparison.
 - **Secret rotation.** GitHub holds one secret per webhook, so the rotation
   window is the verifier's: `Verifier::new(current).also(previous)` verifies
   against either. Deploy the new secret under `new` with the old one kept

@@ -83,8 +83,9 @@
 //!   [`on_error`][WebhookReceiverBuilder::on_error] observer.
 //! - [`Verifier`] and [`WebhookSecret`]: the configured secrets and the HMAC
 //!   comparison; [`Verifier::also`] opens a rotation window, and
-//!   [`Verifier::sign`] signs a test's synthetic request. A signature that
-//!   does not authenticate is a [`SignatureError`].
+//!   [`Verifier::sign`] signs a test's synthetic request. The header value
+//!   parsed is a [`Signature`], which is where a malformed one is refused; a
+//!   signature that does not authenticate is a [`SignatureError`].
 //! - [`HeaderView`], [`ResponseStatus`] and [`Envelope::from_signed`]: the
 //!   sans-I/O path for a transport with no `http::Request`.
 //!
@@ -121,9 +122,12 @@
 //!   the span, since a transport may quote the request in it.
 //! - `octoevents.verify`, at DEBUG, around [`Verifier::verify`], inside the
 //!   receive span. It records `secret_count` and `body_len` on open and
-//!   `outcome` on the way out: `verified`, `malformed` or `mismatch`. It is
-//!   the detail behind the receive span's `unauthorized` and `bad_request`
-//!   outcomes, which is why it opens a level below them.
+//!   `outcome` on the way out: `verified` or `mismatch`. It is the detail
+//!   behind the receive span's `unauthorized` outcome, which is why it opens
+//!   a level below it. A header that is absent or malformed is refused from
+//!   the headers before the verifier is asked, so it opens no verify span:
+//!   the receive span records that refusal as `bad_request` or
+//!   `unauthorized` with the refusal's text as `error`.
 //! - `octoevents.dispatch`, at INFO, around [`Dispatcher::dispatch`], inside
 //!   the receive span when the dispatcher is the receiver's handler. It
 //!   records `delivery_id`, `event` and, when the delivery has them, `action`
@@ -263,7 +267,7 @@ pub use respond::ResponseStatus;
 pub use runtime::{MaybeSend, MaybeSync};
 #[cfg(feature = "http")]
 pub use service::{WebhookReceiver, WebhookReceiverBuilder};
-pub use signature::{SignatureError, Verifier, WebhookSecret, WebhookSecretError};
+pub use signature::{Signature, SignatureError, Verifier, WebhookSecret, WebhookSecretError};
 #[cfg(all(feature = "http", feature = "tracing"))]
 pub use traced_error::TracedError;
 
