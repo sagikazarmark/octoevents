@@ -214,7 +214,9 @@ mod verify;
 #[cfg(all(feature = "http", feature = "tracing"))]
 pub use boxed_error::BoxedError;
 pub use dispatch::{DispatchError, Dispatcher, DispatcherBuilder, Match, Outcome, Tier};
-pub use envelope::{DecodeError, Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef};
+pub use envelope::{
+    BodyError, DecodeError, Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef,
+};
 pub use events::{Action, EventKind, TargetType};
 pub use handler::Handler;
 pub use matcher::{AnyAction, EventMatcher, IntoMatcher};

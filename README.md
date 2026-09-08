@@ -80,7 +80,7 @@ Every request goes through three steps:
 | 204 | The handler succeeded, or the delivery was a `ping` (answered before any handler) |
 | 500 | The handler failed; see [Error handling](#error-handling) |
 | 401 | The signature is missing or does not match |
-| 400 | The signature is malformed, a header is missing, or the content type is not JSON |
+| 400 | The signature is malformed, a header is missing, the content type is not JSON, or the body could not be read |
 | 413 | The body is over the limit (25 MiB by default) |
 
 `thank` took the whole envelope; a handler can take the decoded payload

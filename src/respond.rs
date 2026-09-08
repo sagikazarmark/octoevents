@@ -10,7 +10,7 @@ use crate::{ReceiveError, VerifyError};
 pub enum ResponseStatus {
     /// The delivery was accepted or a ping was short-circuited.
     NoContent,
-    /// Request metadata or body framing was malformed.
+    /// Request metadata was malformed or the body could not be read.
     BadRequest,
     /// Authentication was absent or did not match.
     Unauthorized,
@@ -48,7 +48,8 @@ impl ResponseStatus {
             }
             ReceiveError::Verify(VerifyError::MalformedSignature)
             | ReceiveError::MissingHeader { .. }
-            | ReceiveError::UnsupportedContentType => Self::BadRequest,
+            | ReceiveError::UnsupportedContentType
+            | ReceiveError::BodyRead(_) => Self::BadRequest,
             ReceiveError::BodyTooLarge { .. } => Self::PayloadTooLarge,
         }
     }
@@ -56,17 +57,18 @@ impl ResponseStatus {
 
 #[cfg(test)]
 mod tests {
-    use crate::{ReceiveError, ResponseStatus, VerifyError, header};
+    use crate::{BodyError, ReceiveError, ResponseStatus, VerifyError, header};
 
     #[test]
     fn maps_every_receive_error_to_the_status_the_contract_names() {
         // The whole table: an absent or mismatched signature is the client's
         // authentication failing (401); a signature that is not `sha256=` and
-        // 64 hex characters, a missing required header and a form-encoded
-        // body are malformed requests (400); the body limit is its own code
-        // (413). One row per `ReceiveError` shape the match above has an arm
-        // for. Which failure a request earns is `Envelope::from_signed`'s
-        // test; that the receiver answers with the mapped status is its own.
+        // 64 hex characters, a missing required header, a form-encoded body
+        // and a body frame the transport could not produce are malformed
+        // requests (400); the body limit is its own code (413). One row per
+        // `ReceiveError` shape the match above has an arm for. Which failure
+        // a request earns is `Envelope::from_signed`'s test; that the
+        // receiver answers with the mapped status is its own.
         let table = [
             (
                 ReceiveError::Verify(VerifyError::MissingSignature),
@@ -88,6 +90,10 @@ mod tests {
             ),
             (
                 ReceiveError::UnsupportedContentType,
+                ResponseStatus::BadRequest,
+            ),
+            (
+                ReceiveError::BodyRead(BodyError::new("connection reset by peer")),
                 ResponseStatus::BadRequest,
             ),
             (

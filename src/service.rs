@@ -17,8 +17,8 @@ use crate::runtime::BoxFuture;
 #[cfg(feature = "tracing")]
 use crate::{Action, BoxedError};
 use crate::{
-    DEFAULT_BODY_LIMIT, Envelope, EventKind, EventMeta, Handler, HeaderView, MaybeSend, MaybeSync,
-    ReceiveError, ResponseStatus, Verifier, trace,
+    BodyError, DEFAULT_BODY_LIMIT, Envelope, EventKind, EventMeta, Handler, HeaderView, MaybeSend,
+    MaybeSync, ReceiveError, ResponseStatus, Verifier, trace,
 };
 
 type ServiceResponse = Response<Empty<Bytes>>;
@@ -142,8 +142,9 @@ impl<E> WebhookReceiverBuilder<E> {
     ///
     /// The observer runs only when a handler ran and failed. A receive
     /// failure (a signature that does not verify, a missing header, an
-    /// unsupported content type, a body over the limit) is a status code and
-    /// a span field, never a handler error, and a `ping` short-circuited by
+    /// unsupported content type, a body frame the transport could not
+    /// produce, a body over the limit) is a status code and a span field,
+    /// never a handler error, and a `ping` short-circuited by
     /// [`handle_ping`](Self::handle_ping) reaches no handler; neither calls
     /// it.
     ///
@@ -429,6 +430,10 @@ where
     /// Build the receiver over another secret and the same request is
     /// answered 401.
     ///
+    /// Of the body's error type only `Display` is asked, which every
+    /// transport's error has: a frame the transport cannot produce is
+    /// answered 400, the status [`ReceiveError::BodyRead`] maps to.
+    ///
     /// This path never boxes and never crosses a Tower or native executor
     /// boundary, so on `wasm32` a Cloudflare Worker can hand an
     /// `http::Request<worker::Body>` straight in with a handler holding
@@ -456,6 +461,7 @@ where
     ) -> impl Future<Output = ServiceResponse> + MaybeSend
     where
         B: Body<Data = Bytes> + MaybeSend,
+        B::Error: fmt::Display,
     {
         async move { empty_response(self.inner.process(request).await) }
     }
@@ -481,11 +487,9 @@ where
     async fn process<B>(&self, request: Request<B>) -> ResponseStatus
     where
         B: Body<Data = Bytes>,
+        B::Error: fmt::Display,
     {
         let (parts, body) = request.into_parts();
-        // Pinned here, where the body is polled, so `B` owes no `Unpin` to the
-        // caller: a transport's body type is whatever it is.
-        let mut body = pin!(body);
         let headers = HeaderView::from(&parts.headers);
         record_headers(&headers);
 
@@ -494,7 +498,7 @@ where
         // bytes of memory. `Envelope::from_signed` repeats the check for
         // transports that construct envelopes directly.
         if let Err(error) = headers.require_signature() {
-            return record_outcome(ResponseStatus::for_receive_error(&error.into()));
+            return refuse(&error.into());
         }
 
         let Config {
@@ -505,33 +509,14 @@ where
             error_fields,
         } = &self.config;
 
-        // The comparison is in `u64` so a hint above `usize::MAX` (possible
-        // on 32-bit targets, wasm included) still takes the fast path.
-        if u64::try_from(*body_limit).is_ok_and(|limit| body.size_hint().lower() > limit) {
-            return record_outcome(body_too_large(*body_limit));
-        }
+        let bytes = match read_body(body, *body_limit).await {
+            Ok(bytes) => bytes,
+            Err(error) => return refuse(&error),
+        };
 
-        let mut bytes = BytesMut::new();
-        while let Some(frame) = body.frame().await {
-            let Ok(frame) = frame else {
-                return record_outcome(ResponseStatus::BadRequest);
-            };
-            let Ok(data) = frame.into_data() else {
-                continue;
-            };
-            if bytes
-                .len()
-                .checked_add(data.len())
-                .is_none_or(|length| length > *body_limit)
-            {
-                return record_outcome(body_too_large(*body_limit));
-            }
-            bytes.extend_from_slice(&data);
-        }
-
-        let envelope = match Envelope::from_signed(verifier, &headers, bytes.freeze()) {
+        let envelope = match Envelope::from_signed(verifier, &headers, bytes) {
             Ok(envelope) => envelope,
-            Err(error) => return record_outcome(ResponseStatus::for_receive_error(&error)),
+            Err(error) => return refuse(&error),
         };
 
         if !handle_ping && matches!(envelope.meta.kind, EventKind::Ping) {
@@ -597,6 +582,7 @@ impl<H, B> Service<Request<B>> for WebhookReceiver<H>
 where
     H: Handler<Envelope> + MaybeSend + MaybeSync + 'static,
     B: Body<Data = Bytes> + MaybeSend + 'static,
+    B::Error: fmt::Display,
 {
     type Response = ServiceResponse;
     type Error = Infallible;
@@ -637,8 +623,47 @@ impl From<ResponseStatus> for http::StatusCode {
     }
 }
 
-fn body_too_large(limit: usize) -> ResponseStatus {
-    ResponseStatus::for_receive_error(&ReceiveError::BodyTooLarge { limit })
+/// Reads `body` into memory, within `limit` bytes.
+///
+/// The one place the receiver touches the transport, so every way a body can
+/// fail to arrive has its `ReceiveError` here. A body whose size hint is
+/// already over the limit is refused before the first poll, one that crosses
+/// it mid-stream at the frame that crossed, both as
+/// [`ReceiveError::BodyTooLarge`]; a frame the transport could not produce is
+/// [`ReceiveError::BodyRead`], with the transport's error as text. Trailers
+/// are passed over and do not count toward the limit.
+async fn read_body<B>(body: B, limit: usize) -> Result<Bytes, ReceiveError>
+where
+    B: Body<Data = Bytes>,
+    B::Error: fmt::Display,
+{
+    // Pinned here, where the body is polled, so `B` owes no `Unpin` to the
+    // caller: a transport's body type is whatever it is.
+    let mut body = pin!(body);
+
+    // The comparison is in `u64` so a hint above `usize::MAX` (possible on
+    // 32-bit targets, wasm included) still takes the fast path.
+    if u64::try_from(limit).is_ok_and(|limit| body.size_hint().lower() > limit) {
+        return Err(ReceiveError::BodyTooLarge { limit });
+    }
+
+    let mut bytes = BytesMut::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|error| ReceiveError::BodyRead(BodyError::new(error)))?;
+        let Ok(data) = frame.into_data() else {
+            continue;
+        };
+        if bytes
+            .len()
+            .checked_add(data.len())
+            .is_none_or(|length| length > limit)
+        {
+            return Err(ReceiveError::BodyTooLarge { limit });
+        }
+        bytes.extend_from_slice(&data);
+    }
+
+    Ok(bytes.freeze())
 }
 
 fn record_headers(headers: &HeaderView<'_>) {
@@ -654,6 +679,14 @@ fn record_outcome(status: ResponseStatus) -> ResponseStatus {
     trace::record("outcome", outcome_label(status));
     trace::record("status", status.as_u16());
     status
+}
+
+/// Answers a request refused before any handler ran: the status the contract
+/// maps `error` to, recorded as the span's outcome. Every pre-handler failure
+/// is an error value and goes through here, so none selects a status on its
+/// own.
+fn refuse(error: &ReceiveError) -> ResponseStatus {
+    record_outcome(ResponseStatus::for_receive_error(error))
 }
 
 /// The value the `octoevents.receive` span records as `outcome`.
@@ -829,10 +862,10 @@ mod tests {
     #[cfg(feature = "tower")]
     use tower::ServiceExt as _;
 
-    use super::{WebhookReceiverBuilder, empty_response, outcome_label};
+    use super::{WebhookReceiverBuilder, empty_response, outcome_label, read_body};
     use crate::{
-        Action, DecodeError, Dispatcher, Envelope, EventKind, EventMeta, Handler, ResponseStatus,
-        Secret, Verifier, test_support::AppError,
+        Action, BodyError, DecodeError, Dispatcher, Envelope, EventKind, EventMeta, Handler,
+        ReceiveError, ResponseStatus, Secret, Verifier, test_support::AppError,
     };
 
     /// A production-shaped handler: dependencies as fields, borrowed through
@@ -967,6 +1000,24 @@ mod tests {
             _context: &mut Context<'_>,
         ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
             Poll::Ready(self.frames.lock().unwrap().pop_front().map(Ok))
+        }
+    }
+
+    /// A body whose transport fails on the first poll with the given text,
+    /// as a dropped connection does: the receiver sees no data frame, only
+    /// the error. The error type is a bare `&str`, `Display` and nothing
+    /// more, which is all the receiver asks of a body's error.
+    struct FailingBody(&'static str);
+
+    impl http_body::Body for FailingBody {
+        type Data = Bytes;
+        type Error = &'static str;
+
+        fn poll_frame(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+            Poll::Ready(Some(Err(self.0)))
         }
     }
 
@@ -1194,20 +1245,6 @@ mod tests {
     async fn refuses_an_unsigned_request_without_reading_the_body() {
         // A body that fails on first poll: reaching the read loop shows up as
         // 400, so a 401 proves the signature headers were decisive alone.
-        struct FailingBody;
-
-        impl http_body::Body for FailingBody {
-            type Data = Bytes;
-            type Error = &'static str;
-
-            fn poll_frame(
-                self: Pin<&mut Self>,
-                _context: &mut Context<'_>,
-            ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
-                Poll::Ready(Some(Err("body must not be read")))
-            }
-        }
-
         let receiver = || {
             WebhookReceiverBuilder::new(verifier()).build(|_: Envelope| async { Ok::<_, ()>(()) })
         };
@@ -1221,7 +1258,7 @@ mod tests {
                 // GitHub's legacy SHA-1 header alone does not sign a request.
                 None => builder.header("x-hub-signature", "sha1=legacy"),
             }
-            .body(FailingBody)
+            .body(FailingBody("body must not be read"))
             .unwrap()
         };
 
@@ -1229,11 +1266,30 @@ mod tests {
             receiver().receive(request(None)).await.status(),
             StatusCode::UNAUTHORIZED
         );
-        // A signed request reaches the read loop and reports the body failure.
+        // A signed request reaches the read loop and reports the body
+        // failure with the status `ReceiveError::BodyRead` maps to; that the
+        // loop produces that variant is `read_body`'s own test.
         let signed = verifier().sign(b"{}");
         assert_eq!(
             receiver().receive(request(Some(&signed))).await.status(),
             StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    async fn a_frame_the_transport_cannot_produce_is_a_body_read_error() {
+        // The frame is an error, not data: the read stops there and the
+        // failure has a value, the variant every pre-handler failure has,
+        // carrying the transport's text as its source rather than a bare
+        // status. Under a limit the empty body is within, so only the frame
+        // error can refuse it.
+        let result = read_body(FailingBody("connection reset by peer"), 64).await;
+
+        assert_eq!(
+            result,
+            Err(ReceiveError::BodyRead(BodyError::new(
+                "connection reset by peer"
+            )))
         );
     }
 
