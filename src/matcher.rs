@@ -266,3 +266,162 @@ impl<const N: usize> From<[(EventKind, Action); N]> for EventMatcher {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{AnyAction, EventMatcher, IntoMatcher, Slot};
+    use crate::{Action, EventKind};
+
+    /// A payload over every `issues` action, for the relative shapes to take
+    /// the kind from.
+    #[derive(Debug, serde::Deserialize)]
+    struct AnyIssue {}
+
+    impl crate::Payload for AnyIssue {
+        const KIND: EventKind = EventKind::Issues;
+    }
+
+    /// The slots an absolute shape expands to.
+    fn absolute<M: Into<EventMatcher>>(shape: M) -> Vec<Slot> {
+        shape.into().into_slots()
+    }
+
+    /// The slots a shape expands to as the matcher of a handler over
+    /// `AnyIssue`.
+    fn relative<M: IntoMatcher<AnyIssue>>(shape: M) -> Vec<Slot> {
+        shape.into_matcher().into_slots()
+    }
+
+    /// A slot for every action of `kind`, spelled as data so the expectation
+    /// does not go through `Slot::any_action`, which the impls use.
+    fn any_action(kind: EventKind) -> Slot {
+        Slot { kind, action: None }
+    }
+
+    /// A slot for one action of `kind`, spelled as data rather than through
+    /// `Slot::action` likewise.
+    fn one_action(kind: EventKind, action: Action) -> Slot {
+        Slot {
+            kind,
+            action: Some(action),
+        }
+    }
+
+    #[test]
+    fn a_kind_expands_to_one_slot_for_every_action() {
+        assert_eq!(
+            absolute(EventKind::PullRequest),
+            [any_action(EventKind::PullRequest)]
+        );
+    }
+
+    #[test]
+    fn several_kinds_expand_to_one_slot_each_in_order() {
+        assert_eq!(
+            absolute([EventKind::Issues, EventKind::IssueComment]),
+            [
+                any_action(EventKind::Issues),
+                any_action(EventKind::IssueComment),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_kind_with_one_action_expands_to_that_slot() {
+        assert_eq!(
+            absolute((EventKind::PullRequest, Action::Opened)),
+            [one_action(EventKind::PullRequest, Action::Opened)]
+        );
+    }
+
+    #[test]
+    fn a_kind_with_several_actions_expands_to_one_slot_per_action_in_order() {
+        assert_eq!(
+            absolute((
+                EventKind::PullRequest,
+                [Action::Opened, Action::Synchronize, Action::Reopened],
+            )),
+            [
+                one_action(EventKind::PullRequest, Action::Opened),
+                one_action(EventKind::PullRequest, Action::Synchronize),
+                one_action(EventKind::PullRequest, Action::Reopened),
+            ]
+        );
+    }
+
+    #[test]
+    fn kind_action_pairs_expand_to_one_slot_each_in_order() {
+        assert_eq!(
+            absolute([
+                (EventKind::PullRequest, Action::Opened),
+                (EventKind::Issues, Action::Closed),
+            ]),
+            [
+                one_action(EventKind::PullRequest, Action::Opened),
+                one_action(EventKind::Issues, Action::Closed),
+            ]
+        );
+    }
+
+    #[test]
+    fn or_appends_each_operands_slots_in_order() {
+        // Three operands of three shapes: the combined matcher is their slots
+        // laid end to end, nothing merged and nothing reordered.
+        let matcher = EventMatcher::from(EventKind::Push)
+            .or((EventKind::Release, Action::Published))
+            .or([EventKind::Issues, EventKind::IssueComment]);
+
+        assert_eq!(
+            matcher.into_slots(),
+            [
+                any_action(EventKind::Push),
+                one_action(EventKind::Release, Action::Published),
+                any_action(EventKind::Issues),
+                any_action(EventKind::IssueComment),
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_absolute_arrays_expand_to_no_slots() {
+        // `on([], handler)` does not compile, since three array impls fit
+        // `[_; 0]`; each, spelled with its element type, is a matcher that
+        // selects nothing.
+        assert_eq!(absolute::<[EventKind; 0]>([]), []);
+        assert_eq!(
+            absolute::<(EventKind, [Action; 0])>((EventKind::PullRequest, [])),
+            []
+        );
+        assert_eq!(absolute::<[(EventKind, Action); 0]>([]), []);
+    }
+
+    #[test]
+    fn an_action_alone_takes_the_kind_from_the_payload_type() {
+        assert_eq!(
+            relative(Action::Opened),
+            [one_action(EventKind::Issues, Action::Opened)]
+        );
+    }
+
+    #[test]
+    fn an_action_array_takes_the_kind_from_the_payload_type_for_every_slot() {
+        assert_eq!(
+            relative([Action::Opened, Action::Edited, Action::Closed]),
+            [
+                one_action(EventKind::Issues, Action::Opened),
+                one_action(EventKind::Issues, Action::Edited),
+                one_action(EventKind::Issues, Action::Closed),
+            ]
+        );
+    }
+
+    #[test]
+    fn any_action_takes_the_kind_from_the_payload_type() {
+        assert_eq!(relative(AnyAction), [any_action(EventKind::Issues)]);
+    }
+
+    #[test]
+    fn an_empty_relative_array_expands_to_no_slots() {
+        assert_eq!(relative::<[Action; 0]>([]), []);
+    }
+}
