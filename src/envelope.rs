@@ -533,7 +533,10 @@ impl Envelope {
     ///
     ///     // The body limit: 413 past GitHub's 25 MiB cap. The receiver stops
     ///     // reading at the limit; a transport that streams does the same,
-    ///     // and one handed the body already read checks its length.
+    ///     // and one handed the body already read checks its length. A read
+    ///     // that fails partway is `ReceiveError::BodyRead`, 400, its text the
+    ///     // crate's and the transport's error one `source()` beneath, as a
+    ///     // `BodyError`; a transport handed the bytes never sees one.
     ///     if body.len() > DEFAULT_BODY_LIMIT {
     ///         let error = ReceiveError::BodyTooLarge { limit: DEFAULT_BODY_LIMIT };
     ///         return ResponseStatus::for_receive_error(&error);
@@ -694,6 +697,21 @@ impl Envelope {
 }
 
 /// A failure while receiving a webhook.
+///
+/// What the receiving path reports before any handler runs, each variant
+/// naming the step that refused the request: [`Verify`](Self::Verify), when
+/// the signature header is absent, malformed or does not match;
+/// [`MissingHeader`](Self::MissingHeader), when a required delivery header is
+/// absent or empty; [`UnsupportedContentType`](Self::UnsupportedContentType),
+/// when the webhook is not configured as JSON; [`BodyRead`](Self::BodyRead),
+/// when the transport failed while the body was being read; and
+/// [`BodyTooLarge`](Self::BodyTooLarge), when the body ran past the
+/// configured limit.
+/// [`ResponseStatus::for_receive_error`](crate::ResponseStatus::for_receive_error)
+/// maps each to the status the receiver answers with, so every failure
+/// before a handler has an error value and the same value selects the
+/// status. The enum is `#[non_exhaustive]`, so a `match` over it keeps a
+/// wildcard arm.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Error)]
 #[non_exhaustive]
 pub enum ReceiveError {
@@ -712,12 +730,43 @@ pub enum ReceiveError {
         "unsupported content type; configure the GitHub webhook content type as application/json"
     )]
     UnsupportedContentType,
+    /// The transport failed while the body was being read.
+    ///
+    /// Produced by `WebhookReceiver` (`http` feature) when a body frame is an
+    /// error rather than data or trailers: the connection dropped, the client
+    /// stopped sending. Never by [`Envelope::from_signed`], which is handed
+    /// the bytes already read; a transport that streams the body itself
+    /// constructs it for the same failure. The [`source`](std::error::Error::source)
+    /// is the transport's own error as text, a [`BodyError`].
+    #[error("could not read the webhook body")]
+    BodyRead(#[source] BodyError),
     /// The transport stopped reading after the configured limit.
     #[error("webhook body exceeds the configured {limit}-byte limit")]
     BodyTooLarge {
         /// The configured maximum body size.
         limit: usize,
     },
+}
+
+/// The transport's reason a webhook body could not be read, as text.
+///
+/// The [`source`](std::error::Error::source) of
+/// [`ReceiveError::BodyRead`]: the body's own error type (`http_body`'s
+/// `Body::Error`, so `hyper::Error`, `axum::Error`, a Worker's) rendered
+/// through its `Display`, which is all the receiver asks of it. Carrying the
+/// text rather than the error keeps [`ReceiveError`] comparable and
+/// cloneable, and the transport's type out of this crate's API.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Error)]
+#[error("{0}")]
+pub struct BodyError(String);
+
+impl BodyError {
+    /// Captures `error`'s text: the transport's error, or a message a
+    /// transport built on [`Envelope::from_signed`] writes for itself.
+    #[must_use]
+    pub fn new(error: impl fmt::Display) -> Self {
+        Self(error.to_string())
+    }
 }
 
 /// Why an envelope's payload could not be decoded.
@@ -931,7 +980,9 @@ mod tests {
 
     use bytes::Bytes;
 
-    use super::{DecodeError, Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef};
+    use super::{
+        BodyError, DecodeError, Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef,
+    };
     use crate::{
         Action, EventKind, Secret, TargetType, Verifier, VerifyError, header, test_support,
     };
@@ -1237,6 +1288,21 @@ mod tests {
             }
             .to_string(),
             "missing x-github-delivery header"
+        );
+    }
+
+    #[test]
+    fn a_body_read_failure_carries_the_transports_error_as_its_source() {
+        // The message says what the receiver could not do; the transport's
+        // own text is one `source()` hop down, where whoever holds the value
+        // (a transport built on `from_signed`, an error chain walker) finds
+        // it without the variant naming the transport's type.
+        let error = ReceiveError::BodyRead(BodyError::new("connection reset by peer"));
+
+        assert_eq!(error.to_string(), "could not read the webhook body");
+        assert_eq!(
+            std::error::Error::source(&error).map(ToString::to_string),
+            Some("connection reset by peer".to_string())
         );
     }
 

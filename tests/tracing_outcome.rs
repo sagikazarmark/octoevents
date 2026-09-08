@@ -11,7 +11,9 @@
 //!   receiver's path records the value too.
 //! - `octoevents.receive` records how the receiver answered: `ok`,
 //!   `bad_request`, `unauthorized`, `payload_too_large` or `handler_error`,
-//!   beside `status`, the HTTP code.
+//!   beside `status`, the HTTP code, and for a request refused before any
+//!   handler ran, the text of the `ReceiveError` that selected the status as
+//!   `error`.
 //! - `octoevents.verify` records how verification ended: `verified`,
 //!   `mismatch` or `malformed`, beside `secret_count` and `body_len`.
 //!
@@ -456,8 +458,14 @@ fn the_verify_span_records_the_secret_count_the_body_length_and_one_of_three_out
 /// refuses, depending on the signature the request carries.
 #[cfg(feature = "http")]
 mod receiving {
+    use std::{
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
     use bytes::Bytes;
     use http::Request;
+    use http_body::Frame;
     use http_body_util::Full;
     use octoevents::{DispatchError, Dispatcher, WebhookReceiver, WebhookReceiverBuilder};
 
@@ -484,13 +492,35 @@ mod receiving {
     /// The same request carrying `signature` as its `X-Hub-Signature-256`:
     /// what [`signed_request`] carries authenticates, anything else does not.
     pub(super) fn request_with_signature(signature: &str) -> Request<Full<Bytes>> {
+        request_over(Full::new(Bytes::from_static(BODY)), signature)
+    }
+
+    /// The same headers over a body the test shapes itself.
+    pub(super) fn request_over<B>(body: B, signature: &str) -> Request<B> {
         Request::builder()
             .header("content-type", "application/json")
             .header("x-github-delivery", "delivery")
             .header("x-github-event", "pull_request")
             .header("x-hub-signature-256", signature)
-            .body(Full::new(Bytes::from_static(BODY)))
+            .body(body)
             .unwrap()
+    }
+
+    /// A body whose transport fails on the first poll with the given text,
+    /// as a dropped connection does: the receiver sees no data frame, only
+    /// the error.
+    pub(super) struct FailingBody(pub(super) &'static str);
+
+    impl http_body::Body for FailingBody {
+        type Data = Bytes;
+        type Error = &'static str;
+
+        fn poll_frame(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+            Poll::Ready(Some(Err(self.0)))
+        }
     }
 }
 
@@ -563,6 +593,58 @@ fn the_receive_span_records_one_of_five_outcomes_beside_the_status_answered() {
             "{case}: {fields}"
         );
     }
+}
+
+/// A request refused before any handler ran has an error value, the
+/// `ReceiveError` that selected its status, and the receive span carries its
+/// text as `error`, in the form the failed-delivery event records the same
+/// field. `outcome` says the class of the answer; `error` says which refusal
+/// it was. The error's source is not on the span: beneath `BodyRead` it is
+/// the transport's own text, which `tests/tracing_hygiene.rs` holds off it.
+#[cfg(feature = "http")]
+#[test]
+fn a_refusal_before_any_handler_ran_records_its_error_on_the_receive_span() {
+    // Two 400s the outcome alone cannot tell apart: a malformed signature and
+    // a body whose first frame is the transport's error. Then an accepted
+    // delivery, which refuses nothing and records no `error`.
+    let receiver = receiving::receiver(dispatcher());
+
+    let malformed = receiving::request_with_signature(MALFORMED_SIGNATURE);
+    let (recording, response) = common::traced(receiver.receive(malformed));
+    assert_eq!(response.status(), 400);
+    let fields = &recording.span("octoevents.receive").at_close;
+    assert_eq!(
+        fields.get("outcome"),
+        Some(&Value::Str("bad_request".into()))
+    );
+    assert_eq!(
+        fields.debug("error"),
+        Some("malformed X-Hub-Signature-256 header"),
+        "{fields}"
+    );
+
+    let unreadable = receiving::request_over(
+        receiving::FailingBody("connection reset by peer"),
+        &verifier().sign(BODY),
+    );
+    let (recording, response) = common::traced(receiver.receive(unreadable));
+    assert_eq!(response.status(), 400);
+    let fields = &recording.span("octoevents.receive").at_close;
+    assert_eq!(
+        fields.get("outcome"),
+        Some(&Value::Str("bad_request".into()))
+    );
+    assert_eq!(
+        fields.debug("error"),
+        Some("could not read the webhook body"),
+        "{fields}"
+    );
+    assert_eq!(fields.get("source"), None, "{fields}");
+
+    let (recording, response) = common::traced(receiver.receive(receiving::signed_request()));
+    assert_eq!(response.status(), 204);
+    let fields = &recording.span("octoevents.receive").at_close;
+    assert_eq!(fields.get("error"), None, "{fields}");
 }
 
 /// A field recorded on more than one span is the same field to a dashboard

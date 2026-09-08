@@ -55,9 +55,18 @@ reads the "Changed" and "Removed" lists first.
 - `From<&str>` on `EventKind`, `Action` and `TargetType`; `Display` on
   `TargetType` and `Match`; `Hash` on `EventMeta` and `RepositoryRef`.
 - `Bytes` re-exported from the `bytes` crate.
+- `ReceiveError::BodyRead` and `BodyError`: a body frame the transport could
+  not produce is a receive error like every other pre-handler failure,
+  answered 400 through `ResponseStatus::for_receive_error`, with the
+  transport's error text as its `source()` and nothing else of the
+  transport's type. Formerly the receiver returned the status directly.
 - `tracing` feature: the `octoevents.dispatch` span records the tier,
   handler and registration site of a failure; a failed delivery emits one
   event at ERROR, `handler failed`.
+- `tracing` feature: the `octoevents.receive` span records the text of the
+  `ReceiveError` that refused a request as `error`, so a `bad_request` says
+  which refusal it was. The error's source, for a body that could not be
+  read the transport's own text, is not recorded.
 - A `CHANGELOG.md`, and an `include` list so the published crate ships the
   sources, the `axum` and `dispatcher` examples, the tests with their
   fixtures, the README and the licences, and nothing else.
@@ -98,6 +107,10 @@ reads the "Changed" and "Removed" lists first.
   body where it polls it. `receive` is written as `fn -> impl Future +
   MaybeSend`, so its future is `Send` on native targets whenever the
   handler and body are.
+- **Breaking:** `WebhookReceiver::receive` and the Tower `Service` impl
+  require `B::Error: Display` of the body's error type, which `http_body`
+  does not; hyper's, axum's and a Worker's error types and `Infallible`
+  have it. What the receiver renders into `BodyError`.
 - **Breaking:** `ReceiveError::MissingHeader(&'static str)` is the struct
   variant `MissingHeader { name }`.
 - **Breaking:** `tracing` feature: the `octoevents.receive` span records
