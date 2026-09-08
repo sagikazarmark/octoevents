@@ -8,7 +8,7 @@ All writes go under the scratch directory named in your prompt. The repository i
 
 ## Reading order
 
-`CONTEXT.md` (count the glossary terms), the manifest, the crate root, the handler and dispatcher modules, the envelope, receiver, matcher, payload, runtime, response, trace, decode, events, verify and secret modules, the examples, the integration tests, the surveys under `docs/research/`, and the last thirty commits for how the design moved.
+`CONTEXT.md` (count the glossary terms), the manifest, the crate root, the handler and dispatcher modules, the envelope, receiver, matcher, payload, runtime, response, trace, decode, events and signature modules, the examples, the integration tests, the surveys under `docs/research/`, and the last thirty commits for how the design moved.
 
 ## Assess
 

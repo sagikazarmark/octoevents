@@ -7,7 +7,7 @@
 //! signs the bodies it accepts; [`headers`] is the well-formed header set
 //! of a `pull_request` delivery, for a test to start from.
 
-use crate::{HeaderView, Secret, Verifier};
+use crate::{HeaderView, Verifier, WebhookSecret};
 
 const BODY: &[u8] = br#"{
     "action":"opened",
@@ -20,7 +20,7 @@ const BODY: &[u8] = br#"{
 /// The verifier every signed envelope here is checked against; it also
 /// signs the bodies it accepts.
 fn verifier() -> Verifier {
-    Verifier::new(Secret::new("secret"))
+    Verifier::new(WebhookSecret::new("secret"))
 }
 
 /// The headers of a well-formed `pull_request` delivery carrying
@@ -44,7 +44,7 @@ mod receive {
     use super::{BODY, headers, verifier};
     use crate::{
         Action, BodyError, Envelope, EventKind, EventMeta, HeaderView, ReceiveError, RepositoryRef,
-        TargetType, VerifyError,
+        SignatureError, TargetType,
     };
 
     #[test]
@@ -118,7 +118,7 @@ mod receive {
 
         assert_eq!(
             Envelope::from_signed(&verifier(), &headers, Bytes::new()),
-            Err(ReceiveError::Verify(VerifyError::Mismatch))
+            Err(ReceiveError::Signature(SignatureError::Mismatch))
         );
     }
 
@@ -169,7 +169,7 @@ mod header_rules {
     use bytes::Bytes;
 
     use super::{headers, verifier};
-    use crate::{Envelope, EventKind, HeaderView, ReceiveError, VerifyError, header};
+    use crate::{Envelope, EventKind, HeaderView, ReceiveError, SignatureError, header};
 
     /// What the receiving path makes of a signed, otherwise well-formed empty
     /// delivery under `content_type`, reduced to the kind it read.
@@ -189,7 +189,7 @@ mod header_rules {
             .content_type("application/json");
         assert_eq!(
             Envelope::from_signed(&verifier(), &no_signature, Bytes::new()),
-            Err(ReceiveError::Verify(VerifyError::MissingSignature))
+            Err(ReceiveError::Signature(SignatureError::Missing))
         );
 
         let signature = verifier().sign(b"");
@@ -724,7 +724,9 @@ mod header_view {
     use super::{BODY, verifier};
     #[cfg(feature = "http")]
     use crate::header;
-    use crate::{Action, Envelope, EventKind, HeaderView, ReceiveError, TargetType, VerifyError};
+    use crate::{
+        Action, Envelope, EventKind, HeaderView, ReceiveError, SignatureError, TargetType,
+    };
 
     #[test]
     fn from_lookup_authenticates_a_string_map_the_caller_lowercased() {
@@ -775,7 +777,7 @@ mod header_view {
 
         assert_eq!(
             Envelope::from_signed(&verifier(), &headers, Bytes::new()),
-            Err(ReceiveError::Verify(VerifyError::MissingSignature))
+            Err(ReceiveError::Signature(SignatureError::Missing))
         );
     }
 
@@ -820,7 +822,7 @@ mod header_view {
 
         assert_eq!(
             Envelope::from_signed(&verifier(), &HeaderView::from(&map), Bytes::new()),
-            Err(ReceiveError::Verify(VerifyError::MalformedSignature))
+            Err(ReceiveError::Signature(SignatureError::Malformed))
         );
     }
 

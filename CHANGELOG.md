@@ -16,9 +16,9 @@ reads the "Changed" and "Removed" lists first.
 
 ### Added
 
-- `SecretError`: the error `str::parse::<Secret>` returns for an empty
-  secret, for a deployment that reads its secret per request and answers
-  instead of panicking.
+- `WebhookSecretError`: the error `str::parse::<WebhookSecret>` returns for
+  an empty secret, for a deployment that reads its secret per request and
+  answers instead of panicking.
 - `Verifier::sign`: the `X-Hub-Signature-256` value GitHub would send for a
   body, so a test drives the receiver it built with no HMAC code of its own.
 - `Envelope::new`: an unverified envelope for a test, its meta read from the
@@ -116,11 +116,20 @@ reads the "Changed" and "Removed" lists first.
   have it. What the receiver renders into `BodyError`.
 - **Breaking:** `ReceiveError::MissingHeader(&'static str)` is the struct
   variant `MissingHeader { name }`.
-- **Breaking:** A `Secret` is never empty. `Secret::new` panics on empty
-  bytes and `FromStr for Secret` returns `SecretError::Empty` where its error
-  was `Infallible`; `Verifier::new` and `Verifier::also` have nothing left to
-  refuse. An empty secret is the unset-environment-variable failure mode, and
-  verifying against it would accept any sender who guessed the key.
+- **Breaking:** `Secret` is `WebhookSecret`: GitHub's term in full, beside
+  `WebhookReceiver`, and no longer a collision with `secrecy::Secret` in a
+  consumer's imports. `VerifyError` is `SignatureError`, named for its
+  subject rather than the operation, since its `Missing` case is decided from
+  the headers before anything is verified; its variants `MissingSignature`
+  and `MalformedSignature` are `Missing` and `Malformed`, and
+  `ReceiveError::Verify` is `ReceiveError::Signature`. `Verifier` keeps its
+  name. The error messages are unchanged.
+- **Breaking:** A `WebhookSecret` is never empty. `WebhookSecret::new` panics
+  on empty bytes and `FromStr for WebhookSecret` returns
+  `WebhookSecretError::Empty` where its error was `Infallible`;
+  `Verifier::new` and `Verifier::also` have nothing left to refuse. An empty
+  secret is the unset-environment-variable failure mode, and verifying
+  against it would accept any sender who guessed the key.
 - **Breaking:** `tracing` feature: the `octoevents.receive` span records
   `outcome` as a label (`ok`, `unauthorized`, `bad_request`,
   `payload_too_large`, `handler_error`) and the HTTP status as a separate

@@ -16,8 +16,8 @@ use axum::{Router, body::Body, extract::Request, routing::post};
 use bytes::Bytes;
 use http::StatusCode;
 use octoevents::{
-    Action, Dispatcher, Envelope, EventKind, Secret, Verifier, WebhookReceiver,
-    WebhookReceiverBuilder,
+    Action, Dispatcher, Envelope, EventKind, Verifier, WebhookReceiver, WebhookReceiverBuilder,
+    WebhookSecret,
 };
 use tower::ServiceExt as _;
 
@@ -27,7 +27,7 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// The README's quickstart verifier, over its development secret; the
 /// requests below are signed with it.
 fn verifier() -> Verifier {
-    Verifier::new(Secret::new("development-secret"))
+    Verifier::new(WebhookSecret::new("development-secret"))
 }
 
 /// The README's quickstart handler: an `async fn` item over the envelope.

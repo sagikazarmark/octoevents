@@ -178,15 +178,31 @@ value GitHub would send for a body under its first secret, so a test of the
 receiving side can put a synthetic request through the receiver it built.
 That is a test aid, not a sending-side feature: the crate sends nothing, and
 the sending side's vocabulary (queueing, retries, redelivery) stays out.
-_Avoid_: Validator, authenticator, signer (a role the verifier plays for a test, not a component)
+Lives with the secret and the signature error in the `signature` module, the
+one place the secret's bytes are read.
+_Avoid_: Validator, authenticator, signer (a role the verifier plays for a test, not a component), signature verifier (nothing else at the crate root is verified, so the qualifier adds length and no meaning)
 
-**Secret**:
-The shared HMAC key configured on the GitHub webhook. GitHub's own term. As
-a type (`Secret`), never empty: an empty one is the unset-environment-variable
-failure mode, not a configuration, and both constructors refuse it, `new` by
-panicking and `str::parse` with a `SecretError`, so the verifier has nothing
-left to check.
-_Avoid_: Token, key
+**WebhookSecret**:
+The shared HMAC key configured on the GitHub webhook. GitHub's own term,
+in full: the type is `WebhookSecret`, beside `WebhookReceiver`, so the
+crate's name for the thing GitHub calls the webhook secret says which
+secret, and so it does not collide with `secrecy::Secret` in a consumer's
+imports. Never empty: an empty one is the unset-environment-variable failure
+mode, not a configuration, and both constructors refuse it, `new` by
+panicking and `str::parse` with a `WebhookSecretError`, so the verifier has
+nothing left to check. In prose, "secret" alone is fine once the webhook is
+in context.
+_Avoid_: Token, key, `Secret` as the type (the former name; generic at the root and a live collision), signing secret (Stripe's and Svix's term; the crate's is GitHub's)
+
+**SignatureError**:
+Why a body did not authenticate: the `X-Hub-Signature-256` header was
+`Missing`, `Malformed` (not `sha256=` and 64 hex digits), or a `Mismatch`
+under every configured secret. Named for its subject, the signature, not
+for the operation: `Missing` is decided from the headers before `verify`
+runs, so an error named after verifying misdescribed a third of itself. The
+`Signature` variant of `ReceiveError`. Distinct from `WebhookSecretError`,
+a configuration failure found before any delivery arrives.
+_Avoid_: `VerifyError` (the former name), `MissingSignature` and `MalformedSignature` (the former variants; the type already says signature), authentication error (the goal, not the mechanism; also reads as GitHub App auth)
 
 **Payload**:
 The JSON document GitHub sends, in two states that two fields name: the

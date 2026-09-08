@@ -1,7 +1,7 @@
 //! Minimal Tower service mounted on an Axum route.
 
 use axum::{Router, routing::post_service};
-use octoevents::{Envelope, Handler, Secret, Verifier, WebhookReceiverBuilder};
+use octoevents::{Envelope, Handler, Verifier, WebhookReceiverBuilder, WebhookSecret};
 
 /// The application error the handler returns; the receiver answers it with a
 /// 500. A real one wraps what the handler's dependencies fail with.
@@ -31,7 +31,7 @@ impl Handler<Envelope> for Announce {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let secret = std::env::var("GITHUB_WEBHOOK_SECRET")?;
-    let verifier = Verifier::new(Secret::new(secret));
+    let verifier = Verifier::new(WebhookSecret::new(secret));
     let webhook = WebhookReceiverBuilder::new(verifier).build(Announce);
 
     let app: Router = Router::new().route("/webhook", post_service(webhook));

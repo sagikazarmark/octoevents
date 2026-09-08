@@ -24,7 +24,8 @@ use common::{Fields, Recording, Value};
 use http::Request;
 use http_body_util::Full;
 use octoevents::{
-    DecodeError, Dispatcher, Envelope, Secret, Verifier, WebhookReceiver, WebhookReceiverBuilder,
+    DecodeError, Dispatcher, Envelope, Verifier, WebhookReceiver, WebhookReceiverBuilder,
+    WebhookSecret,
 };
 use tracing::Level;
 
@@ -33,7 +34,7 @@ const BODY: &[u8] = br#"{"action":"opened","installation":{"id":42}}"#;
 /// The verifier every receiver here is built with; it signs the requests
 /// they accept.
 fn verifier() -> Verifier {
-    Verifier::new(Secret::new("It's a Secret to Everybody"))
+    Verifier::new(WebhookSecret::new("It's a Secret to Everybody"))
 }
 
 /// A signed request for `event` carrying [`BODY`]: an action and an
@@ -142,7 +143,7 @@ fn a_successful_delivery_emits_no_error_event() {
 fn a_request_refused_before_any_handler_ran_emits_no_error_event() {
     // The handler would fail, but the signature was made under another
     // secret, so it never runs: the refusal is a status and a span field.
-    let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("another secret")))
+    let receiver = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("another secret")))
         .build(|_: Envelope| async { Err::<(), _>("handler failed") });
 
     let (recording, response) = common::traced(receiver.receive(request("pull_request")));

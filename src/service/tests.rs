@@ -22,7 +22,7 @@ use http::Request;
 use http_body::Frame;
 use http_body_util::Full;
 
-use crate::{DecodeError, Envelope, EventKind, Handler, Payload, Secret, Verifier};
+use crate::{DecodeError, Envelope, EventKind, Handler, Payload, Verifier, WebhookSecret};
 
 /// A production-shaped handler: dependencies as fields, borrowed through
 /// `&self`, and deliberately not `Clone`.
@@ -226,7 +226,7 @@ const WRONG_SIGNATURE: &str =
 /// The verifier the receivers here are built with; it signs the requests
 /// they accept.
 fn verifier() -> Verifier {
-    Verifier::new(Secret::new("secret"))
+    Verifier::new(WebhookSecret::new("secret"))
 }
 
 /// Receiving a request: the handler forms `build` accepts, what the handler
@@ -847,7 +847,7 @@ mod debug {
     use super::Recorder;
     #[cfg(feature = "tracing")]
     use super::verifier;
-    use crate::{Envelope, EventMeta, Secret, Verifier, WebhookReceiverBuilder};
+    use crate::{Envelope, EventMeta, Verifier, WebhookReceiverBuilder, WebhookSecret};
 
     #[test]
     fn debug_and_clone_do_not_constrain_the_handler_or_its_error() {
@@ -857,9 +857,10 @@ mod debug {
         // and is under the same rule.
         struct NotCloneOrDebug;
 
-        let builder = WebhookReceiverBuilder::new(Verifier::new(Secret::new("super-secret")))
-            .body_limit(64)
-            .on_error(|_: &EventMeta, _: &NotCloneOrDebug| {});
+        let builder =
+            WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("super-secret")))
+                .body_limit(64)
+                .on_error(|_: &EventMeta, _: &NotCloneOrDebug| {});
         let debug = format!("{:?}", builder.clone());
         assert!(debug.contains("body_limit: 64"), "{debug}");
         assert!(debug.contains("on_error: true"), "{debug}");
@@ -874,10 +875,12 @@ mod debug {
         assert!(debug.contains("[REDACTED]"), "{debug}");
         assert!(!debug.contains("super-secret"), "{debug}");
 
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("super-secret")))
-            .build(Recorder {
-                calls: Arc::new(AtomicUsize::new(0)),
-            });
+        let receiver = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new(
+            "super-secret",
+        )))
+        .build(Recorder {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
         let debug = format!("{:?}", receiver.clone());
         assert!(debug.contains("on_error: false"), "{debug}");
     }
