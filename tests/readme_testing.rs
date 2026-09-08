@@ -6,19 +6,19 @@
 //! quickstart's `BoxError` and `thank` beside them, and holds the README's
 //! prose to what it claims: `Envelope::new` reads the action out of the bytes
 //! while `EventMeta::new` on its own reads none, an `http::Request<String>` is
-//! a request `receive` accepts with no axum in sight, a delivery nothing
-//! routes reports which unmatched `Match` variant the Outcome table names,
-//! and the "Boxed errors" observer reaches a decode failure's serde message
-//! from `error.source.source()`.
+//! a request `receive` accepts with no axum in sight, a receiver over another
+//! secret answers the signed request 401, a verifier that also accepts a
+//! previous secret signs under its first, a delivery nothing routes reports
+//! which unmatched `Match` variant the Outcome table names, and the "Boxed
+//! errors" observer reaches a decode failure's serde message from
+//! `error.source.source()`.
 
 #![cfg(all(feature = "http", not(target_arch = "wasm32")))]
 
-use hmac::{Hmac, KeyInit as _, Mac as _};
 use octoevents::{
     Action, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, Match, Secret, Verifier,
     WebhookReceiverBuilder, header,
 };
-use sha2::Sha256;
 
 /// The quickstart's application error: no error enum, `?` converts anything.
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -36,22 +36,6 @@ fn thanks_opened_issues() -> Dispatcher<BoxError> {
     Dispatcher::<BoxError>::builder()
         .on((EventKind::Issues, Action::Opened), thank)
         .build()
-}
-
-/// What GitHub puts in `X-Hub-Signature-256`, as the README writes it.
-// The README's spelling, kept verbatim; `tests/common::signature` writes the
-// hex with `write!` instead, which is what clippy asks for here.
-#[allow(clippy::format_collect)]
-fn sign(secret: &str, body: &[u8]) -> String {
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
-    mac.update(body);
-    let hex: String = mac
-        .finalize()
-        .into_bytes()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    format!("sha256={hex}")
 }
 
 /// The README's first test, verbatim.
@@ -74,14 +58,15 @@ async fn thanks_for_an_opened_issue() {
 }
 
 /// The README's second test, verbatim: the body is a `String`, so the
-/// request needs `http` and nothing from axum.
+/// request needs `http` and nothing from axum, and the verifier the receiver
+/// is built with signs it, so the test needs no HMAC code of its own.
 #[tokio::test]
 async fn accepts_a_signed_delivery() {
     let dispatcher = Dispatcher::<BoxError>::builder()
         .on((EventKind::Issues, Action::Opened), thank)
         .build();
-    let webhook =
-        WebhookReceiverBuilder::new(Verifier::new(Secret::new("test-secret"))).build(dispatcher);
+    let verifier = Verifier::new(Secret::new("test-secret"));
+    let webhook = WebhookReceiverBuilder::new(verifier.clone()).build(dispatcher);
 
     let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
     let request = http::Request::builder()
@@ -90,7 +75,7 @@ async fn accepts_a_signed_delivery() {
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::DELIVERY_ID, "delivery-1")
         .header(header::EVENT_NAME, "issues")
-        .header(header::SIGNATURE, sign("test-secret", body.as_bytes()))
+        .header(header::SIGNATURE, verifier.sign(body.as_bytes()))
         .body(body.to_string())
         .unwrap();
 
@@ -99,27 +84,54 @@ async fn accepts_a_signed_delivery() {
     assert_eq!(response.status(), 204);
 }
 
-/// The sentence after the second test: the same request under another
-/// secret is 401.
-#[tokio::test]
-async fn refuses_the_same_delivery_under_another_secret() {
-    let webhook = WebhookReceiverBuilder::new(Verifier::new(Secret::new("other-secret")))
-        .build(thanks_opened_issues());
-
+/// The README's second test's request, signed by `verifier`: the same
+/// `issues.opened` body under the same four headers, for the two sentences
+/// after that test to put through receivers built over other secrets.
+fn the_readme_request(verifier: &Verifier) -> http::Request<String> {
     let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
-    let request = http::Request::builder()
+    http::Request::builder()
         .method("POST")
         .uri("/webhook")
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::DELIVERY_ID, "delivery-1")
         .header(header::EVENT_NAME, "issues")
-        .header(header::SIGNATURE, sign("test-secret", body.as_bytes()))
+        .header(header::SIGNATURE, verifier.sign(body.as_bytes()))
         .body(body.to_string())
-        .unwrap();
+        .unwrap()
+}
+
+/// The first sentence after the second test: the receiver built over
+/// another secret answers the same request 401.
+#[tokio::test]
+async fn refuses_the_same_delivery_under_another_secret() {
+    let webhook = WebhookReceiverBuilder::new(Verifier::new(Secret::new("other-secret")))
+        .build(thanks_opened_issues());
+    let request = the_readme_request(&Verifier::new(Secret::new("test-secret")));
 
     let response = webhook.receive(request).await;
 
     assert_eq!(response.status(), 401);
+}
+
+/// The second sentence after it: a verifier that also accepts a previous
+/// secret signs under its first, so a receiver over the first accepts what
+/// it signs and one over the previous secret alone refuses it.
+#[tokio::test]
+async fn a_verifier_with_a_previous_secret_signs_under_its_first() {
+    let rotated = Verifier::new(Secret::new("test-secret")).also(Secret::new("previous-secret"));
+    let over_the_first = WebhookReceiverBuilder::new(Verifier::new(Secret::new("test-secret")))
+        .build(thanks_opened_issues());
+    let over_the_previous =
+        WebhookReceiverBuilder::new(Verifier::new(Secret::new("previous-secret")))
+            .build(thanks_opened_issues());
+
+    let accepted = over_the_first.receive(the_readme_request(&rotated)).await;
+    let refused = over_the_previous
+        .receive(the_readme_request(&rotated))
+        .await;
+
+    assert_eq!(accepted.status(), 204);
+    assert_eq!(refused.status(), 401);
 }
 
 /// The prose's claim: `Envelope::new` reads the action and the sender out of

@@ -12,8 +12,6 @@
 
 #![cfg(all(feature = "http", not(target_arch = "wasm32")))]
 
-mod common;
-
 use axum::{Router, body::Body, extract::Request, routing::post};
 use bytes::Bytes;
 use http::StatusCode;
@@ -26,7 +24,11 @@ use tower::ServiceExt as _;
 /// The README's application error: no error enum, `?` converts anything.
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-const SECRET: &str = "development-secret";
+/// The README's quickstart verifier, over its development secret; the
+/// requests below are signed with it.
+fn verifier() -> Verifier {
+    Verifier::new(Secret::new("development-secret"))
+}
 
 /// The README's quickstart handler: an `async fn` item over the envelope.
 async fn thank(envelope: Envelope) -> Result<(), BoxError> {
@@ -41,7 +43,7 @@ fn quickstart() -> WebhookReceiver<Dispatcher<BoxError>> {
     let dispatcher = Dispatcher::<BoxError>::builder()
         .on((EventKind::Issues, Action::Opened), thank)
         .build();
-    WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET))).build(dispatcher)
+    WebhookReceiverBuilder::new(verifier()).build(dispatcher)
 }
 
 /// A signed request for `event` carrying `body`, as GitHub would send it.
@@ -52,10 +54,7 @@ fn signed(event: &str, body: &'static [u8]) -> Request<Body> {
         .header("content-type", "application/json")
         .header("x-github-delivery", "delivery")
         .header("x-github-event", event)
-        .header(
-            "x-hub-signature-256",
-            common::signature(SECRET.as_bytes(), body),
-        )
+        .header("x-hub-signature-256", verifier().sign(body))
         .body(Body::from(Bytes::from_static(body)))
         .unwrap()
 }

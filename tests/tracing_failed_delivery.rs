@@ -28,8 +28,13 @@ use octoevents::{
 };
 use tracing::Level;
 
-const SECRET: &str = "It's a Secret to Everybody";
 const BODY: &[u8] = br#"{"action":"opened","installation":{"id":42}}"#;
+
+/// The verifier every receiver here is built with; it signs the requests
+/// they accept.
+fn verifier() -> Verifier {
+    Verifier::new(Secret::new("It's a Secret to Everybody"))
+}
 
 /// A signed request for `event` carrying [`BODY`]: an action and an
 /// installation.
@@ -43,10 +48,7 @@ fn request_with(event: &str, body: &'static [u8]) -> Request<Full<Bytes>> {
         .header("content-type", "application/json")
         .header("x-github-delivery", "delivery")
         .header("x-github-event", event)
-        .header(
-            "x-hub-signature-256",
-            common::signature(SECRET.as_bytes(), body),
-        )
+        .header("x-hub-signature-256", verifier().sign(body))
         .body(Full::new(Bytes::from_static(body)))
         .unwrap()
 }
@@ -55,7 +57,7 @@ fn receiver<H>(handler: H) -> WebhookReceiver<H>
 where
     H: octoevents::Handler<Envelope> + Send + Sync + 'static,
 {
-    WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET))).build(handler)
+    WebhookReceiverBuilder::new(verifier()).build(handler)
 }
 
 /// The fields of the one failed-delivery event `recording` holds: a delivery
@@ -189,7 +191,7 @@ fn trace_errors_puts_the_errors_text_and_source_chain_on_the_one_event() {
     let dispatcher = Dispatcher::<AppError>::builder()
         .always(|_: Envelope| async { Err::<(), _>(AppError::Database) })
         .build();
-    let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
+    let receiver = WebhookReceiverBuilder::new(verifier())
         .trace_errors()
         .build(dispatcher);
 
@@ -215,7 +217,7 @@ fn trace_errors_puts_the_errors_text_and_source_chain_on_the_one_event() {
 
 #[test]
 fn trace_errors_records_the_source_as_an_error_value_with_the_chain_beneath_it() {
-    let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
+    let receiver = WebhookReceiverBuilder::new(verifier())
         .trace_errors()
         .build(|_: Envelope| async { Err::<(), _>(database_is_down()) });
 
@@ -245,7 +247,7 @@ fn trace_boxed_errors_traces_a_dispatch_error_over_a_boxed_error() {
     let dispatcher = Dispatcher::<BoxError>::builder()
         .always(|_: Envelope| async { Err::<(), BoxError>(Box::new(database_is_down())) })
         .build();
-    let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
+    let receiver = WebhookReceiverBuilder::new(verifier())
         .trace_boxed_errors()
         .build(dispatcher);
 
@@ -267,7 +269,7 @@ fn trace_boxed_errors_traces_a_dispatch_error_over_a_boxed_error() {
 
 #[test]
 fn trace_boxed_errors_traces_a_boxed_error_as_the_handlers_own() {
-    let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
+    let receiver = WebhookReceiverBuilder::new(verifier())
         .trace_boxed_errors()
         .build(|_: Envelope| async { Err::<(), BoxError>(Box::new(database_is_down())) });
 
@@ -294,7 +296,7 @@ fn trace_boxed_errors_traces_an_anyhow_error_through_its_as_ref() {
     let dispatcher = Dispatcher::<anyhow::Error>::builder()
         .always(|_: Envelope| async { Err::<(), anyhow::Error>(database_is_down().into()) })
         .build();
-    let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
+    let receiver = WebhookReceiverBuilder::new(verifier())
         .trace_boxed_errors()
         .build(dispatcher);
 
@@ -318,7 +320,7 @@ fn trace_errors_and_an_error_observer_run_side_by_side_for_one_event() {
     // no second event.
     let observed = Arc::new(Mutex::new(Vec::new()));
     let observer_seen = Arc::clone(&observed);
-    let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
+    let receiver = WebhookReceiverBuilder::new(verifier())
         .trace_errors()
         .on_error(move |meta: &octoevents::EventMeta, error: &Database| {
             observer_seen

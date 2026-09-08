@@ -360,15 +360,20 @@ mod receiving {
     use bytes::Bytes;
     use octoevents::{Dispatcher, Secret, Verifier, WebhookReceiver, WebhookReceiverBuilder};
 
-    use super::{AppError, common};
+    use super::AppError;
 
-    const SECRET: &str = "It's a Secret to Everybody";
     const BODY: &[u8] = br#"{"action":"opened","installation":{"id":42}}"#;
+
+    /// The verifier the receiver is built with; it signs the request it
+    /// accepts.
+    fn verifier() -> Verifier {
+        Verifier::new(Secret::new("It's a Secret to Everybody"))
+    }
 
     pub(super) fn receiver(
         dispatcher: Dispatcher<AppError>,
     ) -> WebhookReceiver<Dispatcher<AppError>> {
-        WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET))).build(dispatcher)
+        WebhookReceiverBuilder::new(verifier()).build(dispatcher)
     }
 
     pub(super) fn signed_request() -> http::Request<http_body_util::Full<Bytes>> {
@@ -376,10 +381,7 @@ mod receiving {
             .header("content-type", "application/json")
             .header("x-github-delivery", "delivery")
             .header("x-github-event", "pull_request")
-            .header(
-                "x-hub-signature-256",
-                common::signature(SECRET.as_bytes(), BODY),
-            )
+            .header("x-hub-signature-256", verifier().sign(BODY))
             .body(http_body_util::Full::new(Bytes::from_static(BODY)))
             .unwrap()
     }

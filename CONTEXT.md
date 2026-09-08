@@ -173,8 +173,12 @@ _Avoid_: Validate (collides with schema validation, despite GitHub's docs)
 **Verifier**:
 The component owning the configured secrets and performing signature
 verification. Required to build a receiver, so a deployment without a secret
-cannot be expressed.
-_Avoid_: Validator, authenticator
+cannot be expressed. It also signs (`Verifier::sign`): the `X-Hub-Signature-256`
+value GitHub would send for a body under its first secret, so a test of the
+receiving side can put a synthetic request through the receiver it built.
+That is a test aid, not a sending-side feature: the crate sends nothing, and
+the sending side's vocabulary (queueing, retries, redelivery) stays out.
+_Avoid_: Validator, authenticator, signer (a role the verifier plays for a test, not a component)
 
 **Secret**:
 The shared HMAC key configured on the GitHub webhook. GitHub's own term.

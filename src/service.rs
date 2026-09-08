@@ -392,30 +392,20 @@ where
     ///
     /// The request is any `http::Request` whose body yields [`Bytes`]:
     /// axum's, a Cloudflare Worker's, or a `String` in a test, which drives
-    /// the receiver with a signed synthetic request and no server. GitHub's
-    /// signature is `sha256=` followed by the lowercase hex HMAC-SHA256 of
-    /// the body under the secret, and a request needs the four headers
-    /// [`header`](crate::header) names:
+    /// the receiver with a signed synthetic request and no server.
+    /// [`Verifier::sign`] gives the signature GitHub would send for the
+    /// body, and a request needs the four headers [`header`](crate::header)
+    /// names:
     ///
     /// ```
-    /// use hmac::{Hmac, KeyInit as _, Mac as _};
     /// use octoevents::{Dispatcher, Secret, Verifier, WebhookReceiverBuilder, header};
-    /// use sha2::Sha256;
     ///
     /// type BoxError = Box<dyn std::error::Error + Send + Sync>;
     ///
-    /// /// What GitHub puts in `X-Hub-Signature-256`.
-    /// fn sign(secret: &str, body: &[u8]) -> String {
-    ///     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
-    ///     mac.update(body);
-    ///     let hex: String = mac.finalize().into_bytes().iter().map(|byte| format!("{byte:02x}")).collect();
-    ///     format!("sha256={hex}")
-    /// }
-    ///
     /// # tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
     /// let dispatcher = Dispatcher::<BoxError>::builder().build();
-    /// let webhook = WebhookReceiverBuilder::new(Verifier::new(Secret::new("test-secret")))
-    ///     .build(dispatcher);
+    /// let verifier = Verifier::new(Secret::new("test-secret"));
+    /// let webhook = WebhookReceiverBuilder::new(verifier.clone()).build(dispatcher);
     ///
     /// let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
     /// let request = http::Request::builder()
@@ -424,7 +414,7 @@ where
     ///     .header(header::CONTENT_TYPE, "application/json")
     ///     .header(header::DELIVERY_ID, "delivery-1")
     ///     .header(header::EVENT_NAME, "issues")
-    ///     .header(header::SIGNATURE, sign("test-secret", body.as_bytes()))
+    ///     .header(header::SIGNATURE, verifier.sign(body.as_bytes()))
     ///     .body(body.to_string())
     ///     .unwrap();
     ///
@@ -434,7 +424,8 @@ where
     /// # });
     /// ```
     ///
-    /// Change the secret on either side and the same request is answered 401.
+    /// Build the receiver over another secret and the same request is
+    /// answered 401.
     ///
     /// This path never boxes and never crosses a Tower or native executor
     /// boundary, so on `wasm32` a Cloudflare Worker can hand an
@@ -657,11 +648,9 @@ mod tests {
     };
 
     use bytes::Bytes;
-    use hmac::{Hmac, KeyInit, Mac};
     use http::{HeaderMap, Request, StatusCode};
     use http_body::{Body as _, Frame};
     use http_body_util::Full;
-    use sha2::Sha256;
     #[cfg(feature = "tower")]
     use tower::ServiceExt as _;
 
@@ -777,13 +766,13 @@ mod tests {
         request_over(
             Full::new(Bytes::from_static(body)),
             event,
-            &signature(b"secret", body),
+            &verifier().sign(body),
         )
     }
 
     /// A request over a body the test shapes itself, carrying `signature` as
-    /// its signature header: `signature(b"secret", ..)` over the bytes the
-    /// body yields authenticates, anything else does not.
+    /// its signature header: `verifier().sign(..)` over the bytes the body
+    /// yields authenticates, anything else does not.
     fn request_over<B>(body: B, event: &str, signature: &str) -> Request<B> {
         Request::builder()
             .header("content-type", "application/json")
@@ -817,23 +806,16 @@ mod tests {
     const WRONG_SIGNATURE: &str =
         "sha256=0000000000000000000000000000000000000000000000000000000000000000";
 
-    fn signature(secret: &[u8], body: &[u8]) -> String {
-        use std::fmt::Write as _;
-
-        let mut mac = Hmac::<Sha256>::new_from_slice(secret).unwrap();
-        mac.update(body);
-        let tag = mac.finalize().into_bytes();
-        let mut out = String::from("sha256=");
-        for byte in tag {
-            write!(out, "{byte:02x}").unwrap();
-        }
-        out
+    /// The verifier the receivers here are built with; it signs the requests
+    /// they accept.
+    fn verifier() -> Verifier {
+        Verifier::new(Secret::new("secret"))
     }
 
     #[tokio::test]
     async fn returns_no_content_after_successful_dispatch() {
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
-            .build(|_: Envelope| async { Ok::<_, ()>(()) });
+        let receiver =
+            WebhookReceiverBuilder::new(verifier()).build(|_: Envelope| async { Ok::<_, ()>(()) });
 
         let response = receiver.receive(request(b"{}", "push")).await;
 
@@ -843,10 +825,9 @@ mod tests {
     #[tokio::test]
     async fn accepts_a_struct_handler_that_is_not_clone() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let receiver =
-            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(Recorder {
-                calls: Arc::clone(&calls),
-            });
+        let receiver = WebhookReceiverBuilder::new(verifier()).build(Recorder {
+            calls: Arc::clone(&calls),
+        });
 
         let response = receiver.receive(request(b"{}", "push")).await;
 
@@ -862,8 +843,7 @@ mod tests {
         }
         static COUNTED_BYTES: AtomicUsize = AtomicUsize::new(0);
 
-        let receiver =
-            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(count);
+        let receiver = WebhookReceiverBuilder::new(verifier()).build(count);
 
         let response = receiver.receive(request(b"{}", "push")).await;
 
@@ -876,8 +856,7 @@ mod tests {
         let recorder = Arc::new(Recorder {
             calls: Arc::new(AtomicUsize::new(0)),
         });
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
-            .build(Arc::clone(&recorder));
+        let receiver = WebhookReceiverBuilder::new(verifier()).build(Arc::clone(&recorder));
 
         let response = receiver.receive(request(b"{}", "push")).await;
 
@@ -888,8 +867,8 @@ mod tests {
     #[cfg(feature = "tower")]
     #[tokio::test]
     async fn the_tower_service_impl_applies_the_same_policy() {
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
-            .build(|_: Envelope| async { Ok::<_, ()>(()) });
+        let receiver =
+            WebhookReceiverBuilder::new(verifier()).build(|_: Envelope| async { Ok::<_, ()>(()) });
 
         let response = receiver.oneshot(request(b"{}", "push")).await.unwrap();
 
@@ -900,10 +879,9 @@ mod tests {
     #[tokio::test]
     async fn the_tower_service_impl_accepts_a_struct_handler() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let receiver =
-            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(Recorder {
-                calls: Arc::clone(&calls),
-            });
+        let receiver = WebhookReceiverBuilder::new(verifier()).build(Recorder {
+            calls: Arc::clone(&calls),
+        });
 
         let response = receiver.oneshot(request(b"{}", "push")).await.unwrap();
 
@@ -914,11 +892,9 @@ mod tests {
     #[tokio::test]
     async fn a_single_kind_handler_receives_its_decoded_view_with_the_metadata() {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
-            IssueRecorder {
-                seen: Arc::clone(&seen),
-            },
-        );
+        let receiver = WebhookReceiverBuilder::new(verifier()).build(IssueRecorder {
+            seen: Arc::clone(&seen),
+        });
 
         let response = receiver
             .receive(request(
@@ -953,8 +929,7 @@ mod tests {
                 }
             })
             .build();
-        let receiver =
-            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(dispatcher);
+        let receiver = WebhookReceiverBuilder::new(verifier()).build(dispatcher);
 
         let response = receiver.receive(request(BODY, "pull_request")).await;
 
@@ -969,19 +944,17 @@ mod tests {
     async fn short_circuits_ping_unless_enabled() {
         let calls = Arc::new(AtomicUsize::new(0));
         let handler_calls = Arc::clone(&calls);
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
-            move |_: Envelope| {
-                handler_calls.fetch_add(1, Ordering::Relaxed);
-                async { Ok::<_, ()>(()) }
-            },
-        );
+        let receiver = WebhookReceiverBuilder::new(verifier()).build(move |_: Envelope| {
+            handler_calls.fetch_add(1, Ordering::Relaxed);
+            async { Ok::<_, ()>(()) }
+        });
 
         let response = receiver.receive(request(b"{}", "ping")).await;
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert_eq!(calls.load(Ordering::Relaxed), 0);
 
         let handler_calls = Arc::clone(&calls);
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(verifier())
             .handle_ping(true)
             .build(move |_: Envelope| {
                 handler_calls.fetch_add(1, Ordering::Relaxed);
@@ -999,8 +972,8 @@ mod tests {
         // so one failure through HTTP shows the receiver answers with the
         // mapped status; the refusal before the body is read has its own
         // test below.
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
-            .build(|_: Envelope| async { Ok::<_, ()>(()) });
+        let receiver =
+            WebhookReceiverBuilder::new(verifier()).build(|_: Envelope| async { Ok::<_, ()>(()) });
 
         let mismatch = with_header(b"{}", "push", "x-hub-signature-256", WRONG_SIGNATURE);
         let response = receiver.receive(mismatch).await;
@@ -1028,8 +1001,7 @@ mod tests {
         }
 
         let receiver = || {
-            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
-                .build(|_: Envelope| async { Ok::<_, ()>(()) })
+            WebhookReceiverBuilder::new(verifier()).build(|_: Envelope| async { Ok::<_, ()>(()) })
         };
         let request = |signature: Option<&str>| {
             let builder = Request::builder()
@@ -1050,7 +1022,7 @@ mod tests {
             StatusCode::UNAUTHORIZED
         );
         // A signed request reaches the read loop and reports the body failure.
-        let signed = signature(b"secret", b"{}");
+        let signed = verifier().sign(b"{}");
         assert_eq!(
             receiver().receive(request(Some(&signed))).await.status(),
             StatusCode::BAD_REQUEST
@@ -1061,7 +1033,7 @@ mod tests {
     async fn refuses_an_unsigned_oversized_request_on_its_headers() {
         // The body's exact size hint is over the limit, so 413 would say the
         // limit was checked first; 401 says the signature headers were.
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(verifier())
             .body_limit(64)
             .build(|_: Envelope| async { Ok::<_, ()>(()) });
 
@@ -1080,7 +1052,7 @@ mod tests {
         // answers from inside the read loop.
         const OVERSIZED: &[u8] = &[b' '; 65];
         let receiver = || {
-            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+            WebhookReceiverBuilder::new(verifier())
                 .body_limit(64)
                 .build(|_: Envelope| async { Ok::<_, ()>(()) })
         };
@@ -1114,9 +1086,9 @@ mod tests {
         // were assembled in order.
         const CHUNKS: &[&[u8]] = &[br#"{"a":"#, br#"1,"b""#, b":2}"];
         const PAYLOAD: &[u8] = br#"{"a":1,"b":2}"#;
-        let signed = signature(b"secret", PAYLOAD);
+        let signed = verifier().sign(PAYLOAD);
         let receiver = |limit: usize| {
-            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+            WebhookReceiverBuilder::new(verifier())
                 .body_limit(limit)
                 .build(|_: Envelope| async { Ok::<_, ()>(()) })
         };
@@ -1157,12 +1129,12 @@ mod tests {
         let mut trailers = HeaderMap::new();
         trailers.insert("x-checksum", "crc32c=00000000".parse().unwrap());
         let body = Frames::new([Frame::trailers(trailers)]);
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(verifier())
             .body_limit(0)
             .build(|_: Envelope| async { Ok::<_, ()>(()) });
 
         let response = receiver
-            .receive(request_over(body, "push", &signature(b"secret", b"")))
+            .receive(request_over(body, "push", &verifier().sign(b"")))
             .await;
 
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
@@ -1170,7 +1142,7 @@ mod tests {
 
     #[tokio::test]
     async fn handler_errors_return_bare_internal_server_errors() {
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(verifier())
             .build(|_: Envelope| async { Err::<(), _>("private error") });
 
         let response = receiver.receive(request(b"{}", "push")).await;
@@ -1195,7 +1167,7 @@ mod tests {
             .always(|_: Envelope| async { Err::<(), _>("audit") })
             .build();
         let observer_seen = Arc::clone(&seen);
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(verifier())
             .on_error(move |meta: &EventMeta, error: &DispatchError<AppError>| {
                 observer_seen
                     .lock()
@@ -1243,7 +1215,7 @@ mod tests {
 
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let observer_seen = Arc::clone(&seen);
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(verifier())
             .on_error(move |meta: &EventMeta, error: &Boxed| {
                 let mut lines = vec![format!("{} {}: {error}", meta.delivery_id, meta.kind)];
                 let mut cause = error.source();
@@ -1272,7 +1244,7 @@ mod tests {
 
         let calls = Arc::new(AtomicUsize::new(0));
         let observer_calls = Arc::clone(&calls);
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(verifier())
             .on_error(move |_: &EventMeta, _: &Opaque| {
                 observer_calls.fetch_add(1, Ordering::Relaxed);
             })
@@ -1292,7 +1264,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let receiver = |handler_fails: bool| {
             let observer_calls = Arc::clone(&calls);
-            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+            WebhookReceiverBuilder::new(verifier())
                 .body_limit(64)
                 .on_error(move |_: &EventMeta, _: &&str| {
                     observer_calls.fetch_add(1, Ordering::Relaxed);
@@ -1385,13 +1357,13 @@ mod tests {
     #[cfg(feature = "tracing")]
     #[test]
     fn debug_says_whether_the_failed_delivery_event_carries_the_error() {
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(verifier())
             .trace_errors()
             .build(|_: Envelope| async { Err::<(), _>(std::fmt::Error) });
         let debug = format!("{receiver:?}");
         assert!(debug.contains("trace_errors: true"), "{debug}");
 
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(verifier())
             .trace_boxed_errors()
             .build(|_: Envelope| async {
                 Err::<(), Box<dyn std::error::Error + Send + Sync>>("boxed".into())

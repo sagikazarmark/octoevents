@@ -486,33 +486,23 @@ async fn thanks_for_an_opened_issue() {
 cannot be paired with a payload that says something else. The target type and
 ID come from headers, so they stay `None` unless assigned.
 
-The receiver is tested with a signed synthetic request. GitHub's signature is
-`sha256=` followed by the lowercase hex HMAC-SHA256 of the body under the
-secret, and a request needs four headers, whose names `octoevents::header`
-spells. `receive` takes any `http_body::Body` over `Bytes`, and `String` is
-one, so the test needs no axum. With `hmac = "0.13"`, `sha2 = "0.11"` and
-`http = "1"` as dev-dependencies:
+The receiver is tested with a signed synthetic request. `Verifier::sign`
+gives the `X-Hub-Signature-256` value GitHub would send for a body, so the
+test signs with the verifier the receiver is built with; a request needs four
+headers, whose names `octoevents::header` spells. `receive` takes any
+`http_body::Body` over `Bytes`, and `String` is one, so the test needs no
+axum. With `http = "1"` as a dev-dependency:
 
 ```rust,ignore
-use hmac::{Hmac, KeyInit as _, Mac as _};
 use octoevents::header;
-use sha2::Sha256;
-
-/// What GitHub puts in `X-Hub-Signature-256`.
-fn sign(secret: &str, body: &[u8]) -> String {
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
-    mac.update(body);
-    let hex: String = mac.finalize().into_bytes().iter().map(|byte| format!("{byte:02x}")).collect();
-    format!("sha256={hex}")
-}
 
 #[tokio::test]
 async fn accepts_a_signed_delivery() {
     let dispatcher = Dispatcher::<BoxError>::builder()
         .on((EventKind::Issues, Action::Opened), thank)
         .build();
-    let webhook = WebhookReceiverBuilder::new(Verifier::new(Secret::new("test-secret")))
-        .build(dispatcher);
+    let verifier = Verifier::new(Secret::new("test-secret"));
+    let webhook = WebhookReceiverBuilder::new(verifier.clone()).build(dispatcher);
 
     let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
     let request = http::Request::builder()
@@ -521,7 +511,7 @@ async fn accepts_a_signed_delivery() {
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::DELIVERY_ID, "delivery-1")
         .header(header::EVENT_NAME, "issues")
-        .header(header::SIGNATURE, sign("test-secret", body.as_bytes()))
+        .header(header::SIGNATURE, verifier.sign(body.as_bytes()))
         .body(body.to_string())
         .unwrap();
 
@@ -531,7 +521,8 @@ async fn accepts_a_signed_delivery() {
 }
 ```
 
-Change the secret on either side and the same request is answered 401.
+Build the receiver over another secret and the same request is answered 401.
+A verifier that also accepts a previous secret signs under its first.
 
 ## Transports
 

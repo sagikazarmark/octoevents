@@ -1039,8 +1039,6 @@ mod tests {
     use std::{collections::HashMap, str::FromStr as _};
 
     use bytes::Bytes;
-    use hmac::{Hmac, KeyInit, Mac};
-    use sha2::Sha256;
 
     use super::{
         DecodeError, Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef, TargetType,
@@ -1055,19 +1053,8 @@ mod tests {
         "sender":{"login":"monalisa"}
     }"#;
 
-    fn signature(secret: &[u8], body: &[u8]) -> String {
-        use std::fmt::Write as _;
-
-        let mut mac = Hmac::<Sha256>::new_from_slice(secret).unwrap();
-        mac.update(body);
-        let tag = mac.finalize().into_bytes();
-        let mut out = String::from("sha256=");
-        for byte in tag {
-            write!(out, "{byte:02x}").unwrap();
-        }
-        out
-    }
-
+    /// The verifier every signed envelope here is checked against; it also
+    /// signs the bodies it accepts.
     fn verifier() -> Verifier {
         Verifier::new(Secret::new("secret"))
     }
@@ -1097,7 +1084,7 @@ mod tests {
     #[test]
     fn verifies_then_extracts_the_metadata() {
         let verifier = verifier();
-        let signature = signature(b"secret", BODY);
+        let signature = verifier.sign(BODY);
 
         let envelope =
             Envelope::from_signed(&verifier, &headers(&signature), Bytes::from_static(BODY))
@@ -1135,7 +1122,7 @@ mod tests {
         // The target is the one thing the receiving path knows and the test
         // path does not: it comes from headers, not from the payload.
         let body = Bytes::from_static(b"not json");
-        let signature = signature(b"secret", &body);
+        let signature = verifier().sign(&body);
 
         let envelope =
             Envelope::from_signed(&verifier(), &headers(&signature), body.clone()).unwrap();
@@ -1152,7 +1139,7 @@ mod tests {
         // The test path and the receiving path probe the same payload the
         // same way; only the header-derived target differs, since `new` has
         // no headers to read it from.
-        let signature = signature(b"secret", BODY);
+        let signature = verifier().sign(BODY);
         let signed =
             Envelope::from_signed(&verifier(), &headers(&signature), Bytes::from_static(BODY))
                 .unwrap();
@@ -1241,7 +1228,7 @@ mod tests {
 
     #[test]
     fn serializes_the_metadata_flat_beside_the_raw_payload() {
-        let signature = signature(b"secret", BODY);
+        let signature = verifier().sign(BODY);
         let envelope =
             Envelope::from_signed(&verifier(), &headers(&signature), Bytes::from_static(BODY))
                 .unwrap();
@@ -1294,7 +1281,7 @@ mod tests {
     #[test]
     fn unknown_event_and_action_remain_routable() {
         let body = Bytes::from_static(br#"{"action":"brand_new"}"#);
-        let signature = signature(b"secret", &body);
+        let signature = verifier().sign(&body);
         let headers = HeaderView::new()
             .signature(&signature)
             .delivery_id("delivery")
@@ -1335,7 +1322,7 @@ mod tests {
             Err(ReceiveError::Verify(VerifyError::MissingSignature))
         );
 
-        let signature = signature(b"secret", b"");
+        let signature = verifier().sign(b"");
         let form = HeaderView::new()
             .signature(&signature)
             .delivery_id("delivery")
@@ -1363,7 +1350,7 @@ mod tests {
     /// What the receiving path makes of a signed, otherwise well-formed empty
     /// delivery under `content_type`, reduced to the kind it read.
     fn received_as(content_type: &str) -> Result<EventKind, ReceiveError> {
-        let signature = signature(b"secret", b"");
+        let signature = verifier().sign(b"");
         let headers = headers(&signature).content_type(content_type);
 
         Envelope::from_signed(&verifier(), &headers, Bytes::new())
@@ -1415,7 +1402,7 @@ mod tests {
         }
 
         // No `Content-Type` header at all is refused the same way.
-        let signature = signature(b"secret", b"");
+        let signature = verifier().sign(b"");
         let no_content_type = HeaderView::new()
             .signature(&signature)
             .delivery_id("delivery")
@@ -1431,7 +1418,7 @@ mod tests {
         // A header sent with no value is as good as not sent: the error names
         // the header, so no envelope is built with an empty delivery ID or an
         // event name that parses as `Unknown("")`.
-        let signature = signature(b"secret", b"");
+        let signature = verifier().sign(b"");
 
         assert_eq!(
             Envelope::from_signed(
@@ -1453,7 +1440,7 @@ mod tests {
 
     #[test]
     fn requires_the_event_name() {
-        let signature = signature(b"secret", b"");
+        let signature = verifier().sign(b"");
         let no_event_name = HeaderView::new()
             .signature(&signature)
             .delivery_id("delivery")
@@ -1472,7 +1459,7 @@ mod tests {
     #[test]
     fn serializes_the_raw_payload_as_base64() {
         let verifier = verifier();
-        let signature = signature(b"secret", BODY);
+        let signature = verifier.sign(BODY);
         let envelope =
             Envelope::from_signed(&verifier, &headers(&signature), Bytes::from_static(BODY))
                 .unwrap();
@@ -1488,7 +1475,7 @@ mod tests {
 
     #[test]
     fn survives_a_json_round_trip_to_a_forwarding_target() {
-        let signature = signature(b"secret", BODY);
+        let signature = verifier().sign(BODY);
         let envelope =
             Envelope::from_signed(&verifier(), &headers(&signature), Bytes::from_static(BODY))
                 .unwrap();
@@ -1582,7 +1569,7 @@ mod tests {
         const UNICODE_BODY: &[u8] =
             "{\"action\":\"opened\",\"zen\":\"⚡ \\u00e9 caf\u{e9} 🐙\"}".as_bytes();
 
-        let signature = signature(b"secret", UNICODE_BODY);
+        let signature = verifier().sign(UNICODE_BODY);
         let headers = HeaderView::new()
             .signature(&signature)
             .delivery_id("delivery")
@@ -1721,7 +1708,7 @@ mod tests {
         // HTTP/1.1 hands a serverless runtime the names as GitHub wrote them.
         // The constants are lowercase and the lookup compares nothing itself,
         // so the transport lowercases its keys before asking.
-        let signature = signature(b"secret", BODY);
+        let signature = verifier().sign(BODY);
         let received: HashMap<String, String> = [
             ("X-Hub-Signature-256", signature.as_str()),
             ("X-GitHub-Delivery", "delivery"),
@@ -1772,7 +1759,7 @@ mod tests {
     #[cfg(feature = "http")]
     #[test]
     fn constructs_from_an_http_header_map() {
-        let signature = signature(b"secret", BODY);
+        let signature = verifier().sign(BODY);
         let mut map = http::HeaderMap::new();
         map.insert(header::SIGNATURE, signature.parse().unwrap());
         map.insert(header::DELIVERY_ID, "delivery".parse().unwrap());
