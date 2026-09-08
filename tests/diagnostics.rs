@@ -11,8 +11,8 @@
 //! into the crate as `src/..` with no line number and no numbered snippet,
 //! so a doc edit above the bound does not stale the snapshot; the message,
 //! the note, the signature and rustc's own wording do. A change to any of
-//! them is re-blessed with `TRYBUILD=overwrite cargo test --test
-//! diagnostics`, and the diff is reviewed as the message is.
+//! them is re-blessed with `TRYBUILD=overwrite cargo test --all-features
+//! --test diagnostics`, and the diff is reviewed as the message is.
 //!
 //! The fixtures use the receiver, so the harness exists with `http` and
 //! `tracing` together.

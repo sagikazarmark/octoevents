@@ -65,11 +65,13 @@ async fn main() -> Result<(), BoxError> {
 axum = "0.8"
 octoevents = { version = "0.2", features = ["tower"] }
 serde = { version = "1", features = ["derive"] }
+thiserror = "2"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
 ```
 
-`serde` is for the payload views under [Handlers](#handlers); the quickstart
-itself reads the envelope's meta and needs none.
+`serde` is for the payload views under [Handlers](#handlers) and `thiserror`
+for the error enum under [Error handling](#error-handling); the quickstart
+itself reads the envelope's meta, returns a boxed error, and needs neither.
 
 Every request goes through three steps:
 
@@ -87,9 +89,11 @@ Every request goes through three steps:
 | 400 | The signature is malformed, a header is missing, the content type is not JSON, or the body could not be read |
 | 413 | The body is over the limit (25 MiB by default) |
 
-A 500 is silent: the receiver answers the status and prints nothing until an
-observer is registered with `on_error`, as [Error handling](#error-handling)
-shows.
+A 500 is a bare status, and out of the box nothing else says a handler
+failed: an observer registered with `on_error` is where the error reaches
+your code, as [Error handling](#error-handling) shows, and with the
+`tracing` feature the receiver also emits one event at ERROR per failed
+delivery, as [Tracing](#tracing) describes.
 
 `thank` took the whole envelope; a handler can take the decoded payload
 instead, and a dispatcher can run several handlers in tiers. The next
@@ -601,9 +605,10 @@ recorded anywhere. The full contract, span by span and field by field, is
   refused before its body is read; a signed one is verified against the exact
   bytes GitHub sent. Only `X-Hub-Signature-256` is checked, never the SHA-1
   header beside it.
-- **Constant-time comparison.** Every configured secret is evaluated on every
-  request, a match included, so timing reveals neither the secret nor which
-  one matched.
+- **Constant-time comparison.** Every configured secret is evaluated against
+  a well-formed signature, a match included, so timing reveals neither the
+  secret nor which one matched. A malformed signature header is refused
+  before any secret is used.
 - **Secret rotation.** GitHub holds one secret per webhook, so the rotation
   window is the verifier's: `Verifier::new(current).also(previous)` verifies
   against either. Deploy the new secret under `new` with the old one kept

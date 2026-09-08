@@ -130,9 +130,9 @@ impl Verifier {
     /// GitHub configures exactly one secret per webhook, so a rotation window
     /// lives here: accept the new secret alongside the old one, change it in
     /// the App settings, then drop the old one once in-flight deliveries drain.
-    /// Every secret is tried on every request, so the order matters only to
-    /// [`Verifier::sign`], which signs under the first, the one
-    /// [`Verifier::new`] received.
+    /// Every secret is tried against a well-formed signature, so the order
+    /// matters only to [`Verifier::sign`], which signs under the first, the
+    /// one [`Verifier::new`] received.
     /// [`Verifier::try_also`] is the same step reporting an empty secret as a
     /// value.
     ///
