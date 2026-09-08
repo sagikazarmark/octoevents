@@ -1325,6 +1325,115 @@ mod tests {
         );
     }
 
+    /// What the receiving path makes of a signed, otherwise well-formed empty
+    /// delivery under `content_type`, reduced to the kind it read.
+    fn received_as(content_type: &str) -> Result<EventKind, ReceiveError> {
+        let signature = signature(b"secret", b"");
+        let headers = headers(&signature).content_type(content_type);
+
+        Envelope::from_signed(&verifier(), &headers, Bytes::new())
+            .map(|envelope| envelope.meta.kind)
+    }
+
+    #[test]
+    fn accepts_a_json_content_type_by_its_media_type_alone() {
+        // The media type is compared case-insensitively, and neither its
+        // parameters nor the whitespace around it take part.
+        for content_type in [
+            "application/json",
+            "APPLICATION/JSON",
+            "Application/Json",
+            "application/json; charset=utf-8",
+            "application/json;charset=utf-8",
+            "application/json;",
+            " application/json",
+            "application/json ",
+            "application/json ; charset=utf-8",
+        ] {
+            assert_eq!(
+                received_as(content_type),
+                Ok(EventKind::PullRequest),
+                "content type {content_type:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_every_content_type_whose_media_type_is_not_application_json() {
+        // Near-misses included: another JSON media type, GitHub's own API
+        // media type, GitHub's other webhook content type, `application/json`
+        // as a parameter rather than the media type, and an empty value.
+        for content_type in [
+            "",
+            "text/json",
+            "application/vnd.github+json",
+            "application/json-patch+json",
+            "application/x-www-form-urlencoded",
+            "text/plain; type=application/json",
+            "application/json charset=utf-8",
+        ] {
+            assert_eq!(
+                received_as(content_type),
+                Err(ReceiveError::UnsupportedContentType),
+                "content type {content_type:?}"
+            );
+        }
+
+        // No `Content-Type` header at all is refused the same way.
+        let signature = signature(b"secret", b"");
+        let no_content_type = HeaderView::new()
+            .signature(&signature)
+            .delivery_id("delivery")
+            .event_name("push");
+        assert_eq!(
+            Envelope::from_signed(&verifier(), &no_content_type, Bytes::new()),
+            Err(ReceiveError::UnsupportedContentType)
+        );
+    }
+
+    #[test]
+    fn an_empty_required_header_is_missing() {
+        // A header sent with no value is as good as not sent: the error names
+        // the header, so no envelope is built with an empty delivery ID or an
+        // event name that parses as `Unknown("")`.
+        let signature = signature(b"secret", b"");
+
+        assert_eq!(
+            Envelope::from_signed(
+                &verifier(),
+                &headers(&signature).delivery_id(""),
+                Bytes::new()
+            ),
+            Err(ReceiveError::MissingHeader(header::DELIVERY_ID))
+        );
+        assert_eq!(
+            Envelope::from_signed(
+                &verifier(),
+                &headers(&signature).event_name(""),
+                Bytes::new()
+            ),
+            Err(ReceiveError::MissingHeader(header::EVENT_NAME))
+        );
+    }
+
+    #[test]
+    fn requires_the_event_name() {
+        let signature = signature(b"secret", b"");
+        let no_event_name = HeaderView::new()
+            .signature(&signature)
+            .delivery_id("delivery")
+            .content_type("application/json");
+
+        assert_eq!(
+            Envelope::from_signed(&verifier(), &no_event_name, Bytes::new()),
+            Err(ReceiveError::MissingHeader(header::EVENT_NAME))
+        );
+        assert_eq!(
+            ReceiveError::MissingHeader(header::EVENT_NAME).to_string(),
+            "missing x-github-event header"
+        );
+    }
+
     #[test]
     fn serializes_the_raw_payload_as_base64() {
         let verifier = verifier();
