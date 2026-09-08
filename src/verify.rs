@@ -29,6 +29,25 @@ pub enum VerifyError {
     Mismatch,
 }
 
+/// A secret the verifier refuses to be configured with.
+///
+/// Reported by [`Verifier::try_new`] and [`Verifier::try_also`]; the
+/// panicking [`Verifier::new`] and [`Verifier::also`] panic with the same
+/// message instead. This is a configuration failure, found before any
+/// delivery arrives, and so is kept apart from [`VerifyError`], which
+/// reports a body that did not authenticate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Error)]
+#[non_exhaustive]
+pub enum SecretError {
+    /// The secret has no bytes.
+    ///
+    /// An empty secret is the unset- or mistyped-environment-variable failure
+    /// mode, not a configuration: every delivery would verify against a
+    /// guessable key.
+    #[error("webhook secret must not be empty")]
+    Empty,
+}
+
 /// The configured secrets, and the HMAC comparison they authenticate with.
 ///
 /// A verifier is required to receive a webhook: it is constructed from one
@@ -36,9 +55,11 @@ pub enum VerifyError {
 /// secrets are added with [`Verifier::also`] to open a client-side rotation
 /// window.
 ///
-/// Clones share the secrets rather than copying them: a receiver clones its
-/// verifier per delivery, and secret material should not be re-copied onto the
-/// heap that often.
+/// Clones share the secrets rather than copying them: a receiver holds its
+/// verifier and borrows it per delivery, so the clone is for a verifier that
+/// is handed to more than one receiver, or kept beside the one receiving so
+/// a test can sign with it, without secret material being copied onto the
+/// heap each time.
 ///
 /// Only `X-Hub-Signature-256` is verified. GitHub sends the SHA-1
 /// `X-Hub-Signature` beside it, and a request carrying only that header is
@@ -61,17 +82,47 @@ pub struct Verifier {
 impl Verifier {
     /// Creates a verifier authenticating against one secret.
     ///
+    /// For a deployment that reads its secret at startup, where an empty one
+    /// should stop the process; [`Verifier::try_new`] reports the same
+    /// failure as a value, for one that reads it per request.
+    ///
     /// # Panics
     ///
-    /// Panics when the secret is empty. An empty secret is the unset- or
-    /// mistyped-environment-variable failure mode, not a configuration, and
-    /// every delivery would verify against a guessable key.
+    /// Panics when the secret is empty, with [`SecretError::Empty`]'s
+    /// message. An empty secret is the unset- or mistyped-environment-variable
+    /// failure mode, not a configuration, and every delivery would verify
+    /// against a guessable key.
     #[must_use]
     #[track_caller]
     pub fn new(secret: Secret) -> Self {
-        Self {
-            secrets: Arc::new(vec![require_non_empty(secret)]),
-        }
+        or_panic(Self::try_new(secret))
+    }
+
+    /// Creates a verifier authenticating against one secret, or reports why
+    /// the secret was refused.
+    ///
+    /// The fallible counterpart of [`Verifier::new`], for a deployment that
+    /// builds its verifier where a panic is the wrong answer: a serverless
+    /// function reading its secret per request, say, where an unset variable
+    /// should be a response and not a trap.
+    ///
+    /// ```
+    /// use octoevents::{Secret, SecretError, Verifier};
+    ///
+    /// let verifier = Verifier::try_new(Secret::new("current secret"))?;
+    /// # let _ = verifier;
+    ///
+    /// assert_eq!(Verifier::try_new(Secret::new("")).unwrap_err(), SecretError::Empty);
+    /// # Ok::<(), SecretError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SecretError::Empty`] when the secret has no bytes.
+    pub fn try_new(secret: Secret) -> Result<Self, SecretError> {
+        Ok(Self {
+            secrets: Arc::new(vec![require_non_empty(secret)?]),
+        })
     }
 
     /// Accepts a further secret, for client-side credential rotation.
@@ -79,15 +130,39 @@ impl Verifier {
     /// GitHub configures exactly one secret per webhook, so a rotation window
     /// lives here: accept the new secret alongside the old one, change it in
     /// the App settings, then drop the old one once in-flight deliveries drain.
+    /// [`Verifier::try_also`] is the same step reporting an empty secret as a
+    /// value.
     ///
     /// # Panics
     ///
     /// Panics when the secret is empty, as [`Verifier::new`] does.
     #[must_use]
     #[track_caller]
-    pub fn also(mut self, secret: Secret) -> Self {
-        Arc::make_mut(&mut self.secrets).push(require_non_empty(secret));
-        self
+    pub fn also(self, secret: Secret) -> Self {
+        or_panic(self.try_also(secret))
+    }
+
+    /// Accepts a further secret, or reports why it was refused.
+    ///
+    /// The fallible counterpart of [`Verifier::also`], to pair with
+    /// [`Verifier::try_new`].
+    ///
+    /// ```
+    /// use octoevents::{Secret, SecretError, Verifier};
+    ///
+    /// let verifier = Verifier::try_new(Secret::new("current secret"))?
+    ///     .try_also(Secret::new("previous secret"))?;
+    /// # let _ = verifier;
+    /// # Ok::<(), SecretError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SecretError::Empty`] when the secret has no bytes; the
+    /// verifier is consumed either way.
+    pub fn try_also(mut self, secret: Secret) -> Result<Self, SecretError> {
+        Arc::make_mut(&mut self.secrets).push(require_non_empty(secret)?);
+        Ok(self)
     }
 
     /// Verifies a GitHub HMAC-SHA256 signature over the exact body bytes.
@@ -192,13 +267,22 @@ fn hmac_sha256(secret: &Secret, body: &[u8]) -> [u8; SHA256_BYTES] {
     mac.finalize().into_bytes().into()
 }
 
+/// The panicking constructors' unwrap: the error's message, reported at the
+/// consumer's line. `#[track_caller]` here and on `new` and `also` is what
+/// carries the location through; a closure would report this file.
 #[track_caller]
-fn require_non_empty(secret: Secret) -> Secret {
-    assert!(
-        !secret.expose().is_empty(),
-        "webhook secret must not be empty"
-    );
-    secret
+fn or_panic(result: Result<Verifier, SecretError>) -> Verifier {
+    match result {
+        Ok(verifier) => verifier,
+        Err(error) => panic!("{error}"),
+    }
+}
+
+fn require_non_empty(secret: Secret) -> Result<Secret, SecretError> {
+    if secret.expose().is_empty() {
+        return Err(SecretError::Empty);
+    }
+    Ok(secret)
 }
 
 /// `sha256=` followed by `tag` as lowercase hex: the header value GitHub
@@ -251,7 +335,7 @@ const fn hex_nibble(byte: u8) -> Option<u8> {
 mod tests {
     use std::sync::Arc;
 
-    use super::{Verifier, VerifyError};
+    use super::{SecretError, Verifier, VerifyError};
     use crate::Secret;
 
     /// GitHub's documented test vector: `Hello, World!` under `It's a
@@ -323,6 +407,49 @@ mod tests {
     #[should_panic(expected = "webhook secret must not be empty")]
     fn rejects_an_empty_rotation_secret() {
         let _ = Verifier::new(Secret::new("secret")).also(Secret::new(""));
+    }
+
+    #[test]
+    fn try_new_reports_an_empty_secret_instead_of_panicking() {
+        // The environment-variable failure mode as a value: a deployment that
+        // reads its secret at request time answers instead of trapping.
+        let error = Verifier::try_new(Secret::new("")).unwrap_err();
+
+        assert_eq!(error, SecretError::Empty);
+        assert_eq!(error.to_string(), "webhook secret must not be empty");
+    }
+
+    #[test]
+    fn try_new_builds_the_verifier_new_would() {
+        let verifier = Verifier::try_new(Secret::new("It's a Secret to Everybody")).unwrap();
+
+        assert_eq!(
+            verifier.verify(DOCUMENTED_SIGNATURE, b"Hello, World!"),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn try_also_reports_an_empty_rotation_secret() {
+        let verifier = Verifier::try_new(Secret::new("secret")).unwrap();
+
+        assert_eq!(
+            verifier.try_also(Secret::new("")).unwrap_err(),
+            SecretError::Empty
+        );
+    }
+
+    #[test]
+    fn try_also_accepts_a_further_secret_as_also_does() {
+        let verifier = Verifier::try_new(Secret::new("wrong"))
+            .unwrap()
+            .try_also(Secret::new("It's a Secret to Everybody"))
+            .unwrap();
+
+        assert_eq!(
+            verifier.verify(DOCUMENTED_SIGNATURE, b"Hello, World!"),
+            Ok(())
+        );
     }
 
     #[test]

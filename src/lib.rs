@@ -230,7 +230,7 @@ pub use runtime::{MaybeSend, MaybeSync};
 pub use secret::Secret;
 #[cfg(feature = "http")]
 pub use service::{WebhookReceiver, WebhookReceiverBuilder};
-pub use verify::{Verifier, VerifyError};
+pub use verify::{SecretError, Verifier, VerifyError};
 
 /// The byte buffer type of [`Envelope::raw_payload`] and of the body
 /// [`Envelope::from_signed`] takes, re-exported from the `bytes` crate.
