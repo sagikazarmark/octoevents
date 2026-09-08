@@ -82,7 +82,8 @@
 //!   body limit, `ping` handling and the
 //!   [`on_error`](WebhookReceiverBuilder::on_error) observer.
 //! - [`Verifier`] and [`Secret`]: the configured secrets and the HMAC
-//!   comparison; [`Verifier::also`] opens a rotation window.
+//!   comparison; [`Verifier::also`] opens a rotation window, and
+//!   [`Verifier::sign`] signs a test's synthetic request.
 //! - [`HeaderView`], [`ResponseStatus`] and [`Envelope::from_signed`]: the
 //!   sans-I/O path for a transport with no `http::Request`.
 //!

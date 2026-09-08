@@ -134,11 +134,7 @@ impl Verifier {
         let mut matched = 0_u8;
 
         for secret in self.secrets.iter() {
-            let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(secret.expose()) else {
-                continue;
-            };
-            mac.update(body);
-            let computed = mac.finalize().into_bytes();
+            let computed = hmac_sha256(secret, body);
             matched |= computed[..].ct_eq(&received).unwrap_u8();
         }
 
@@ -150,6 +146,50 @@ impl Verifier {
             Err(VerifyError::Mismatch)
         }
     }
+
+    /// The `X-Hub-Signature-256` value GitHub would send for `body`: `sha256=`
+    /// followed by the lowercase hex HMAC-SHA256 of the body under the first
+    /// configured secret.
+    ///
+    /// A test aid for the receiving side. A test drives the receiver with a
+    /// synthetic request, and that request needs the signature GitHub would
+    /// have put on it, so the test signs the body with the verifier the
+    /// receiver was built with. The crate sends nothing; the method exists so
+    /// the test needs no HMAC code of its own.
+    ///
+    /// A rotated verifier ([`Verifier::also`]) signs under its first secret,
+    /// the one [`Verifier::new`] received. To sign under a secret it was
+    /// rotated to, build a verifier from that secret alone.
+    ///
+    /// Nothing is recorded: the signature is secret-derived, and the crate
+    /// records neither the secret nor anything computed from it.
+    ///
+    /// ```
+    /// use octoevents::{Secret, Verifier};
+    ///
+    /// let verifier = Verifier::new(Secret::new("It's a Secret to Everybody"));
+    /// let signature = verifier.sign(b"Hello, World!");
+    ///
+    /// assert_eq!(signature, "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17");
+    /// verifier.verify(&signature, b"Hello, World!")?;
+    /// # Ok::<(), octoevents::VerifyError>(())
+    /// ```
+    #[must_use]
+    pub fn sign(&self, body: &[u8]) -> String {
+        // `new` puts one secret in and nothing takes one out.
+        let tag = hmac_sha256(&self.secrets[0], body);
+        encode_signature(&tag)
+    }
+}
+
+/// The HMAC-SHA256 of `body` under `secret`.
+fn hmac_sha256(secret: &Secret, body: &[u8]) -> [u8; SHA256_BYTES] {
+    // HMAC takes a key of any length: a long one is hashed to fit and a short
+    // one is padded, so the key is never invalid.
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(secret.expose()).expect("HMAC accepts a key of any length");
+    mac.update(body);
+    mac.finalize().into_bytes().into()
 }
 
 #[track_caller]
@@ -159,6 +199,24 @@ fn require_non_empty(secret: Secret) -> Secret {
         "webhook secret must not be empty"
     );
     secret
+}
+
+/// `sha256=` followed by `tag` as lowercase hex: the header value GitHub
+/// sends, and the inverse of [`decode_signature`].
+fn encode_signature(tag: &[u8; SHA256_BYTES]) -> String {
+    let mut out = String::with_capacity(SHA256_PREFIX.len() + SHA256_HEX_CHARS);
+    out.push_str(SHA256_PREFIX);
+    for &byte in tag {
+        out.push(hex_digit(byte >> 4));
+        out.push(hex_digit(byte & 0x0f));
+    }
+    out
+}
+
+/// The lowercase hex digit for a nibble; the inverse of [`hex_nibble`].
+fn hex_digit(nibble: u8) -> char {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    char::from(DIGITS[usize::from(nibble & 0x0f)])
 }
 
 fn decode_signature(value: &str) -> Result<[u8; SHA256_BYTES], VerifyError> {
@@ -298,6 +356,61 @@ mod tests {
         let signature = "sha256=f9e66e179b6747ae54108f82f8ade8b3c25d76fd30afde6c395822c530196169";
 
         assert_eq!(verifier.verify(signature, b""), Ok(()));
+    }
+
+    #[test]
+    fn signs_githubs_documented_test_vector() {
+        let verifier = Verifier::new(Secret::new("It's a Secret to Everybody"));
+
+        assert_eq!(verifier.sign(b"Hello, World!"), DOCUMENTED_SIGNATURE);
+    }
+
+    #[test]
+    fn signs_the_empty_body() {
+        let verifier = Verifier::new(Secret::new("secret"));
+
+        assert_eq!(
+            verifier.sign(b""),
+            "sha256=f9e66e179b6747ae54108f82f8ade8b3c25d76fd30afde6c395822c530196169"
+        );
+    }
+
+    #[test]
+    fn what_it_signs_it_verifies() {
+        let verifier = Verifier::new(Secret::new("a secret nobody documented"));
+        let body = "{\"action\":\"opened\",\"title\":\"caf\u{e9} \u{1F680}\"}".as_bytes();
+
+        let signature = verifier.sign(body);
+
+        assert_eq!(verifier.verify(&signature, body), Ok(()));
+        assert_eq!(
+            verifier.verify(&signature, b"{}"),
+            Err(VerifyError::Mismatch),
+            "the signature is over the body, not a constant"
+        );
+    }
+
+    #[test]
+    fn a_rotated_verifier_signs_under_its_first_secret() {
+        let current_first = Verifier::new(Secret::new("It's a Secret to Everybody"))
+            .also(Secret::new("previous secret"));
+        let previous_first = Verifier::new(Secret::new("previous secret"))
+            .also(Secret::new("It's a Secret to Everybody"));
+
+        assert_eq!(current_first.sign(b"Hello, World!"), DOCUMENTED_SIGNATURE);
+
+        let under_previous = previous_first.sign(b"Hello, World!");
+        assert_ne!(under_previous, DOCUMENTED_SIGNATURE);
+        assert_eq!(
+            Verifier::new(Secret::new("previous secret")).verify(&under_previous, b"Hello, World!"),
+            Ok(()),
+            "the first secret signed it, so a verifier over that secret alone accepts it"
+        );
+        assert_eq!(
+            previous_first.verify(&under_previous, b"Hello, World!"),
+            Ok(()),
+            "and so does the rotated verifier itself"
+        );
     }
 
     #[test]

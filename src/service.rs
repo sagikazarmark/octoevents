@@ -392,30 +392,20 @@ where
     ///
     /// The request is any `http::Request` whose body yields [`Bytes`]:
     /// axum's, a Cloudflare Worker's, or a `String` in a test, which drives
-    /// the receiver with a signed synthetic request and no server. GitHub's
-    /// signature is `sha256=` followed by the lowercase hex HMAC-SHA256 of
-    /// the body under the secret, and a request needs the four headers
-    /// [`header`](crate::header) names:
+    /// the receiver with a signed synthetic request and no server.
+    /// [`Verifier::sign`] gives the signature GitHub would send for the
+    /// body, and a request needs the four headers [`header`](crate::header)
+    /// names:
     ///
     /// ```
-    /// use hmac::{Hmac, KeyInit as _, Mac as _};
     /// use octoevents::{Dispatcher, Secret, Verifier, WebhookReceiverBuilder, header};
-    /// use sha2::Sha256;
     ///
     /// type BoxError = Box<dyn std::error::Error + Send + Sync>;
     ///
-    /// /// What GitHub puts in `X-Hub-Signature-256`.
-    /// fn sign(secret: &str, body: &[u8]) -> String {
-    ///     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
-    ///     mac.update(body);
-    ///     let hex: String = mac.finalize().into_bytes().iter().map(|byte| format!("{byte:02x}")).collect();
-    ///     format!("sha256={hex}")
-    /// }
-    ///
     /// # tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
     /// let dispatcher = Dispatcher::<BoxError>::builder().build();
-    /// let webhook = WebhookReceiverBuilder::new(Verifier::new(Secret::new("test-secret")))
-    ///     .build(dispatcher);
+    /// let verifier = Verifier::new(Secret::new("test-secret"));
+    /// let webhook = WebhookReceiverBuilder::new(verifier.clone()).build(dispatcher);
     ///
     /// let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
     /// let request = http::Request::builder()
@@ -424,7 +414,7 @@ where
     ///     .header(header::CONTENT_TYPE, "application/json")
     ///     .header(header::DELIVERY_ID, "delivery-1")
     ///     .header(header::EVENT_NAME, "issues")
-    ///     .header(header::SIGNATURE, sign("test-secret", body.as_bytes()))
+    ///     .header(header::SIGNATURE, verifier.sign(body.as_bytes()))
     ///     .body(body.to_string())
     ///     .unwrap();
     ///
@@ -434,7 +424,8 @@ where
     /// # });
     /// ```
     ///
-    /// Change the secret on either side and the same request is answered 401.
+    /// Build the receiver over another secret and the same request is
+    /// answered 401.
     ///
     /// This path never boxes and never crosses a Tower or native executor
     /// boundary, so on `wasm32` a Cloudflare Worker can hand an
@@ -657,11 +648,9 @@ mod tests {
     };
 
     use bytes::Bytes;
-    use hmac::{Hmac, KeyInit, Mac};
     use http::{HeaderMap, Request, StatusCode};
     use http_body::{Body as _, Frame};
     use http_body_util::Full;
-    use sha2::Sha256;
     #[cfg(feature = "tower")]
     use tower::ServiceExt as _;
 
@@ -777,13 +766,13 @@ mod tests {
         request_over(
             Full::new(Bytes::from_static(body)),
             event,
-            &signature(b"secret", body),
+            &verifier().sign(body),
         )
     }
 
     /// A request over a body the test shapes itself, carrying `signature` as
-    /// its signature header: `signature(b"secret", ..)` over the bytes the
-    /// body yields authenticates, anything else does not.
+    /// its signature header: `verifier().sign(..)` over the bytes the body
+    /// yields authenticates, anything else does not.
     fn request_over<B>(body: B, event: &str, signature: &str) -> Request<B> {
         Request::builder()
             .header("content-type", "application/json")
@@ -817,17 +806,10 @@ mod tests {
     const WRONG_SIGNATURE: &str =
         "sha256=0000000000000000000000000000000000000000000000000000000000000000";
 
-    fn signature(secret: &[u8], body: &[u8]) -> String {
-        use std::fmt::Write as _;
-
-        let mut mac = Hmac::<Sha256>::new_from_slice(secret).unwrap();
-        mac.update(body);
-        let tag = mac.finalize().into_bytes();
-        let mut out = String::from("sha256=");
-        for byte in tag {
-            write!(out, "{byte:02x}").unwrap();
-        }
-        out
+    /// A verifier over the secret the receivers here are built with, so what
+    /// it signs they accept.
+    fn verifier() -> Verifier {
+        Verifier::new(Secret::new("secret"))
     }
 
     #[tokio::test]
@@ -1050,7 +1032,7 @@ mod tests {
             StatusCode::UNAUTHORIZED
         );
         // A signed request reaches the read loop and reports the body failure.
-        let signed = signature(b"secret", b"{}");
+        let signed = verifier().sign(b"{}");
         assert_eq!(
             receiver().receive(request(Some(&signed))).await.status(),
             StatusCode::BAD_REQUEST
@@ -1114,7 +1096,7 @@ mod tests {
         // were assembled in order.
         const CHUNKS: &[&[u8]] = &[br#"{"a":"#, br#"1,"b""#, b":2}"];
         const PAYLOAD: &[u8] = br#"{"a":1,"b":2}"#;
-        let signed = signature(b"secret", PAYLOAD);
+        let signed = verifier().sign(PAYLOAD);
         let receiver = |limit: usize| {
             WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
                 .body_limit(limit)
@@ -1162,7 +1144,7 @@ mod tests {
             .build(|_: Envelope| async { Ok::<_, ()>(()) });
 
         let response = receiver
-            .receive(request_over(body, "push", &signature(b"secret", b"")))
+            .receive(request_over(body, "push", &verifier().sign(b"")))
             .await;
 
         assert_eq!(response.status(), StatusCode::NO_CONTENT);

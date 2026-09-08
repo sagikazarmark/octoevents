@@ -24,15 +24,21 @@ use http_body_util::Full;
 use octoevents::{EventMeta, Secret, Verifier, WebhookReceiverBuilder};
 use tracing::Level;
 
+/// The secret, named so the assertions can look for it in the output.
 const SECRET: &str = "It's a Secret to Everybody";
 const BODY: &[u8] = br#"{"action":"opened","installation":{"id":42}}"#;
+
+/// The verifier every receiver here is built with; it signs the request
+/// they accept.
+fn verifier() -> Verifier {
+    Verifier::new(Secret::new(SECRET))
+}
 
 #[test]
 fn spans_record_routing_metadata_but_never_the_signature_or_secret() {
     let (signature, request) = signed_request();
 
-    let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
-        .build(|_| async { Ok::<_, ()>(()) });
+    let receiver = WebhookReceiverBuilder::new(verifier()).build(|_| async { Ok::<_, ()>(()) });
 
     let (recording, response) = common::traced(receiver.receive(request));
     assert_eq!(response.status(), 204);
@@ -57,7 +63,7 @@ fn the_error_observer_and_the_spans_see_nothing_secret_derived_on_a_failed_deliv
 
     let observed = Arc::new(Mutex::new(String::new()));
     let observer_record = Arc::clone(&observed);
-    let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
+    let receiver = WebhookReceiverBuilder::new(verifier())
         .on_error(move |meta: &EventMeta, error: &&str| {
             *observer_record.lock().unwrap() = format!("{meta:?} {error}");
         })
@@ -92,7 +98,7 @@ struct Database;
 fn the_event_with_the_error_on_it_carries_nothing_secret_derived() {
     let (signature, request) = signed_request();
 
-    let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new(SECRET)))
+    let receiver = WebhookReceiverBuilder::new(verifier())
         .trace_errors()
         .build(|_| async { Err::<(), _>(Database) });
 
@@ -106,7 +112,7 @@ fn the_event_with_the_error_on_it_carries_nothing_secret_derived() {
 }
 
 fn signed_request() -> (String, Request<Full<Bytes>>) {
-    let signature = common::signature(SECRET.as_bytes(), BODY);
+    let signature = verifier().sign(BODY);
     let request = Request::builder()
         .header("content-type", "application/json")
         .header("x-github-delivery", "d34db33f-delivery")
