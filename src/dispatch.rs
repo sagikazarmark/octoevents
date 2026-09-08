@@ -481,8 +481,10 @@ where
     ///
     /// A closure that hands back the inner error's `source`, the boxed
     /// application error, registers; the inner tier, handler and site are
-    /// on the inner span. An application error type that is an `Error` and
-    /// converts from `DispatchError` over itself nests without the closure.
+    /// on the inner span. An application error type that converts from
+    /// `DispatchError` over itself, beside the `From<DecodeError>` that
+    /// [`on`](DispatcherBuilder::on) asks of every `E`, nests without the
+    /// closure.
     ///
     /// ```
     /// use octoevents::{DispatchError, Dispatcher, Envelope, EventKind};
@@ -497,6 +499,25 @@ where
     ///                 .map_err(|error: DispatchError<BoxError>| error.source)
     ///         }
     ///     })
+    ///     .build();
+    /// # let _ = outer;
+    /// ```
+    ///
+    /// ```
+    /// use octoevents::{DecodeError, DispatchError, Dispatcher, EventKind};
+    ///
+    /// #[derive(Debug)]
+    /// enum AppError { Decode(DecodeError), Nested(Box<DispatchError<AppError>>) }
+    /// impl From<DecodeError> for AppError {
+    ///     fn from(error: DecodeError) -> Self { Self::Decode(error) }
+    /// }
+    /// impl From<DispatchError<AppError>> for AppError {
+    ///     fn from(error: DispatchError<AppError>) -> Self { Self::Nested(Box::new(error)) }
+    /// }
+    ///
+    /// let inner = Dispatcher::<AppError>::builder().build();
+    /// let outer = Dispatcher::<AppError>::builder()
+    ///     .on(EventKind::Issues, inner)
     ///     .build();
     /// # let _ = outer;
     /// ```

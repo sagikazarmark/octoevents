@@ -640,7 +640,7 @@ matching handler and aggregates.
 | `app.on('issues.opened', h)` | `on((EventKind::Issues, Action::Opened), h)`, or `on(Action::Opened, h)` with the kind taken from `h`'s payload type. There is no string route form |
 | `app.on('issues', h)` | `on(EventKind::Issues, h)`, or `on(AnyAction, h)` |
 | `app.onAny(h)` | `always(h)`: first, for every delivery, over the envelope; its error fails the delivery. Sees `ping` only with `handle_ping(true)` |
-| `app.onError(h)` | `on_error(h)` on the receiver builder, called with the meta and the handler's error. `{error}` says where (tier, handler, registration site), `error.source` says why. Unlike `onError`, it never sees a refused request: a bad signature is a 401, not an error |
+| `app.onError(h)` | `on_error(h)` on the receiver builder, called with the meta and the receiver's handler's error. With a dispatcher as that handler, the error is a `DispatchError`: `{error}` says where (tier, handler, registration site), `error.source` says why. Unlike `onError`, it never sees a refused request: a bad signature is a 401, not an error |
 | `app.receive(event)` | `dispatcher.dispatch(envelope)` with an envelope from `Envelope::new`; see [Testing without GitHub](#testing-without-github) |
 | `context.payload` | The handler's input: a serde view of your own (`#[derive(Payload)]`), or octocrab's structs with the `octocrab` feature |
 | `context.id`, `context.name` | `meta.delivery_id` and `meta.kind` on the `EventMeta`; a handler gets it beside the payload as `Event<P>` |
