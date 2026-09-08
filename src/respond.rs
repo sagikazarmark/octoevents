@@ -1,6 +1,10 @@
 use crate::{ReceiveError, VerifyError};
 
 /// The transport-independent status selected for a receive outcome.
+///
+/// [`as_u16`](Self::as_u16) is the code for a transport with its own status
+/// type; with the `http` feature it also converts into `http::StatusCode`,
+/// an impl that lives with the receiver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ResponseStatus {
@@ -29,22 +33,6 @@ impl ResponseStatus {
         }
     }
 
-    /// The value the `octoevents.receive` span records as `outcome`.
-    ///
-    /// A label rather than the code, so `outcome` is a string on every span
-    /// the crate opens; the code is the span's `status` field. The receive
-    /// span is the receiver's, so the label exists with the `http` feature.
-    #[cfg(feature = "http")]
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::NoContent => "ok",
-            Self::BadRequest => "bad_request",
-            Self::Unauthorized => "unauthorized",
-            Self::PayloadTooLarge => "payload_too_large",
-            Self::InternalServerError => "handler_error",
-        }
-    }
-
     /// Selects the status for a receive failure, per the crate's response contract.
     ///
     /// `WebhookReceiver` applies this mapping itself; it is public so a
@@ -62,19 +50,6 @@ impl ResponseStatus {
             | ReceiveError::MissingHeader(_)
             | ReceiveError::UnsupportedContentType => Self::BadRequest,
             ReceiveError::BodyTooLarge { .. } => Self::PayloadTooLarge,
-        }
-    }
-}
-
-#[cfg(feature = "http")]
-impl From<ResponseStatus> for http::StatusCode {
-    fn from(status: ResponseStatus) -> Self {
-        match status {
-            ResponseStatus::NoContent => Self::NO_CONTENT,
-            ResponseStatus::BadRequest => Self::BAD_REQUEST,
-            ResponseStatus::Unauthorized => Self::UNAUTHORIZED,
-            ResponseStatus::PayloadTooLarge => Self::PAYLOAD_TOO_LARGE,
-            ResponseStatus::InternalServerError => Self::INTERNAL_SERVER_ERROR,
         }
     }
 }
@@ -125,42 +100,6 @@ mod tests {
                 status,
                 "{error:?}"
             );
-        }
-    }
-
-    #[cfg(feature = "http")]
-    #[test]
-    fn labels_every_status_with_the_outcome_the_receive_span_records() {
-        // The whole table, one row per status. The labels are the front
-        // page's vocabulary for the receive span's `outcome`, and a dashboard
-        // filters on them verbatim, so each is a literal here, not derived
-        // from the variant's name. That the receiver records them on the
-        // span, beside the code as `status`, is `tests/tracing_outcome.rs`'s
-        // test.
-        let table = [
-            (ResponseStatus::NoContent, "ok"),
-            (ResponseStatus::BadRequest, "bad_request"),
-            (ResponseStatus::Unauthorized, "unauthorized"),
-            (ResponseStatus::PayloadTooLarge, "payload_too_large"),
-            (ResponseStatus::InternalServerError, "handler_error"),
-        ];
-
-        for (status, label) in table {
-            assert_eq!(status.label(), label, "{status:?}");
-        }
-    }
-
-    #[cfg(feature = "http")]
-    #[test]
-    fn converts_to_the_matching_http_status_code() {
-        for status in [
-            ResponseStatus::NoContent,
-            ResponseStatus::BadRequest,
-            ResponseStatus::Unauthorized,
-            ResponseStatus::PayloadTooLarge,
-            ResponseStatus::InternalServerError,
-        ] {
-            assert_eq!(http::StatusCode::from(status).as_u16(), status.as_u16());
         }
     }
 }

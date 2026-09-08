@@ -3,7 +3,7 @@ use std::{
     convert::Infallible,
     task::{Context, Poll},
 };
-use std::{fmt, future::Future, sync::Arc};
+use std::{fmt, future::Future, marker::PhantomData, sync::Arc};
 
 use bytes::{Bytes, BytesMut};
 use http::{Request, Response};
@@ -14,6 +14,8 @@ use tower_service::Service;
 
 #[cfg(feature = "tower")]
 use crate::runtime::BoxFuture;
+#[cfg(feature = "tracing")]
+use crate::{Action, BoxedError};
 use crate::{
     DEFAULT_BODY_LIMIT, Envelope, EventKind, EventMeta, Handler, HeaderView, MaybeSend, MaybeSync,
     ReceiveError, ResponseStatus, Verifier, trace,
@@ -37,7 +39,7 @@ struct Config<E> {
     body_limit: usize,
     handle_ping: bool,
     observer: Option<ErrorObserver<E>>,
-    error_fields: trace::ErrorFields<E>,
+    error_fields: ErrorFields<E>,
 }
 
 impl<E> Config<E> {
@@ -92,7 +94,7 @@ impl<E> WebhookReceiverBuilder<E> {
                 body_limit: DEFAULT_BODY_LIMIT,
                 handle_ping: false,
                 observer: None,
-                error_fields: trace::ErrorFields::none(),
+                error_fields: ErrorFields::none(),
             },
         }
     }
@@ -257,7 +259,7 @@ impl<E> WebhookReceiverBuilder<E> {
     where
         E: std::error::Error,
     {
-        self.config.error_fields = trace::ErrorFields::of_error();
+        self.config.error_fields = ErrorFields::of_error();
         self
     }
 
@@ -296,9 +298,9 @@ impl<E> WebhookReceiverBuilder<E> {
     #[must_use]
     pub fn trace_boxed_errors(mut self) -> Self
     where
-        E: crate::BoxedError,
+        E: BoxedError,
     {
-        self.config.error_fields = trace::ErrorFields::of_boxed_error();
+        self.config.error_fields = ErrorFields::of_boxed_error();
         self
     }
 
@@ -535,8 +537,9 @@ where
 
         // The handler takes the envelope by value, so the meta a failure is
         // reported with, to the observer and to the tracing event, is cloned
-        // beforehand, and only when there is something to report to.
-        let reporting = observer.is_some() || trace::ENABLED;
+        // beforehand, and only when there is something to report to: with
+        // the `tracing` feature the failed-delivery event always is.
+        let reporting = observer.is_some() || cfg!(feature = "tracing");
         let meta = reporting.then(|| envelope.meta.clone());
         match self.handler.handle(envelope).await {
             Ok(()) => record_outcome(ResponseStatus::NoContent),
@@ -594,7 +597,7 @@ where
 {
     type Response = ServiceResponse;
     type Error = Infallible;
-    type Future = BoxFuture<Result<ServiceResponse, Infallible>>;
+    type Future = BoxFuture<'static, Result<ServiceResponse, Infallible>>;
 
     fn poll_ready(&mut self, _context: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
@@ -616,6 +619,21 @@ fn empty_response(status: ResponseStatus) -> ServiceResponse {
         .expect("an empty response with a fixed status always builds")
 }
 
+// A `respond` type's conversion, kept here rather than beside the type so
+// `respond` stays free of the `http` cfg: the receiver is the one place that
+// answers with an `http::StatusCode`.
+impl From<ResponseStatus> for http::StatusCode {
+    fn from(status: ResponseStatus) -> Self {
+        match status {
+            ResponseStatus::NoContent => Self::NO_CONTENT,
+            ResponseStatus::BadRequest => Self::BAD_REQUEST,
+            ResponseStatus::Unauthorized => Self::UNAUTHORIZED,
+            ResponseStatus::PayloadTooLarge => Self::PAYLOAD_TOO_LARGE,
+            ResponseStatus::InternalServerError => Self::INTERNAL_SERVER_ERROR,
+        }
+    }
+}
+
 fn body_too_large(limit: usize) -> ResponseStatus {
     ResponseStatus::for_receive_error(&ReceiveError::BodyTooLarge { limit })
 }
@@ -630,9 +648,163 @@ fn record_headers(headers: &HeaderView<'_>) {
 }
 
 fn record_outcome(status: ResponseStatus) -> ResponseStatus {
-    trace::record("outcome", status.label());
+    trace::record("outcome", outcome_label(status));
     trace::record("status", status.as_u16());
     status
+}
+
+/// The value the `octoevents.receive` span records as `outcome`.
+///
+/// A label rather than the code, so `outcome` is a string on every span the
+/// crate opens; the code is the span's `status` field. The vocabulary is the
+/// receive span's own, which is why it lives with the receiver and not on
+/// [`ResponseStatus`].
+const fn outcome_label(status: ResponseStatus) -> &'static str {
+    match status {
+        ResponseStatus::NoContent => "ok",
+        ResponseStatus::BadRequest => "bad_request",
+        ResponseStatus::Unauthorized => "unauthorized",
+        ResponseStatus::PayloadTooLarge => "payload_too_large",
+        ResponseStatus::InternalServerError => "handler_error",
+    }
+}
+
+/// Which fields of the handler's error the failed-delivery event carries:
+/// the receiver's setting, made on the builder.
+///
+/// The event always carries the event meta's identifying fields and the
+/// status. Recording the error's text and source as well needs a bound on
+/// the handler's error type, which the receiver itself does not place, so
+/// the default, [`none`](Self::none), records neither, and `trace_errors` or
+/// `trace_boxed_errors` swaps in a function that reads the error through the
+/// bound it asked for. A function pointer rather than a trait object: the
+/// three are known, capture nothing, and one is picked at build time.
+///
+/// It is one event either way, never a second one for the text: the
+/// receiver knows which it emits, where an `on_error` observer emitting the
+/// text could not tell the receiver to stay quiet.
+///
+/// Without the `tracing` feature the setting has nothing to hold and its
+/// methods are no-ops, so the receiver calls them without a `cfg`.
+struct ErrorFields<E> {
+    #[cfg(feature = "tracing")]
+    emit: Option<fn(&EventMeta, &E, u16)>,
+    // `fn(&E)` rather than `E`: the receiver's `Send` and `Sync` must not
+    // depend on the error type, and neither must this type's.
+    error: PhantomData<fn(&E)>,
+}
+
+// Hand-written for the same reason `Config`'s is: a derive would ask
+// `E: Clone` and `E: Debug`, and the type holds no `E`.
+impl<E> Clone for ErrorFields<E> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<E> Copy for ErrorFields<E> {}
+
+impl<E> ErrorFields<E> {
+    /// The default: the identifying fields and the status, nothing of the
+    /// error.
+    const fn none() -> Self {
+        Self {
+            #[cfg(feature = "tracing")]
+            emit: None,
+            error: PhantomData,
+        }
+    }
+}
+
+#[cfg(feature = "tracing")]
+impl<E> ErrorFields<E> {
+    /// Emits the event for a failed delivery, with the fields this setting
+    /// asks for.
+    fn handler_failed(self, meta: &EventMeta, error: &E, status: u16) {
+        match self.emit {
+            Some(emit) => emit(meta, error, status),
+            None => handler_failed(meta, status, None, None),
+        }
+    }
+
+    /// Whether the event carries the error, for the receiver's `Debug`.
+    fn is_some(self) -> bool {
+        self.emit.is_some()
+    }
+
+    /// The error's [`Display`](std::fmt::Display) as `error` and its
+    /// [`source`](std::error::Error::source) as `source`.
+    const fn of_error() -> Self
+    where
+        E: std::error::Error,
+    {
+        Self {
+            emit: Some(|meta, error, status| {
+                handler_failed(meta, status, Some(error), error.source());
+            }),
+            error: PhantomData,
+        }
+    }
+
+    /// A [`BoxedError`]'s text as `error` and its source as `source`: for an
+    /// error behind a pointer, that error's own; for a `DispatchError` over
+    /// one, the dispatch error's text and the boxed error.
+    const fn of_boxed_error() -> Self
+    where
+        E: BoxedError,
+    {
+        Self {
+            emit: Some(|meta, error, status| {
+                handler_failed(meta, status, Some(error.text()), error.source());
+            }),
+            error: PhantomData,
+        }
+    }
+}
+
+// The stubs are methods, as the struct doc says, so the receiver reads a
+// setting that does not exist without the feature through the same calls.
+#[cfg(not(feature = "tracing"))]
+#[allow(clippy::unused_self)]
+impl<E> ErrorFields<E> {
+    /// Emits nothing: the `tracing` feature is disabled.
+    fn handler_failed(self, _meta: &EventMeta, _error: &E, _status: u16) {}
+
+    /// Never: the `tracing` feature is disabled.
+    fn is_some(self) -> bool {
+        false
+    }
+}
+
+/// The one `tracing::error!` for a failed delivery, so the event's fields
+/// are declared in one place whatever the receiver was asked to record.
+///
+/// `error` is recorded through its `Display` and `source` as an error value
+/// the subscriber walks itself. Two fields rather than the error alone as
+/// one value, because a subscriber's error value must be `Error + 'static`,
+/// and the error `trace_boxed_errors` traces, a
+/// [`DispatchError`](crate::DispatchError) over a boxed error, is no `Error`:
+/// its text and its source are all it can offer, so every shape offers the
+/// same two. The fields it shares with the spans (`delivery_id`, `event`,
+/// `action`, `installation_id`, `status`) are recorded in the forms `trace`
+/// fixes for them.
+#[cfg(feature = "tracing")]
+fn handler_failed(
+    meta: &EventMeta,
+    status: u16,
+    error: Option<&dyn std::fmt::Display>,
+    source: Option<&(dyn std::error::Error + 'static)>,
+) {
+    tracing::error!(
+        delivery_id = meta.delivery_id.as_str(),
+        event = meta.kind.as_str(),
+        action = meta.action.as_ref().map(Action::as_str),
+        installation_id = meta.installation_id,
+        status,
+        error = error.map(tracing::field::display),
+        source,
+        "handler failed"
+    );
 }
 
 #[cfg(test)]
@@ -654,7 +826,7 @@ mod tests {
     #[cfg(feature = "tower")]
     use tower::ServiceExt as _;
 
-    use super::{WebhookReceiverBuilder, empty_response};
+    use super::{WebhookReceiverBuilder, empty_response, outcome_label};
     use crate::{
         Action, DecodeError, Dispatcher, Envelope, EventKind, EventMeta, Handler, ResponseStatus,
         Secret, Verifier, test_support::AppError,
@@ -1377,5 +1549,39 @@ mod tests {
         let response = empty_response(ResponseStatus::BadRequest);
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(response.body().size_hint().exact(), Some(0));
+    }
+
+    #[test]
+    fn converts_every_status_to_the_matching_http_status_code() {
+        for status in [
+            ResponseStatus::NoContent,
+            ResponseStatus::BadRequest,
+            ResponseStatus::Unauthorized,
+            ResponseStatus::PayloadTooLarge,
+            ResponseStatus::InternalServerError,
+        ] {
+            assert_eq!(StatusCode::from(status).as_u16(), status.as_u16());
+        }
+    }
+
+    #[test]
+    fn labels_every_status_with_the_outcome_the_receive_span_records() {
+        // The whole table, one row per status. The labels are the front
+        // page's vocabulary for the receive span's `outcome`, and a dashboard
+        // filters on them verbatim, so each is a literal here, not derived
+        // from the variant's name. That the receiver records them on the
+        // span, beside the code as `status`, is `tests/tracing_outcome.rs`'s
+        // test.
+        let table = [
+            (ResponseStatus::NoContent, "ok"),
+            (ResponseStatus::BadRequest, "bad_request"),
+            (ResponseStatus::Unauthorized, "unauthorized"),
+            (ResponseStatus::PayloadTooLarge, "payload_too_large"),
+            (ResponseStatus::InternalServerError, "handler_error"),
+        ];
+
+        for (status, label) in table {
+            assert_eq!(outcome_label(status), label, "{status:?}");
+        }
     }
 }

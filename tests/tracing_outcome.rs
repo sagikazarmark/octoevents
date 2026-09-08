@@ -128,13 +128,7 @@ fn the_span_records_one_of_four_outcomes_derived_from_the_returned_outcome() {
     let (fields, outcome) =
         traced(dispatcher.dispatch(envelope(EventKind::PullRequest, Some(Action::Opened))));
     assert_eq!(fields.str("outcome"), Some("ok"));
-    assert_eq!(
-        outcome,
-        Outcome {
-            matched: Match::Matched,
-            result: Ok(())
-        }
-    );
+    assert_eq!(unwrapped_outcome(outcome), (Match::Matched, Ok(())));
 
     let (fields, outcome) =
         traced(dispatcher.dispatch(envelope(EventKind::PullRequest, Some(Action::Closed))));
