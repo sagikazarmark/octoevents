@@ -260,9 +260,12 @@ With the `octocrab` feature, octocrab's `WebhookEvent` is an input (on its
 own or inside `Event`) and its per-kind payload structs
 (`PullRequestWebhookEventPayload`, ...) are payloads, so nothing needs to be
 written for a handler over a whole event. The trade-off is whole-model decode:
-a field GitHub changes anywhere in the payload fails the delivery, where a
-view fails only on the fields it names, and a test fixture is a complete
-payload. Two gaps to know before choosing a struct for a kind: the per-kind
+the struct names far more of the payload than a handler reads, and an
+incompatible change to any field it names (removed, renamed, retyped, or made
+null) fails the delivery, where a view names the fields its handler reads and
+fails only on those; a field GitHub adds fails neither. A test fixture for a
+struct is a complete payload. Two gaps to know before choosing a struct for a
+kind: the per-kind
 structs omit the top-level `installation`, `sender`, `repository` and
 `organization` objects (`EventMeta` summarizes them; `WebhookEvent` carries
 them whole, so an `installation` handler that needs the account or the

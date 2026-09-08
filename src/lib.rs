@@ -186,14 +186,17 @@
 //! handler trait and its inputs, and the whole dispatcher) does not depend on
 //! it.
 //!
-//! The trade-off of octocrab's types is whole-model decode: a field GitHub
-//! changes fails the delivery with 500, where a view fails only on the fields
-//! it names, and a test fixture is a complete payload, since the structs
-//! decode no fragment. Some structs leave their main object untyped, as
-//! `serde_json::Value` (`check_suite`, `workflow_run`, `workflow_job`,
-//! `team`). Its per-kind payload structs omit the top-level
-//! `installation`, `sender`, `repository` and `organization` objects, which
-//! its `WebhookEvent` carries and [`EventMeta`] summarizes.
+//! The trade-off of octocrab's types is whole-model decode: the struct names
+//! far more of the payload than a handler reads, and an incompatible change
+//! to any field it names (removed, renamed, retyped, or made null) fails the
+//! delivery with 500, where a view names the fields its handler reads and
+//! fails only on those; a field GitHub adds fails neither. A test fixture for
+//! a struct is a complete payload, since the structs decode no fragment. Some
+//! structs leave their main object untyped, as `serde_json::Value`
+//! (`check_suite`, `workflow_run`, `workflow_job`, `team`). Its per-kind
+//! payload structs omit the top-level `installation`, `sender`, `repository`
+//! and `organization` objects, which its `WebhookEvent` carries and
+//! [`EventMeta`] summarizes.
 //!
 // The receiver types exist only under `http`, and the front page names them
 // under every feature set, so their link definitions are chosen by cfg: an

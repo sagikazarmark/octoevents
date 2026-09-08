@@ -540,9 +540,9 @@ where
 /// A handler wrapping a [`Dispatcher`] reads both to set the policy the
 /// tiers cannot, as [The policy seam](Dispatcher#the-policy-seam) describes;
 /// the receiver never sees this type, since [`Handler::handle`] on the
-/// dispatcher returns `result` alone. Nor does a dispatcher a nested one is
-/// a route of: the inner outcome is on the inner span, and the outer reports
-/// its own route table's match.
+/// dispatcher returns `result` alone. Nor does an outer dispatcher see a
+/// nested one's: the inner outcome is on the inner span, and the outer
+/// reports its own route table's match.
 ///
 /// With the `tracing` feature, the `octoevents.dispatch` span records the
 /// outcome as one label from the same two axes, so a dashboard filters on

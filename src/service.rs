@@ -223,9 +223,9 @@ impl<E> WebhookReceiverBuilder<E> {
     /// where the delivery failed, and why is its source, the application
     /// error. A `thiserror` enum qualifies, and so does a `DispatchError`
     /// over one. `Box<dyn Error + Send + Sync>` and a `DispatchError` over
-    /// it are no `Error`, and are
-    /// [`trace_boxed_errors`](Self::trace_boxed_errors)'; the compiler says
-    /// so, in the crate's words, for the front page's own error type:
+    /// it are no `Error` and go through
+    /// [`trace_boxed_errors`](Self::trace_boxed_errors) instead; the compiler
+    /// says so, in the crate's words, for the front page's own error type:
     ///
     /// ```compile_fail,E0277
     /// use octoevents::{Dispatcher, Secret, Verifier, WebhookReceiverBuilder};
