@@ -15,7 +15,11 @@
 //! `source` is an error value, its text and the chain of sources beneath it,
 //! which a subscriber renders however it likes.
 
-#![cfg(all(feature = "tracing", feature = "http", not(target_arch = "wasm32")))]
+#![cfg(all(
+    feature = "tracing",
+    feature = "http-body",
+    not(target_arch = "wasm32")
+))]
 
 mod common;
 

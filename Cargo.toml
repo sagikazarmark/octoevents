@@ -39,18 +39,23 @@ include = [
 ]
 
 [features]
-default = ["http", "derive"]
+default = ["http-body", "derive"]
 derive = ["dep:octoevents-derive"]
-http = ["dep:http", "dep:http-body", "dep:http-body-util"]
+# The receiver's body handling: `WebhookReceiver`, its builder and `receive`
+# over an `http_body::Body`. The `http` crate itself is not optional: every
+# surveyed Rust runtime hands over an `http::HeaderMap`, so `from_signed` reads
+# one (`docs/research/header-abstractions.md`). `receiver` is the alternative
+# name, deferred; this one says what it turns on in dependency terms.
+http-body = ["dep:http-body", "dep:http-body-util"]
 octocrab = ["dep:octocrab"]
-tower = ["http", "dep:tower-service"]
+tower = ["http-body", "dep:tower-service"]
 tracing = ["dep:tracing"]
 
 [dependencies]
 base64 = "0.23.1"
 bytes = "1.10.1"
 hmac = "0.13.0"
-http = { version = "1.3.1", optional = true }
+http = "1.3.1"
 http-body = { version = "1.0.1", optional = true }
 http-body-util = { version = "0.1.3", optional = true }
 octocrab = { version = "0.54.1", default-features = false, features = [

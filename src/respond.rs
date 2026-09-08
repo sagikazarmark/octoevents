@@ -2,9 +2,9 @@ use crate::{ReceiveError, SignatureError};
 
 /// The transport-independent status selected for a receive outcome.
 ///
-/// [`as_u16`](Self::as_u16) is the code for a transport with its own status
-/// type; with the `http` feature it also converts into `http::StatusCode`,
-/// an impl that lives with the receiver.
+/// It converts into `http::StatusCode` with `From`, which is how the receiver
+/// answers; [`as_u16`](Self::as_u16) is the code for a transport with a
+/// status type of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ResponseStatus {
@@ -51,6 +51,18 @@ impl ResponseStatus {
             | ReceiveError::UnsupportedContentType
             | ReceiveError::BodyRead(_) => Self::BadRequest,
             ReceiveError::BodyTooLarge { .. } => Self::PayloadTooLarge,
+        }
+    }
+}
+
+impl From<ResponseStatus> for http::StatusCode {
+    fn from(status: ResponseStatus) -> Self {
+        match status {
+            ResponseStatus::NoContent => Self::NO_CONTENT,
+            ResponseStatus::BadRequest => Self::BAD_REQUEST,
+            ResponseStatus::Unauthorized => Self::UNAUTHORIZED,
+            ResponseStatus::PayloadTooLarge => Self::PAYLOAD_TOO_LARGE,
+            ResponseStatus::InternalServerError => Self::INTERNAL_SERVER_ERROR,
         }
     }
 }

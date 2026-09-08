@@ -6,9 +6,12 @@
 //! erasure path with such state. It compiles with the rest of the crate's
 //! tests under `just wasm`; it is never run, and it must not compile natively.
 //! Every test needs a receiver or the octocrab model, so the file is empty
-//! without `http` or `octocrab` rather than a set of orphaned definitions.
+//! without `http-body` or `octocrab` rather than a set of orphaned definitions.
 
-#![cfg(all(target_arch = "wasm32", any(feature = "http", feature = "octocrab")))]
+#![cfg(all(
+    target_arch = "wasm32",
+    any(feature = "http-body", feature = "octocrab")
+))]
 // The handlers here bump a counter instead of awaiting a JavaScript binding,
 // which is what a real `async fn handle` would do.
 #![expect(clippy::unused_async_trait_impl)]
@@ -47,7 +50,7 @@ impl From<std::convert::Infallible> for AppError {
     }
 }
 
-#[cfg(feature = "http")]
+#[cfg(feature = "http-body")]
 #[test]
 fn the_receiver_accepts_single_threaded_handler_state() {
     use octoevents::{Verifier, WebhookReceiverBuilder, WebhookSecret};
@@ -74,7 +77,7 @@ fn the_receiver_accepts_single_threaded_handler_state() {
 /// the bounds the `tower` `Service` impl places. On `wasm32` neither binds: a
 /// Worker hands in an `http::Request<worker::Body>`, a JavaScript stream that
 /// is neither `Send` nor `Sync`, to a handler holding `Rc` state.
-#[cfg(feature = "http")]
+#[cfg(feature = "http-body")]
 #[test]
 fn receive_accepts_a_single_threaded_body_and_handler() {
     use std::{
@@ -118,7 +121,7 @@ fn receive_accepts_a_single_threaded_body_and_handler() {
 
 /// The `on_error` observer is bounded like a handler, so a Worker can record
 /// failures into the same single-threaded state, JavaScript values included.
-#[cfg(feature = "http")]
+#[cfg(feature = "http-body")]
 #[test]
 fn the_receiver_accepts_a_single_threaded_error_observer() {
     use octoevents::{EventMeta, Verifier, WebhookReceiverBuilder, WebhookSecret};
@@ -137,7 +140,7 @@ fn the_receiver_accepts_a_single_threaded_error_observer() {
 /// A handler over the envelope reaches the receiver through the dispatcher's
 /// `always` and `fallback` tiers, and the erasure there must keep the relaxed
 /// bound for the receiver to accept the dispatcher.
-#[cfg(feature = "http")]
+#[cfg(feature = "http-body")]
 #[test]
 fn the_receiver_accepts_a_dispatcher_over_single_threaded_always_and_fallback_handlers() {
     use octoevents::{Dispatcher, Verifier, WebhookReceiverBuilder, WebhookSecret};
@@ -183,7 +186,7 @@ fn the_tower_service_impl_accepts_single_threaded_handler_state() {
 /// Handlers over the meta, the envelope and a consumer view reach the
 /// dispatcher through `on` with no feature enabled, and the erasure keeps the
 /// relaxed bound.
-#[cfg(feature = "http")]
+#[cfg(feature = "http-body")]
 #[test]
 fn the_dispatcher_accepts_single_threaded_handlers_over_the_meta_the_envelope_a_view_and_an_event()
 {
@@ -341,14 +344,14 @@ fn the_dispatcher_accepts_single_threaded_handler_state_over_every_input() {
         })
         .build();
 
-    #[cfg(feature = "http")]
+    #[cfg(feature = "http-body")]
     {
         use octoevents::{Verifier, WebhookReceiverBuilder, WebhookSecret};
 
         let _receiver = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("secret")))
             .build(dispatcher);
     }
-    // Without `http` there is no receiver to hand it to; building it was the point.
-    #[cfg(not(feature = "http"))]
+    // Without `http-body` there is no receiver to hand it to; building it was the point.
+    #[cfg(not(feature = "http-body"))]
     drop(dispatcher);
 }

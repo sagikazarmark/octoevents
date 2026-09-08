@@ -2,6 +2,7 @@ use std::{borrow::Cow, fmt};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bytes::Bytes;
+use http::{HeaderMap, HeaderName};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::value::RawValue;
 use thiserror::Error;
@@ -132,224 +133,26 @@ impl RepositoryRef {
     }
 }
 
-/// The headers needed to authenticate and route a GitHub webhook.
+/// The signature to verify, parsed from `headers`, or the header failure
+/// [`Envelope::from_signed`] reports for it: [`SignatureError::Missing`]
+/// when the header is absent, decided here and nowhere else;
+/// [`SignatureError::Malformed`] when its bytes are not a signature, decided
+/// by `Signature::try_from` and nowhere else. [`Verifier::verify`] takes the
+/// parsed value and can only mismatch.
 ///
-/// Use [`From`] with an `http::HeaderMap` when the `http` feature is enabled.
-/// Otherwise [`HeaderView::from_lookup`] asks your transport's map for each
-/// header by the names in [`header`](crate::header), in one call; the
-/// setters build a view one header at a time, for a test or a transport that
-/// has the values in hand.
+/// The value's bytes are parsed, not its `str`: an `http::HeaderValue` need
+/// not be visible ASCII, and one that is not is present and not a signature
+/// (400), never mistaken for an absent header (401), so a corrupting hop and
+/// a missing header stay distinguishable.
 ///
-/// Header-name case is the caller's concern. The view holds values, and
-/// which header a value came from is fixed by the setter that received it,
-/// so it never compares a name. `http::HeaderMap` matches names
-/// case-insensitively; a plain string map does not, and the casing its keys
-/// hold depends on the hop that filled it: HTTP/1.1 carries names as the
-/// sender wrote them (GitHub writes `X-GitHub-Delivery`), HTTP/2 and HTTP/3
-/// lowercase them, and a gateway in between may do either. A transport whose
-/// map keeps the sender's casing lowercases its keys, or compares
-/// case-insensitively, before looking up the lowercase constants. Skip that
-/// step and every delivery is 401 with the secret correct: a map keyed
-/// `X-Hub-Signature-256` answers `None` for `x-hub-signature-256`, so the
-/// view has no signature and [`Envelope::from_signed`] refuses the request as
-/// [`SignatureError::Missing`] before it reads anything else.
-#[derive(Clone, Default)]
-pub struct HeaderView<'a> {
-    // The header's bytes as they arrived, parsed into a `Signature` by
-    // `require_signature`, the one way to reach them, so a value that is not
-    // a string (the `http::HeaderMap` path can hand one over) is kept and
-    // refused as malformed rather than dropped and refused as missing, and so
-    // the value cannot be recorded by accident.
-    signature: Option<Cow<'a, [u8]>>,
-    // Crate-visible so the receiver can record them on its span before
-    // verification.
-    pub(crate) delivery_id: Option<Cow<'a, str>>,
-    pub(crate) event_name: Option<Cow<'a, str>>,
-    content_type: Option<Cow<'a, str>>,
-    target_type: Option<Cow<'a, str>>,
-    target_id: Option<Cow<'a, str>>,
-}
-
-impl fmt::Debug for HeaderView<'_> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("HeaderView")
-            .field("signature", &self.signature.as_ref().map(|_| "[REDACTED]"))
-            .field("delivery_id", &self.delivery_id)
-            .field("event_name", &self.event_name)
-            .field("content_type", &self.content_type)
-            .field("target_type", &self.target_type)
-            .field("target_id", &self.target_id)
-            .finish()
-    }
-}
-
-impl<'a> HeaderView<'a> {
-    /// Creates an empty view.
-    ///
-    /// Every header is named by its own method rather than passed positionally,
-    /// because the protocol headers are all optional strings and transposing
-    /// two of them would otherwise compile silently. Each setter accepts a
-    /// borrowed or an owned value, so a header assembled at run time does not
-    /// need to outlive the view on its own.
-    ///
-    /// ```
-    /// use octoevents::HeaderView;
-    ///
-    /// let headers = HeaderView::new()
-    ///     .signature("sha256=...")
-    ///     .delivery_id("72d3162e-cc78-11e3-81ab-4c9367dc0958")
-    ///     .event_name("pull_request")
-    ///     .content_type("application/json");
-    /// # let _ = headers;
-    /// ```
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Builds a view by asking `lookup` for each header this crate reads.
-    ///
-    /// The one-call constructor for a transport that receives its headers as
-    /// a string map. `lookup` is called once per header with the constant
-    /// from [`header`](crate::header) that names it, always lowercase
-    /// (`x-github-delivery`, not `X-GitHub-Delivery`); a header it answers
-    /// `None` for is left unset, exactly as if its setter had not been called.
-    /// A value may be borrowed from the map or owned, as with the setters.
-    ///
-    /// Matching the case of your map's keys is your concern: the lookup
-    /// receives the lowercase name and the view compares nothing itself. A
-    /// map that kept the sender's casing (HTTP/1.1 does) is lowercased
-    /// first, or asked case-insensitively; see the type docs for which hops
-    /// do what. Forgotten, the mismatch is not a missing delivery ID or event
-    /// name but a 401 on every delivery, the secret notwithstanding: the map
-    /// answers `None` for `x-hub-signature-256` as for every other name, the
-    /// view has no signature, and [`Envelope::from_signed`] reports
-    /// [`SignatureError::Missing`] before it looks at the rest.
-    ///
-    /// A string map holds only strings, so a signature header whose bytes are
-    /// not one never reaches this constructor; the `From<&http::HeaderMap>`
-    /// conversion (`http` feature) can meet one, since an `http::HeaderValue`
-    /// need not be a string. Both refuse a value that is not a signature the
-    /// same way: the header is parsed when it is needed, and anything that is
-    /// not `sha256=` followed by 64 hexadecimal digits is
-    /// [`SignatureError::Malformed`], whichever constructor held it.
-    ///
-    /// ```
-    /// use std::collections::HashMap;
-    ///
-    /// use octoevents::HeaderView;
-    ///
-    /// // What an HTTP/1.1 hop hands over: names as GitHub wrote them.
-    /// let received: HashMap<String, String> = [
-    ///     ("X-Hub-Signature-256", "sha256=..."),
-    ///     ("X-GitHub-Delivery", "72d3162e-cc78-11e3-81ab-4c9367dc0958"),
-    ///     ("X-GitHub-Event", "pull_request"),
-    ///     ("Content-Type", "application/json"),
-    /// ]
-    /// .into_iter()
-    /// .map(|(name, value)| (name.to_ascii_lowercase(), value.to_owned()))
-    /// .collect();
-    ///
-    /// let headers = HeaderView::from_lookup(|name| received.get(name).map(String::as_str));
-    /// # let _ = headers;
-    /// ```
-    #[must_use]
-    pub fn from_lookup<S>(mut lookup: impl FnMut(&str) -> Option<S>) -> Self
-    where
-        S: Into<Cow<'a, str>>,
-    {
-        Self {
-            signature: lookup(header::SIGNATURE).map(|value| bytes_of(value.into())),
-            delivery_id: lookup(header::DELIVERY_ID).map(Into::into),
-            event_name: lookup(header::EVENT_NAME).map(Into::into),
-            content_type: lookup(header::CONTENT_TYPE).map(Into::into),
-            target_type: lookup(header::TARGET_TYPE).map(Into::into),
-            target_id: lookup(header::TARGET_ID).map(Into::into),
-        }
-    }
-
-    /// Sets the `X-Hub-Signature-256` value.
-    #[must_use]
-    pub fn signature(mut self, value: impl Into<Cow<'a, str>>) -> Self {
-        self.signature = Some(bytes_of(value.into()));
-        self
-    }
-
-    /// Sets the `X-GitHub-Delivery` value.
-    #[must_use]
-    pub fn delivery_id(mut self, value: impl Into<Cow<'a, str>>) -> Self {
-        self.delivery_id = Some(value.into());
-        self
-    }
-
-    /// Sets the `X-GitHub-Event` value.
-    #[must_use]
-    pub fn event_name(mut self, value: impl Into<Cow<'a, str>>) -> Self {
-        self.event_name = Some(value.into());
-        self
-    }
-
-    /// Sets the `Content-Type` value.
-    #[must_use]
-    pub fn content_type(mut self, value: impl Into<Cow<'a, str>>) -> Self {
-        self.content_type = Some(value.into());
-        self
-    }
-
-    /// Sets the `X-GitHub-Hook-Installation-Target-Type` value.
-    #[must_use]
-    pub fn target_type(mut self, value: impl Into<Cow<'a, str>>) -> Self {
-        self.target_type = Some(value.into());
-        self
-    }
-
-    /// Sets the `X-GitHub-Hook-Installation-Target-ID` value.
-    #[must_use]
-    pub fn target_id(mut self, value: impl Into<Cow<'a, str>>) -> Self {
-        self.target_id = Some(value.into());
-        self
-    }
-
-    /// The signature to verify, parsed, or the header failure
-    /// [`Envelope::from_signed`] reports for it: [`SignatureError::Missing`]
-    /// when the header is absent, [`SignatureError::Malformed`] when its
-    /// bytes are not a signature. Both are decided here and nowhere else;
-    /// [`Verifier::verify`] takes the parsed value and can only mismatch.
-    ///
-    /// Decidable from the headers alone, so the receiver uses it to refuse
-    /// an unsigned or malformed request before reading the body, and
-    /// `from_signed` uses it so both paths agree on which failure a header
-    /// earns.
-    pub(crate) fn require_signature(&self) -> Result<Signature, SignatureError> {
-        let bytes = self.signature.as_deref().ok_or(SignatureError::Missing)?;
-        Signature::try_from(bytes)
-    }
-}
-
-/// A header value as the bytes [`HeaderView`] keeps for the signature, the
-/// borrow kept when the string was borrowed.
-fn bytes_of(value: Cow<'_, str>) -> Cow<'_, [u8]> {
-    match value {
-        Cow::Borrowed(value) => Cow::Borrowed(value.as_bytes()),
-        Cow::Owned(value) => Cow::Owned(value.into_bytes()),
-    }
-}
-
-#[cfg(feature = "http")]
-impl<'a> From<&'a http::HeaderMap> for HeaderView<'a> {
-    fn from(headers: &'a http::HeaderMap) -> Self {
-        let mut view =
-            Self::from_lookup(|name| headers.get(name).and_then(|value| value.to_str().ok()));
-        // The lookup reads each header as a `str`, which a value that is not
-        // visible ASCII has none of; the signature is kept as bytes instead,
-        // so such a value is parsed and found malformed rather than found
-        // missing.
-        view.signature = headers
-            .get(header::SIGNATURE)
-            .map(|value| Cow::Borrowed(value.as_bytes()));
-        view
-    }
+/// Decidable from the headers alone, so the receiver uses it to refuse an
+/// unsigned or malformed request before reading the body, and `from_signed`
+/// uses it so both paths agree on which failure a header earns.
+pub(crate) fn require_signature(headers: &HeaderMap) -> Result<Signature, SignatureError> {
+    let value = headers
+        .get(&header::SIGNATURE)
+        .ok_or(SignatureError::Missing)?;
+    Signature::try_from(value.as_bytes())
 }
 
 /// A GitHub webhook and its routing metadata.
@@ -489,14 +292,26 @@ pub struct Envelope {
 impl Envelope {
     /// Authenticates the body before constructing an envelope and extracting fields.
     ///
-    /// This is the sans-I/O entry point: the `http`-feature receiver is built
-    /// on it, and a transport that has no `http::Request` (a serverless
-    /// runtime handing over a header map and a body string, say) calls it
-    /// directly with a [`HeaderView`] and the body as [`Bytes`]. Answer with
-    /// the receiver's contract, as [`ResponseStatus`](crate::ResponseStatus):
+    /// This is the sans-I/O entry point: the receiver (`http-body` feature)
+    /// is built on it, and a transport with no `http_body::Body` calls it
+    /// directly with the request's `http::HeaderMap` and the body as
+    /// [`Bytes`], which is the shape every Rust runtime hands over:
+    /// `lambda_http` and `spin-sdk` give an `http::Request`, `worker` and
+    /// `fastly` convert to one, and `aws_lambda_events` carries a `HeaderMap`
+    /// in its event structs. A consumer hand-parsing a raw invocation event
+    /// collects its `(name, value)` pairs into a `HeaderMap`, and header-name
+    /// case is `HeaderName`'s to handle, not theirs. Answer with the
+    /// receiver's contract, as [`ResponseStatus`](crate::ResponseStatus):
     /// [`for_receive_error`](crate::ResponseStatus::for_receive_error) for a
     /// failure here, `NoContent` once the handler has succeeded, and
     /// `InternalServerError` when it has failed.
+    ///
+    /// The headers are read by the names in [`header`](crate::header), by
+    /// which `HeaderMap` matches case-insensitively, and a repeated header
+    /// reads as its first value. The signature is parsed from the header
+    /// value's bytes, so a value that is not visible ASCII is
+    /// [`SignatureError::Malformed`], not `Missing`; for every other header
+    /// such a value reads as absent, and so does an empty one.
     ///
     /// The probe of the payload is best-effort and never fails the
     /// construction; the rules are on [`Envelope::new`], which reads the
@@ -513,24 +328,23 @@ impl Envelope {
     ///
     /// # What the receiver adds
     ///
-    /// `WebhookReceiver` (`http` feature) does three things around this call
-    /// that a transport built directly on it must do for itself, or decide
-    /// to go without. This is the receiver's sequence for a transport that is
-    /// handed a string map and the body; each of the three returns the
+    /// `WebhookReceiver` (`http-body` feature) does three things around this
+    /// call that a transport built directly on it must do for itself, or
+    /// decide to go without. This is the receiver's sequence for a transport
+    /// that is handed the headers and the body; each of the three returns the
     /// status the receiver would, and the handler runs only once all three
     /// have passed:
     ///
     /// ```
-    /// use std::collections::HashMap;
-    ///
+    /// use http::HeaderMap;
     /// use octoevents::{
-    ///     Bytes, DEFAULT_BODY_LIMIT, Envelope, EventKind, Handler, HeaderView, ReceiveError,
-    ///     ResponseStatus, Signature, SignatureError, Verifier, header,
+    ///     Bytes, DEFAULT_BODY_LIMIT, Envelope, EventKind, Handler, ReceiveError, ResponseStatus,
+    ///     Signature, SignatureError, Verifier, header,
     /// };
     ///
     /// async fn receive<H: Handler<Envelope>>(
     ///     verifier: &Verifier,
-    ///     received: &HashMap<String, String>,
+    ///     headers: &HeaderMap,
     ///     body: Bytes,
     ///     handler: &H,
     /// ) -> ResponseStatus {
@@ -539,10 +353,10 @@ impl Envelope {
     ///     // is read, so it never occupies memory. Decidable from the headers,
     ///     // so a transport that streams runs it before buffering;
     ///     // `from_signed` reaches the same answer for one that does not.
-    ///     let signature = received
-    ///         .get(header::SIGNATURE)
+    ///     let signature = headers
+    ///         .get(&header::SIGNATURE)
     ///         .ok_or(SignatureError::Missing)
-    ///         .and_then(|value| value.parse::<Signature>());
+    ///         .and_then(|value| Signature::try_from(value.as_bytes()));
     ///     if let Err(error) = signature {
     ///         return ResponseStatus::for_receive_error(&ReceiveError::from(error));
     ///     }
@@ -558,8 +372,7 @@ impl Envelope {
     ///         return ResponseStatus::for_receive_error(&error);
     ///     }
     ///
-    ///     let headers = HeaderView::from_lookup(|name| received.get(name).map(String::as_str));
-    ///     let envelope = match Envelope::from_signed(verifier, &headers, body) {
+    ///     let envelope = match Envelope::from_signed(verifier, headers, body) {
     ///         Ok(envelope) => envelope,
     ///         Err(error) => return ResponseStatus::for_receive_error(&error),
     ///     };
@@ -593,29 +406,23 @@ impl Envelope {
     /// required-header errors, for an authenticated request.
     pub fn from_signed(
         verifier: &Verifier,
-        headers: &HeaderView<'_>,
+        headers: &HeaderMap,
         body: Bytes,
     ) -> Result<Self, ReceiveError> {
-        let signature = headers.require_signature()?;
+        let signature = require_signature(headers)?;
         verifier.verify(&signature, &body)?;
 
-        if !headers
-            .content_type
-            .as_deref()
-            .is_some_and(is_json_content_type)
-        {
+        if !header_str(headers, &header::CONTENT_TYPE).is_some_and(is_json_content_type) {
             return Err(ReceiveError::UnsupportedContentType);
         }
 
-        let delivery_id = required_header(headers.delivery_id.as_deref(), header::DELIVERY_ID)?;
-        let event_name = required_header(headers.event_name.as_deref(), header::EVENT_NAME)?;
+        let delivery_id = required_header(headers, header::DELIVERY_ID)?;
+        let event_name = required_header(headers, header::EVENT_NAME)?;
 
         let mut envelope = Self::probed(delivery_id, EventKind::from(event_name), body);
-        envelope.meta.target_type = headers.target_type.as_deref().map(TargetType::from);
-        envelope.meta.target_id = headers
-            .target_id
-            .as_deref()
-            .and_then(|value| value.parse().ok());
+        envelope.meta.target_type = header_str(headers, &header::TARGET_TYPE).map(TargetType::from);
+        envelope.meta.target_id =
+            header_str(headers, &header::TARGET_ID).and_then(|value| value.parse().ok());
 
         Ok(envelope)
     }
@@ -742,9 +549,11 @@ pub enum ReceiveError {
     /// A required delivery header was absent or empty.
     #[error("missing {name} header")]
     MissingHeader {
-        /// The header's lowercase name, one of the constants in
-        /// [`header`](crate::header).
-        name: &'static str,
+        /// The header's name, one of the constants in [`header`](crate::header),
+        /// so an assertion compares by type and cannot drift from the constant
+        /// by a string. `Display` renders it lowercase: `missing
+        /// x-github-delivery header`.
+        name: HeaderName,
     },
     /// The request was not configured as JSON.
     #[error(
@@ -753,7 +562,7 @@ pub enum ReceiveError {
     UnsupportedContentType,
     /// The transport failed while the body was being read.
     ///
-    /// Produced by `WebhookReceiver` (`http` feature) when a body frame is an
+    /// Produced by `WebhookReceiver` (`http-body` feature) when a body frame is an
     /// error rather than data or trailers: the connection dropped, the client
     /// stopped sending. Never by [`Envelope::from_signed`], which is handed
     /// the bytes already read; a transport that streams the body itself
@@ -914,11 +723,18 @@ impl DecodeError {
     }
 }
 
-fn required_header<'a>(
-    value: Option<&'a str>,
-    name: &'static str,
-) -> Result<&'a str, ReceiveError> {
-    value
+/// The first value of `name` in `headers` as a string, or `None` when the
+/// header is absent or its value is not visible ASCII: a value the crate
+/// cannot read is a value it does not have. The receiver reads the span's
+/// `delivery_id` and `event` through it too, so the two read a header alike.
+pub(crate) fn header_str<'a>(headers: &'a HeaderMap, name: &HeaderName) -> Option<&'a str> {
+    headers.get(name).and_then(|value| value.to_str().ok())
+}
+
+/// A header the receiving path cannot do without: [`header_str`], with an
+/// empty value refused as [`ReceiveError::MissingHeader`] like an absent one.
+fn required_header(headers: &HeaderMap, name: HeaderName) -> Result<&str, ReceiveError> {
+    header_str(headers, &name)
         .filter(|value| !value.is_empty())
         .ok_or(ReceiveError::MissingHeader { name })
 }

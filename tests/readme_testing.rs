@@ -13,7 +13,7 @@
 //! errors" observer reaches a decode failure's serde message from
 //! `error.source.source()`.
 
-#![cfg(all(feature = "http", not(target_arch = "wasm32")))]
+#![cfg(all(feature = "http-body", not(target_arch = "wasm32")))]
 
 use octoevents::{
     Action, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, Match, Verifier,

@@ -10,7 +10,7 @@
 //! future, and the README's wiring driven end to end with the README's
 //! quickstart handler.
 
-#![cfg(all(feature = "http", not(target_arch = "wasm32")))]
+#![cfg(all(feature = "http-body", not(target_arch = "wasm32")))]
 
 use axum::{Router, body::Body, extract::Request, routing::post};
 use bytes::Bytes;

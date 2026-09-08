@@ -367,7 +367,7 @@ const SECRET: &str = "It's a Secret to Everybody";
 /// A header value that is not `sha256=` and 64 hex digits: GitHub's legacy
 /// SHA-1 header value. Refused from the headers, before the verifier is
 /// asked; the receiver answers 400 and no verify span opens.
-#[cfg(feature = "http")]
+#[cfg(feature = "http-body")]
 const MALFORMED_SIGNATURE: &str = "sha1=757107ea0eb2509fc211221cce984b8a37570b6d";
 
 /// The verifier under test, and the one the receiver is built with; it signs
@@ -455,10 +455,10 @@ fn the_verify_span_records_the_secret_count_the_body_length_and_one_of_two_outco
     }
 }
 
-/// The receiver under test on the `http` paths: a dispatcher behind
+/// The receiver under test on the `http-body` paths: a dispatcher behind
 /// [`verifier`], and the `pull_request` request for [`BODY`] it accepts or
 /// refuses, depending on the signature the request carries.
-#[cfg(feature = "http")]
+#[cfg(feature = "http-body")]
 mod receiving {
     use std::{
         pin::Pin,
@@ -531,7 +531,7 @@ mod receiving {
 /// its code. A dashboard filters on the label and a subscriber renders the
 /// code as a number, so the one is asserted a string and the other an
 /// integer.
-#[cfg(feature = "http")]
+#[cfg(feature = "http-body")]
 #[test]
 fn the_receive_span_records_one_of_five_outcomes_beside_the_status_answered() {
     // One case per label, in the front page's order. The refusals are a
@@ -603,7 +603,7 @@ fn the_receive_span_records_one_of_five_outcomes_beside_the_status_answered() {
 /// field. `outcome` says the class of the answer; `error` says which refusal
 /// it was. The error's source is not on the span: beneath `BodyRead` it is
 /// the transport's own text, which `tests/tracing_hygiene.rs` holds off it.
-#[cfg(feature = "http")]
+#[cfg(feature = "http-body")]
 #[test]
 fn a_refusal_before_any_handler_ran_records_its_error_on_the_receive_span() {
     // Two 400s the outcome alone cannot tell apart: a malformed signature and
@@ -654,7 +654,7 @@ fn a_refusal_before_any_handler_ran_records_its_error_on_the_receive_span() {
 /// is asked, so the receive span records the refusal and no verify span opens.
 /// The refusal is told apart from a mismatch by the receive span's `outcome`
 /// and `error`, not by an outcome of a span that never ran.
-#[cfg(feature = "http")]
+#[cfg(feature = "http-body")]
 #[test]
 fn a_malformed_signature_header_is_refused_before_any_verify_span_opens() {
     let receiver = receiving::receiver(dispatcher());
@@ -683,7 +683,7 @@ fn a_malformed_signature_header_is_refused_before_any_verify_span_opens() {
 /// envelope, and both must record `delivery_id` as a string, not one a string
 /// and one an integer or a `Debug` rendering. `outcome` is a label on every
 /// span, with the HTTP status an integer field of its own on the receive span.
-#[cfg(feature = "http")]
+#[cfg(feature = "http-body")]
 #[test]
 fn the_receive_and_dispatch_spans_record_their_shared_fields_in_the_same_form() {
     let receiver = receiving::receiver(dispatcher());
@@ -719,7 +719,7 @@ fn the_receive_and_dispatch_spans_record_their_shared_fields_in_the_same_form() 
 /// detail behind the receive span's `unauthorized` outcome, one more span
 /// per delivery at scale, so it opens at DEBUG: a subscriber at INFO never
 /// sees it, and one at DEBUG sees all three.
-#[cfg(feature = "http")]
+#[cfg(feature = "http-body")]
 #[test]
 fn the_verify_span_opens_at_debug_and_the_receive_and_dispatch_spans_at_info() {
     use tracing::Level;

@@ -17,7 +17,11 @@
 //! The fixtures use the receiver, so the harness exists with `http` and
 //! `tracing` together.
 
-#![cfg(all(feature = "http", feature = "tracing", not(target_arch = "wasm32")))]
+#![cfg(all(
+    feature = "http-body",
+    feature = "tracing",
+    not(target_arch = "wasm32")
+))]
 
 #[test]
 fn diagnostics_say_what_the_crate_promises() {
