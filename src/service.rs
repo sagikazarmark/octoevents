@@ -1295,9 +1295,9 @@ mod tests {
         // A signed request reaches the read loop and reports the body
         // failure with the status `ReceiveError::BodyRead` maps to. That the
         // loop produces that variant is `read_body`'s own test below; that
-        // the receiver puts it on the receive span as `error` and `source`,
-        // where a 400 for a malformed header would read differently, is
-        // `tests/tracing_outcome.rs`'s.
+        // the receiver records its fixed text on the receive span as `error`
+        // while omitting `source` is covered by `tests/tracing_outcome.rs`,
+        // where another 400 for a malformed header reads differently.
         let signed = verifier().sign(b"{}");
         assert_eq!(
             receiver().receive(request(Some(&signed))).await.status(),
