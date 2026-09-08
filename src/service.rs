@@ -143,8 +143,8 @@ impl<E> WebhookReceiverBuilder<E> {
     /// The observer runs only when a handler ran and failed. A receive
     /// failure (a signature that does not verify, a missing header, an
     /// unsupported content type, a body frame the transport could not
-    /// produce, a body over the limit) is a status code and a span field,
-    /// never a handler error, and a `ping` short-circuited by
+    /// produce, a body over the limit) is a status code and fields on the
+    /// receive span, never a handler error, and a `ping` short-circuited by
     /// [`handle_ping`](Self::handle_ping) reaches no handler; neither calls
     /// it.
     ///
@@ -430,9 +430,13 @@ where
     /// Build the receiver over another secret and the same request is
     /// answered 401.
     ///
-    /// Of the body's error type only `Display` is asked, which every
-    /// transport's error has: a frame the transport cannot produce is
-    /// answered 400, the status [`ReceiveError::BodyRead`] maps to.
+    /// The body's error type must be `Display`. `http_body` asks nothing of
+    /// it, so this is a requirement the receiver adds, and one the transports
+    /// the crate is used with meet: hyper's, axum's and a Worker's error types,
+    /// and `Infallible`. It is what lets a frame the transport cannot produce
+    /// be answered 400 as [`ReceiveError::BodyRead`], with the transport's
+    /// text where the receive span's `source` field shows it, and nothing
+    /// else of the transport's type.
     ///
     /// This path never boxes and never crosses a Tower or native executor
     /// boundary, so on `wasm32` a Cloudflare Worker can hand an
@@ -481,6 +485,8 @@ where
                 event = tracing::field::Empty,
                 outcome = tracing::field::Empty,
                 status = tracing::field::Empty,
+                error = tracing::field::Empty,
+                source = tracing::field::Empty,
             )
         )
     )]
@@ -682,12 +688,36 @@ fn record_outcome(status: ResponseStatus) -> ResponseStatus {
 }
 
 /// Answers a request refused before any handler ran: the status the contract
-/// maps `error` to, recorded as the span's outcome. Every pre-handler failure
-/// is an error value and goes through here, so none selects a status on its
-/// own.
+/// maps `error` to, recorded as the span's outcome, and the error itself as
+/// the span's `error` and `source`, so the span says which refusal it was
+/// where `outcome` says only its class. Every pre-handler failure is an error
+/// value and goes through here, so none selects a status on its own.
 fn refuse(error: &ReceiveError) -> ResponseStatus {
-    record_outcome(ResponseStatus::for_receive_error(error))
+    let status = record_outcome(ResponseStatus::for_receive_error(error));
+    record_refusal(error);
+    status
 }
+
+/// Records the refusal on the receive span as the failed-delivery event
+/// records a handler's error: its text as `error`, through
+/// `tracing::field::display`, and its source, when it has one, as `source`,
+/// an error value the subscriber walks itself.
+///
+/// The event fixed those two fields' forms first, so the span records them
+/// the same way and `error` is one field to a subscriber wherever it appears.
+/// A refusal with no source leaves `source` `Empty`, which a subscriber does
+/// not render.
+#[cfg(feature = "tracing")]
+fn record_refusal(error: &ReceiveError) {
+    trace::record("error", tracing::field::display(error));
+    if let Some(source) = std::error::Error::source(error) {
+        trace::record("source", source);
+    }
+}
+
+/// Records nothing: the `tracing` feature is disabled.
+#[cfg(not(feature = "tracing"))]
+fn record_refusal(_error: &ReceiveError) {}
 
 /// The value the `octoevents.receive` span records as `outcome`.
 ///
@@ -1267,8 +1297,11 @@ mod tests {
             StatusCode::UNAUTHORIZED
         );
         // A signed request reaches the read loop and reports the body
-        // failure with the status `ReceiveError::BodyRead` maps to; that the
-        // loop produces that variant is `read_body`'s own test.
+        // failure with the status `ReceiveError::BodyRead` maps to. That the
+        // loop produces that variant is `read_body`'s own test below; that
+        // the receiver puts it on the receive span as `error` and `source`,
+        // where a 400 for a malformed header would read differently, is
+        // `tests/tracing_outcome.rs`'s.
         let signed = verifier().sign(b"{}");
         assert_eq!(
             receiver().receive(request(Some(&signed))).await.status(),

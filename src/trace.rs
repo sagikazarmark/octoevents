@@ -5,8 +5,9 @@
 //! in the `# Tracing` section of the crate front page; this module implements
 //! the part every span shares and explains only the choices the
 //! implementation makes. What only the receiver emits, the failed-delivery
-//! event and the setting that decides which fields of the error it carries,
-//! lives with the receiver in `service`.
+//! event, the setting that decides which fields of the error it carries, and
+//! the `error` and `source` a receive span records for a refusal, lives with
+//! the receiver in `service`.
 //!
 //! The spans this crate opens (`octoevents.verify`, `octoevents.receive`,
 //! `octoevents.dispatch`) declare their late-bound fields empty and fill them
@@ -20,7 +21,9 @@
 //! dispatch spans (the header values on one, the envelope's on the other),
 //! and `outcome` is a `&'static str` label on all three, with the receive
 //! span's HTTP code in its own `status` field. A `Display` value goes through
-//! [`record_display`] for the same reason.
+//! [`record_display`] for the same reason, and the `error` and `source` the
+//! receive span records for a refusal take the forms the failed-delivery
+//! event fixed for those two names.
 //!
 //! Nothing secret-derived may pass through here: signature header values,
 //! computed MACs, and secrets are never recorded. `tests/tracing_hygiene.rs`
