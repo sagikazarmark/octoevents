@@ -646,15 +646,20 @@ fn record_outcome(status: ResponseStatus) -> ResponseStatus {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
+    use std::{
+        collections::VecDeque,
+        pin::Pin,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        task::{Context, Poll},
     };
 
     use bytes::Bytes;
     use hmac::{Hmac, KeyInit, Mac};
-    use http::{Request, StatusCode};
-    use http_body::Body as _;
+    use http::{HeaderMap, Request, StatusCode};
+    use http_body::{Body as _, Frame};
     use http_body_util::Full;
     use sha2::Sha256;
     #[cfg(feature = "tower")]
@@ -722,13 +727,69 @@ mod tests {
         }
     }
 
+    /// A body as it arrives over a real connection: one frame per poll and
+    /// the default size hint, so the receiver has no total to check up front
+    /// and must count as it reads. `polls` says how far it read, which tells
+    /// a 413 answered from inside the read loop from one the size hint
+    /// answered before the first poll.
+    struct Frames {
+        frames: VecDeque<Frame<Bytes>>,
+        polls: Arc<AtomicUsize>,
+    }
+
+    impl Frames {
+        fn new(frames: impl IntoIterator<Item = Frame<Bytes>>) -> Self {
+            Self {
+                frames: frames.into_iter().collect(),
+                polls: Arc::default(),
+            }
+        }
+
+        /// One data frame per chunk.
+        fn data(chunks: &[&'static [u8]]) -> Self {
+            Self::new(
+                chunks
+                    .iter()
+                    .map(|chunk| Frame::data(Bytes::from_static(chunk))),
+            )
+        }
+
+        fn polls(&self) -> Arc<AtomicUsize> {
+            Arc::clone(&self.polls)
+        }
+    }
+
+    impl http_body::Body for Frames {
+        type Data = Bytes;
+        type Error = std::convert::Infallible;
+
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+            self.polls.fetch_add(1, Ordering::Relaxed);
+            Poll::Ready(self.frames.pop_front().map(Ok))
+        }
+    }
+
     fn request(body: &'static [u8], event: &str) -> Request<Full<Bytes>> {
+        request_over(
+            Full::new(Bytes::from_static(body)),
+            event,
+            &signature(b"secret", body),
+        )
+    }
+
+    /// A request over a body the test shapes itself, carrying `signature` as
+    /// its signature header: `signature(b"secret", ..)` over the bytes the
+    /// body yields authenticates, anything else does not.
+    fn request_over<B>(body: B, event: &str, signature: &str) -> Request<B> {
         Request::builder()
             .header("content-type", "application/json")
             .header("x-github-delivery", "delivery")
             .header("x-github-event", event)
-            .header("x-hub-signature-256", signature(b"secret", body))
-            .body(Full::new(Bytes::from_static(body)))
+            .header("x-hub-signature-256", signature)
+            .body(body)
             .unwrap()
     }
 
@@ -1203,11 +1264,6 @@ mod tests {
 
     #[tokio::test]
     async fn refuses_an_unsigned_request_without_reading_the_body() {
-        use std::{
-            pin::Pin,
-            task::{Context, Poll},
-        };
-
         // A body that fails on first poll: reaching the read loop shows up as
         // 400, so a 401 proves the signature headers were decisive alone.
         struct FailingBody;
@@ -1219,7 +1275,7 @@ mod tests {
             fn poll_frame(
                 self: Pin<&mut Self>,
                 _context: &mut Context<'_>,
-            ) -> Poll<Option<Result<http_body::Frame<Bytes>, Self::Error>>> {
+            ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
                 Poll::Ready(Some(Err("body must not be read")))
             }
         }
@@ -1254,14 +1310,114 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stops_at_the_body_limit_before_authentication() {
+    async fn refuses_an_unsigned_oversized_request_on_its_headers() {
+        // The body's exact size hint is over the limit, so 413 would say the
+        // limit was checked first; 401 says the signature headers were.
         let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
-            .body_limit(1)
+            .body_limit(64)
             .build(|_: Envelope| async { Ok::<_, ()>(()) });
 
-        let response = receiver.receive(request(b"{}", "push")).await;
+        let unsigned = without_header(&[b' '; 65], "push", "x-hub-signature-256");
+        let response = receiver.receive(unsigned).await;
 
-        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn stops_at_the_body_limit_before_authentication() {
+        // Carrying the signature that earns 401 in
+        // `maps_authentication_and_request_errors`: were it verified first,
+        // the answer would be 401 here too. Once with an exact size hint, so
+        // the limit answers before the first poll, and once streamed, so it
+        // answers from inside the read loop.
+        const OVERSIZED: &[u8] = &[b' '; 65];
+        let receiver = || {
+            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+                .body_limit(64)
+                .build(|_: Envelope| async { Ok::<_, ()>(()) })
+        };
+
+        let hinted = Full::new(Bytes::from_static(OVERSIZED));
+        let response = receiver()
+            .receive(request_over(hinted, "push", WRONG_SIGNATURE))
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "an exact size hint over the limit is refused before verification"
+        );
+
+        let streamed = Frames::data(&[&OVERSIZED[..32], &OVERSIZED[32..]]);
+        let response = receiver()
+            .receive(request_over(streamed, "push", WRONG_SIGNATURE))
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "a streamed body crossing the limit is refused before verification"
+        );
+    }
+
+    #[tokio::test]
+    async fn enforces_the_body_limit_across_frames() {
+        // Three frames of 5, 5 and 3 bytes: no frame is over an 8-byte limit
+        // on its own, so only the running total can refuse the body. The
+        // signature is over the concatenation, so a 204 also says the frames
+        // were assembled in order.
+        const CHUNKS: &[&[u8]] = &[br#"{"a":"#, br#"1,"b""#, b":2}"];
+        const PAYLOAD: &[u8] = br#"{"a":1,"b":2}"#;
+        let signed = signature(b"secret", PAYLOAD);
+        let receiver = |limit: usize| {
+            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+                .body_limit(limit)
+                .build(|_: Envelope| async { Ok::<_, ()>(()) })
+        };
+
+        let body = Frames::data(CHUNKS);
+        let polls = body.polls();
+        let response = receiver(8)
+            .receive(request_over(body, "push", &signed))
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "the second frame takes the total past the limit"
+        );
+        assert_eq!(
+            polls.load(Ordering::Relaxed),
+            2,
+            "answered from inside the read loop at the frame that crossed the limit: \
+             the size hint would have polled none, reading the body out would have polled four"
+        );
+
+        let body = Frames::data(CHUNKS);
+        let response = receiver(PAYLOAD.len())
+            .receive(request_over(body, "push", &signed))
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::NO_CONTENT,
+            "a total exactly at the limit is within it"
+        );
+    }
+
+    #[tokio::test]
+    async fn trailers_do_not_count_toward_the_body_limit() {
+        // Under a zero limit a single counted byte is refused, so a 204 says
+        // the trailers were passed over; the signature is over the empty
+        // payload, so it also says they left no bytes behind.
+        let mut trailers = HeaderMap::new();
+        trailers.insert("x-checksum", "crc32c=00000000".parse().unwrap());
+        let body = Frames::new([Frame::trailers(trailers)]);
+        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+            .body_limit(0)
+            .build(|_: Envelope| async { Ok::<_, ()>(()) });
+
+        let response = receiver
+            .receive(request_over(body, "push", &signature(b"secret", b"")))
+            .await;
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
