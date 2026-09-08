@@ -82,11 +82,14 @@ reads the "Changed" and "Removed" lists first.
   `on_action(kind, action, handler)` are one `on(matcher, handler)`;
   `fallback` takes a handler over the envelope and may be called more than
   once, forming a chain.
-- **Breaking:** `Dispatcher::dispatch` returns `Outcome<E>` instead of
-  `Result<(), E>`. The `Handler<Envelope>` impl still returns the plain
-  result, and its error is `DispatchError<E>`.
-- **Breaking:** `Dispatcher<E>` requires `E: From<DecodeError> + 'static`:
-  a handler over a decoded input reports a failed decode through it.
+- **Breaking:** `Dispatcher::dispatch` returns `Outcome<E>`, a
+  `#[non_exhaustive]` struct, instead of `Result<(), E>`. The
+  `Handler<Envelope>` impl still returns the plain result, and its error is
+  `DispatchError<E>`.
+- **Breaking:** `DispatcherBuilder::on` requires `E: From<DecodeError>`, the
+  conversion of a failed decode for the handler's input; `always`,
+  `fallback` and `build` do not, so a dispatcher of always and fallback
+  handlers builds over any error type.
 - **Breaking:** `WebhookReceiver<H, E>` is `WebhookReceiver<H>`; the error
   is the handler's.
 - `WebhookReceiver::receive` and the Tower `Service` impl borrow the handler
