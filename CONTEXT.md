@@ -176,14 +176,16 @@ _Avoid_: Validate (collides with schema validation, despite GitHub's docs)
 
 **Signature**:
 The `X-Hub-Signature-256` value parsed once, as the type `Signature`: the 32
-MAC bytes, nothing else. A header value becomes one through `str::parse`, or
-`TryFrom<&[u8]>` for a transport with the header's bytes and no string, and
-that parse is the one origin of `Malformed`; `Display` renders the header
-value back, `Debug` is redacted, equality is constant-time. What
-`Verifier::sign` produces and `Verifier::verify` takes, so the verifier is
-handed a settled format and can only mismatch. In prose, "signature" alone
-names the value once the header is in context; "signature header" names the
-wire string before parsing, as "event name" does for the kind.
+MAC bytes, nothing else. A header value becomes one through `TryFrom<&[u8]>`,
+the path `Envelope::from_signed` and the receiver take over the
+`HeaderValue`'s bytes, or `str::parse`, for a consumer parsing a string in a
+test or their own early-out, and that parse is the one origin of `Malformed`;
+`Display` renders the header value back, `Debug` is redacted, equality is
+constant-time. What `Verifier::sign` produces and `Verifier::verify` takes,
+so the verifier is handed a settled format and can only mismatch. In prose,
+"signature" alone names the value once the header is in context; "signature
+header" names the wire string before parsing, as "event name" does for the
+kind.
 _Avoid_: MAC or tag as the type (the bytes inside, not the parsed header value), digest (a hash, not a MAC), signature header as the type (the unparsed string), `HeaderValue` (the `http` type it may arrive as)
 
 **Verifier**:

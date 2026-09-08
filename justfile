@@ -4,7 +4,7 @@
 # lint then vary the feature set, the target and the toolchain on purpose.
 #
 # The rustdoc tier exists because a doctest run does not resolve links: the
-# front page links to items behind `http`, and only `cargo doc` under
+# front page links to items behind `http-body`, and only `cargo doc` under
 # `--no-default-features` says whether they still resolve without it.
 #
 # The matrix tier runs the suite at the three feature extremes, and between

@@ -14,10 +14,14 @@
 //! them is re-blessed with `TRYBUILD=overwrite cargo test --all-features
 //! --test diagnostics`, and the diff is reviewed as the message is.
 //!
-//! The fixtures use the receiver, so the harness exists with `http` and
+//! The fixtures use the receiver, so the harness exists with `http-body` and
 //! `tracing` together.
 
-#![cfg(all(feature = "http", feature = "tracing", not(target_arch = "wasm32")))]
+#![cfg(all(
+    feature = "http-body",
+    feature = "tracing",
+    not(target_arch = "wasm32")
+))]
 
 #[test]
 fn diagnostics_say_what_the_crate_promises() {

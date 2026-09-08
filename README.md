@@ -578,16 +578,21 @@ let app: Router = Router::new().route("/webhook", post(move |request: Request| {
 }));
 ```
 
-**Without the `http` feature**, the core is sans-I/O. A transport with no
-`http::Request` (a serverless runtime handing over a header map and a body
-string, say) builds a `HeaderView` with `HeaderView::from_lookup`, calls
-`Envelope::from_signed` with the verifier and the body as `Bytes`, and answers
-with `ResponseStatus`. The docs of `from_signed` show, as code to copy, the
-three things the receiver does that this path does not: refusing an unsigned
-request before reading the body, bounding the body, and short-circuiting
-`ping`. `Dispatcher::dispatch` is a plain `async fn` with no runtime of its
-own. The `worker` example runs the receiver on Cloudflare Workers through
-`receive`.
+**Without the `http-body` feature**, the core is sans-I/O: the verifier,
+`Envelope::from_signed` over an `http::HeaderMap` and the body as `Bytes`, the
+dispatcher and the wire format. That is the shape every surveyed Rust runtime
+hands over: `lambda_http`, `spin-sdk` and `wstd` give an `http::Request`, `worker`
+and `fastly` convert to one (`HeaderMap::from(&request.headers())` on a
+Worker), and `aws_lambda_events` carries a `HeaderMap` in its event structs; a
+consumer hand-parsing a raw invocation event collects its `(name, value)`
+pairs into a `HeaderMap` and header-name case is `HeaderName`'s to handle. A
+transport calls `from_signed` with the verifier, the map and the body, and
+answers with `ResponseStatus`. The docs of `from_signed` show, as code to
+copy, the three things the receiver does that this path does not: refusing an
+unsigned request before reading the body, bounding the body, and
+short-circuiting `ping`. `Dispatcher::dispatch` is a plain `async fn` with no
+runtime of its own. The `worker` example runs the receiver on Cloudflare
+Workers through `receive`.
 
 ## Tracing
 
@@ -664,7 +669,7 @@ matching handler and aggregates.
 
 | Feature | Default | Provides |
 | --- | --- | --- |
-| `http` | yes | `WebhookReceiver` and its builder over `http::Request`, `HeaderView` from an `http::HeaderMap`, `ResponseStatus` into `http::StatusCode` |
+| `http-body` | yes | `WebhookReceiver` and its builder, with `receive` over an `http::Request` whose body is an `http_body::Body` |
 | `derive` | yes | `#[derive(Payload)]`, declaring a serde view's kind with `#[payload(EventKind::..)]`. Without it the same impl is three lines by hand |
 | `tower` | no | `tower_service::Service` for `WebhookReceiver`, so it mounts with `post_service` |
 | `octocrab` | no | `FromEnvelope` for octocrab's `WebhookEvent`, `Payload` for its per-kind structs, `Envelope::decode_event`. Makes octocrab's pre-1.0 types part of this crate's public API |
@@ -672,6 +677,10 @@ matching handler and aggregates.
 
 The core (envelope, verification, the handler trait and its inputs, the
 dispatcher) depends on none of them and builds for `wasm32-unknown-unknown`.
+`Envelope::from_signed` over an `http::HeaderMap`, the `header` constants and
+`ResponseStatus` into `http::StatusCode` are part of it: the `http` crate is
+not optional, since every surveyed Rust runtime hands over its types, and it
+adds one entry to the dependency tree.
 
 ## License
 

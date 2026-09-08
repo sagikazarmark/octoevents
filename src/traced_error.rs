@@ -2,7 +2,7 @@
 //! error: any [`Error`], under a name the crate can attach a message to.
 //!
 //! Gated as `boxed_error` is, for the same reason: the receiver is its only
-//! consumer, and the receiver exists with `http`.
+//! consumer, and the receiver exists with `http-body`.
 
 use std::error::Error;
 

@@ -57,9 +57,9 @@ reads the "Changed" and "Removed" lists first.
   and `trace_boxed_errors` asks `BoxedError`, an error behind a pointer or a
   `DispatchError` over one; asking `trace_errors` of a boxed error is a
   compile error that names `trace_boxed_errors`.
-- `HeaderView::from_lookup`: a view built by asking a string map for each
-  header this crate reads.
-- The `header` module: the lowercase names of the headers the crate reads.
+- The `header` module: the names of the headers the crate reads, as
+  `http::HeaderName` constants, for a transport's pre-body signature check
+  and a test's `http::Request::builder()`.
 - `EventMeta::new` and `RepositoryRef::new` constructors.
 - `From<&str>` on `EventKind`, `Action` and `TargetType`; `Display` on
   `TargetType` and `Match`; `Hash` on `EventMeta` and `RepositoryRef`.
@@ -121,7 +121,24 @@ reads the "Changed" and "Removed" lists first.
   does not; hyper's, axum's and a Worker's error types and `Infallible`
   have it. What the receiver renders into `BodyError`.
 - **Breaking:** `ReceiveError::MissingHeader(&'static str)` is the struct
-  variant `MissingHeader { name }`.
+  variant `MissingHeader { name }`, and `name` is an `http::HeaderName`, so
+  an assertion compares it to a `header` constant by type; the `Display`
+  text is unchanged.
+- **Breaking:** `Envelope::from_signed` takes `&http::HeaderMap` where it
+  took `&HeaderView`: `&HeaderView::from(&headers)` becomes `&headers`. The
+  order of checks and the statuses are unchanged; a repeated header reads as
+  its first value, a signature value that is not visible ASCII is
+  `SignatureError::Malformed` (400), and any other header with such a value
+  reads as absent.
+- **Breaking:** The `http` feature is `http-body`, named for what it turns
+  on: `WebhookReceiver`, its builder and `receive` over an `http_body::Body`.
+  `features = ["http"]` becomes `["http-body"]`; `tower` implies it, and the
+  default features are `http-body` and `derive`. The `http` crate itself is
+  no longer optional: `from_signed` reads its `HeaderMap`, the `header`
+  constants are its `HeaderName`s, and `From<ResponseStatus> for
+  http::StatusCode` is unconditional. Every surveyed Rust runtime already
+  depends on it non-optionally (`docs/research/header-abstractions.md`), and
+  it adds one entry to the no-default dependency tree.
 - **Breaking:** `Secret` is `WebhookSecret`: GitHub's term in full, beside
   `WebhookReceiver`, and no longer a collision with `secrecy::Secret` in a
   consumer's imports. `VerifyError` is `SignatureError`, named for its
@@ -157,14 +174,21 @@ reads the "Changed" and "Removed" lists first.
   `octoevents.dispatch` span names an unmatched delivery's outcome
   `unmatched_ok`/`unmatched_error` where it said
   `fallback_ok`/`fallback_error`.
-- The default features are `http` and `derive`.
+- The default features are `http-body` and `derive`.
 - The derive crate depends on `syn 3`, so a consumer with default features
   compiles one `syn`.
 
 ### Removed
 
+- **Breaking:** `HeaderView`, shipped in 0.1.0 with `From<&http::HeaderMap>`
+  and the setters; `Envelope::from_signed` takes the `http::HeaderMap`
+  itself. Every Rust runtime surveyed hands over an `http::HeaderMap` or an
+  `http::Request`, so the type stood between the headers a consumer held and
+  the constructor that read them and did nothing `HeaderMap` does not; a
+  consumer with `(name, value)` pairs collects them into a `HeaderMap`, and
+  `HeaderName` parsing handles the case of the names.
 - **Breaking:** `Envelope::from_signed_parts`; use `Envelope::from_signed`
-  with `HeaderView::from(&headers)`.
+  with the request's `HeaderMap`.
 - **Breaking:** `Default` on `RepositoryRef` and on the former `Common`; use
   the `new` constructors.
 

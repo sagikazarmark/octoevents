@@ -6,7 +6,7 @@ use std::{
 use std::{fmt, future::Future, marker::PhantomData, pin::pin, sync::Arc};
 
 use bytes::{Bytes, BytesMut};
-use http::{Request, Response};
+use http::{HeaderMap, Request, Response};
 use http_body::Body;
 use http_body_util::{BodyExt as _, Empty};
 #[cfg(feature = "tower")]
@@ -17,8 +17,10 @@ use crate::runtime::BoxFuture;
 #[cfg(feature = "tracing")]
 use crate::{Action, BoxedError, TracedError};
 use crate::{
-    BodyError, DEFAULT_BODY_LIMIT, Envelope, EventKind, EventMeta, Handler, HeaderView, MaybeSend,
-    MaybeSync, ReceiveError, ResponseStatus, Verifier, trace,
+    BodyError, DEFAULT_BODY_LIMIT, Envelope, EventKind, EventMeta, Handler, MaybeSend, MaybeSync,
+    ReceiveError, ResponseStatus, Verifier,
+    envelope::{header_str, require_signature},
+    header, trace,
 };
 
 type ServiceResponse = Response<Empty<Bytes>>;
@@ -511,8 +513,8 @@ where
         B::Error: fmt::Display,
     {
         let (parts, body) = request.into_parts();
-        let headers = HeaderView::from(&parts.headers);
-        record_headers(&headers);
+        let headers = &parts.headers;
+        record_headers(headers);
 
         // A request whose signature header is absent or not a signature is
         // refused on the headers alone, so unsigned traffic never occupies
@@ -520,7 +522,7 @@ where
         // check for transports that construct envelopes directly, and parses
         // the header again for the verifier; the header is 71 bytes, so the
         // second parse is cheaper than handing the first one across.
-        if let Err(error) = headers.require_signature() {
+        if let Err(error) = require_signature(headers) {
             return refuse(&error.into());
         }
 
@@ -537,7 +539,7 @@ where
             Err(error) => return refuse(&error),
         };
 
-        let envelope = match Envelope::from_signed(verifier, &headers, bytes) {
+        let envelope = match Envelope::from_signed(verifier, headers, bytes) {
             Ok(envelope) => envelope,
             Err(error) => return refuse(&error),
         };
@@ -631,21 +633,6 @@ fn empty_response(status: ResponseStatus) -> ServiceResponse {
         .expect("an empty response with a fixed status always builds")
 }
 
-// A `respond` type's conversion, kept here rather than beside the type so
-// `respond` stays free of the `http` cfg: the receiver is the one place that
-// answers with an `http::StatusCode`.
-impl From<ResponseStatus> for http::StatusCode {
-    fn from(status: ResponseStatus) -> Self {
-        match status {
-            ResponseStatus::NoContent => Self::NO_CONTENT,
-            ResponseStatus::BadRequest => Self::BAD_REQUEST,
-            ResponseStatus::Unauthorized => Self::UNAUTHORIZED,
-            ResponseStatus::PayloadTooLarge => Self::PAYLOAD_TOO_LARGE,
-            ResponseStatus::InternalServerError => Self::INTERNAL_SERVER_ERROR,
-        }
-    }
-}
-
 /// Reads `body` into memory, within `limit` bytes.
 ///
 /// The one place the receiver touches the transport, so every way a body can
@@ -689,11 +676,15 @@ where
     Ok(bytes.freeze())
 }
 
-fn record_headers(headers: &HeaderView<'_>) {
-    if let Some(delivery_id) = headers.delivery_id.as_deref() {
+/// Records `delivery_id` and `event` on the receive span as soon as the
+/// headers are read, before verification, so a refused request is still
+/// identifiable. Nothing else off the headers is recorded, the signature
+/// least of all.
+fn record_headers(headers: &HeaderMap) {
+    if let Some(delivery_id) = header_str(headers, &header::DELIVERY_ID) {
         trace::record("delivery_id", delivery_id);
     }
-    if let Some(event) = headers.event_name.as_deref() {
+    if let Some(event) = header_str(headers, &header::EVENT_NAME) {
         trace::record("event", event);
     }
 }

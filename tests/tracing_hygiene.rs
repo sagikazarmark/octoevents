@@ -11,7 +11,11 @@
 //! in `common` saw, down to TRACE so the verify span, the one nearest the
 //! secret, is among them, and checks the text each value carries.
 
-#![cfg(all(feature = "tracing", feature = "http", not(target_arch = "wasm32")))]
+#![cfg(all(
+    feature = "tracing",
+    feature = "http-body",
+    not(target_arch = "wasm32")
+))]
 
 mod common;
 

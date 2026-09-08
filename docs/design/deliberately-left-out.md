@@ -2,11 +2,13 @@
 
 Some requests come up in every webhook library, and some came up while this
 crate's handler API was reviewed. The ones below are declined on purpose, so
-the question is answered once. The evidence for the first five is in
+the question is answered once. The evidence for the first six is in
 [`../research/`](../research/), a survey of GitHub-webhook receivers in other
 ecosystems ([`webhook-libraries.md`](../research/webhook-libraries.md)) and of
 dispatcher designs in Rust
-([`rust-dispatch-designs.md`](../research/rust-dispatch-designs.md)); the rest
+([`rust-dispatch-designs.md`](../research/rust-dispatch-designs.md)), and for
+the header seam in a survey of header abstractions and Rust runtimes
+([`header-abstractions.md`](../research/header-abstractions.md)); the rest
 were settled during the pre-0.2.0 API review, by compile probes, with the
 compiler's answer quoted where it decided the matter, or by what the four
 review personas ([`../review/`](../review/)) reached for and what they did
@@ -29,6 +31,51 @@ The webhook must deliver `application/json`; anything else is
 with the signature over the form body. Here `Envelope::raw_payload` is both the signed
 input and the payload every decode reads, and a form body would make it one
 but not the other. Recorded on `Envelope::from_signed`.
+
+## No header view; `http::HeaderMap` is the header type (reversed)
+
+`Envelope::from_signed` takes `&http::HeaderMap`, and the `http` crate is a
+non-optional dependency. 0.1.0 shipped `HeaderView`, a struct of six optional
+strings standing between the headers a consumer held and the constructor that
+read them, built from a `HeaderMap` behind the `http` feature, from a string
+map with `from_lookup`, or with setters, so that a transport without `http`
+types could use the sans-I/O path. The survey in
+[`header-abstractions.md`](../research/header-abstractions.md) found that
+transport to be empty: `worker`, `lambda_http`, `aws_lambda_events`, `spin-sdk`
+4 and 7, `fastly`, `vercel_runtime` and `wstd` every one depend on `http`
+non-optionally and either are `http::Request` or convert to it with a `From`
+impl; the repo's own Workers example already ran on `http` types. The only
+string-map transport is a consumer hand-parsing the raw invocation JSON, and
+`HeaderMap: FromIterator<(HeaderName, V)>` covers that in one line. The two
+Rust verifiers that take a container (svix, standardwebhooks) take
+`http::HeaderMap` and made `http` required; none takes a closure, a trait or
+a string map. The crate itself is `bytes` and `itoa`, both already in the
+no-default tree, so it is one more `cargo tree` entry, MSRV 1.57 against the
+crate's 1.88, and about 22 KB of `wasm32` in isolation, near zero where the
+host SDK links `HeaderMap`, which is every surveyed host.
+
+What the view cost was the one failure it could produce: `from_lookup` passed
+lowercase names and compared nothing, so a map that kept the sender's casing
+answered `None` for the signature and every delivery was 401 with the secret
+correct, silent until production; the type docs, the constructor docs and the
+`header` module docs each spent a paragraph on it. `HeaderMap::get` matches
+case-insensitively by construction, so the paragraphs and the failure are
+gone together. Its redacting `Debug` went with it: nothing in the crate prints
+headers, the consumer holds the unredacted map regardless, and `Signature`'s
+redacted `Debug` protects the parsed value. The malformed-versus-missing
+distinction it carried for the signature costs nothing without it:
+`Signature::try_from` parses the `HeaderValue`'s bytes, so a value that is
+not visible ASCII is `Malformed` (400), not `Missing` (401), the distinction
+svix and standardwebhooks make and no GitHub-specific crate does. No
+replacement builder, lookup trait or positional value parameters were added:
+the survey found no precedent for any of them in Rust and no runtime that
+would use them. The `header` constants stayed, as `HeaderName`s, for the two
+uses that exist: a streaming transport's pre-body signature check and a test's
+`http::Request::builder()`. Recorded on `from_signed` and on the `header`
+module. The feature that gated the crate and the receiver together is
+`http-body`, gating the receiver's body handling alone and named for what it
+turns on in dependency terms; `receiver`, named for what it provides, was the
+alternative and is deferred, not rejected.
 
 ## Kind from the header, not the payload's shape
 
