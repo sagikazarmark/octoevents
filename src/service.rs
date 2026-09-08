@@ -773,19 +773,22 @@ mod tests {
     }
 
     fn request(body: &'static [u8], event: &str) -> Request<Full<Bytes>> {
-        request_over(Full::new(Bytes::from_static(body)), event, b"secret", body)
+        request_over(
+            Full::new(Bytes::from_static(body)),
+            event,
+            &signature(b"secret", body),
+        )
     }
 
-    /// A request over a body the test shapes itself, signed under `secret`
-    /// for `payload`. It authenticates when `secret` is the receiver's and
-    /// `payload` is the bytes the body yields, and does not when either
-    /// differs.
-    fn request_over<B>(body: B, event: &str, secret: &[u8], payload: &[u8]) -> Request<B> {
+    /// A request over a body the test shapes itself, carrying `signature` as
+    /// its signature header: `signature(b"secret", ..)` over the bytes the
+    /// body yields authenticates, anything else does not.
+    fn request_over<B>(body: B, event: &str, signature: &str) -> Request<B> {
         Request::builder()
             .header("content-type", "application/json")
             .header("x-github-delivery", "delivery")
             .header("x-github-event", event)
-            .header("x-hub-signature-256", signature(secret, payload))
+            .header("x-hub-signature-256", signature)
             .body(body)
             .unwrap()
     }
@@ -1322,9 +1325,10 @@ mod tests {
 
     #[tokio::test]
     async fn stops_at_the_body_limit_before_authentication() {
-        // Signed under the wrong secret: were the signature verified first,
-        // the answer would be 401. Once with an exact size hint, so the
-        // limit answers before the first poll, and once streamed, so it
+        // Carrying the signature that earns 401 in
+        // `maps_authentication_and_request_errors`: were it verified first,
+        // the answer would be 401 here too. Once with an exact size hint, so
+        // the limit answers before the first poll, and once streamed, so it
         // answers from inside the read loop.
         const OVERSIZED: &[u8] = &[b' '; 65];
         let receiver = || {
@@ -1335,7 +1339,7 @@ mod tests {
 
         let hinted = Full::new(Bytes::from_static(OVERSIZED));
         let response = receiver()
-            .receive(request_over(hinted, "push", b"wrong", OVERSIZED))
+            .receive(request_over(hinted, "push", WRONG_SIGNATURE))
             .await;
         assert_eq!(
             response.status(),
@@ -1345,7 +1349,7 @@ mod tests {
 
         let streamed = Frames::data(&[&OVERSIZED[..32], &OVERSIZED[32..]]);
         let response = receiver()
-            .receive(request_over(streamed, "push", b"wrong", OVERSIZED))
+            .receive(request_over(streamed, "push", WRONG_SIGNATURE))
             .await;
         assert_eq!(
             response.status(),
@@ -1362,6 +1366,7 @@ mod tests {
         // were assembled in order.
         const CHUNKS: &[&[u8]] = &[br#"{"a":"#, br#"1,"b""#, b":2}"];
         const PAYLOAD: &[u8] = br#"{"a":1,"b":2}"#;
+        let signed = signature(b"secret", PAYLOAD);
         let receiver = |limit: usize| {
             WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
                 .body_limit(limit)
@@ -1371,7 +1376,7 @@ mod tests {
         let body = Frames::data(CHUNKS);
         let polls = body.polls();
         let response = receiver(8)
-            .receive(request_over(body, "push", b"secret", PAYLOAD))
+            .receive(request_over(body, "push", &signed))
             .await;
         assert_eq!(
             response.status(),
@@ -1387,7 +1392,7 @@ mod tests {
 
         let body = Frames::data(CHUNKS);
         let response = receiver(PAYLOAD.len())
-            .receive(request_over(body, "push", b"secret", PAYLOAD))
+            .receive(request_over(body, "push", &signed))
             .await;
         assert_eq!(
             response.status(),
@@ -1409,7 +1414,7 @@ mod tests {
             .build(|_: Envelope| async { Ok::<_, ()>(()) });
 
         let response = receiver
-            .receive(request_over(body, "push", b"secret", b""))
+            .receive(request_over(body, "push", &signature(b"secret", b"")))
             .await;
 
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
