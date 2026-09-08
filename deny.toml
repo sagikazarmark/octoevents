@@ -24,6 +24,10 @@ allow = [
 [bans]
 multiple-versions = "warn"
 wildcards = "warn"
+# The derive crate's doctest depends on `octoevents` by path alone, with no
+# version: a dev-dependency cargo strips on publish, so it is never a wildcard
+# on crates.io. Path dependencies are the one wildcard this allows.
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"

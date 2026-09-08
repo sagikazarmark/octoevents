@@ -214,10 +214,8 @@ mod verify;
 #[cfg(all(feature = "http", feature = "tracing"))]
 pub use boxed_error::BoxedError;
 pub use dispatch::{DispatchError, Dispatcher, DispatcherBuilder, Match, Outcome, Tier};
-pub use envelope::{
-    DecodeError, Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef, TargetType,
-};
-pub use events::{Action, EventKind};
+pub use envelope::{DecodeError, Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef};
+pub use events::{Action, EventKind, TargetType};
 pub use handler::Handler;
 pub use matcher::{AnyAction, EventMatcher, IntoMatcher};
 /// Derives [`Payload`] for a serde type, declaring its kind:
@@ -230,7 +228,7 @@ pub use runtime::{MaybeSend, MaybeSync};
 pub use secret::Secret;
 #[cfg(feature = "http")]
 pub use service::{WebhookReceiver, WebhookReceiverBuilder};
-pub use verify::{Verifier, VerifyError};
+pub use verify::{SecretError, Verifier, VerifyError};
 
 /// The byte buffer type of [`Envelope::raw_payload`] and of the body
 /// [`Envelope::from_signed`] takes, re-exported from the `bytes` crate.

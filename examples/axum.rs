@@ -18,7 +18,7 @@ impl Handler<Envelope> for Announce {
     type Error = AppError;
 
     // A real handler awaits its dependencies here.
-    #[allow(clippy::unused_async_trait_impl)]
+    #[expect(clippy::unused_async_trait_impl)]
     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
         println!(
             "received {} ({})",

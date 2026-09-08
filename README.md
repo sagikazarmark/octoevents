@@ -593,8 +593,10 @@ recorded anywhere. The full contract, span by span and field by field, is
   window is the verifier's: `Verifier::new(current).also(next)` verifies
   against either while the secret is changed in the webhook's settings, and
   `Verifier::new(next)` alone once deliveries signed with the old one have
-  drained. An empty secret panics at construction rather than verifying
-  against a guessable key.
+  drained. An empty secret is refused rather than verified against a
+  guessable key: `Verifier::new` panics at construction, and
+  `Verifier::try_new` returns `SecretError::Empty` for a deployment that
+  reads its secret per request, where a panic is the wrong answer.
 - **Bounded bodies.** The body is capped at GitHub's 25 MiB maximum before
   verification; `.body_limit(..)` on the receiver builder lowers it when your
   events are smaller.

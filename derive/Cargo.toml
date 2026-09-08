@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 keywords = ["github", "webhook"]
-categories = ["web-programming"]
+categories = ["development-tools::procedural-macro-helpers"]
 
 [lib]
 proc-macro = true
@@ -15,7 +15,7 @@ proc-macro = true
 [dependencies]
 proc-macro2 = "1.0.101"
 quote = "1.0.40"
-syn = { version = "2.0.106", default-features = false, features = [
+syn = { version = "3.0.4", default-features = false, features = [
   "clone-impls",
   "derive",
   "parsing",

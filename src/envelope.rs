@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt, str::FromStr};
+use std::{borrow::Cow, fmt};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bytes::Bytes;
@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_json::value::RawValue;
 use thiserror::Error;
 
-use crate::{Action, EventKind, Verifier, VerifyError, header};
+use crate::{Action, EventKind, TargetType, Verifier, VerifyError, header};
 
 /// The routing metadata of a webhook: everything in an [`Envelope`] except
 /// the payload bytes.
@@ -23,7 +23,7 @@ use crate::{Action, EventKind, Verifier, VerifyError, header};
 /// receiver would have extracted from the same bytes; build a meta by itself
 /// with [`EventMeta::new`], for a handler over `EventMeta` alone, and assign
 /// the optional fields it reads.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct EventMeta {
     /// The `X-GitHub-Delivery` value. Use it as a downstream idempotency key.
@@ -92,7 +92,7 @@ impl EventMeta {
 ///
 /// `#[non_exhaustive]` for the same reason as [`EventMeta`]. Build one in tests
 /// with [`RepositoryRef::new`], which takes every field the crate probes.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct RepositoryRef {
     /// GitHub's numeric repository ID.
@@ -129,65 +129,6 @@ impl RepositoryRef {
             full_name: full_name.into(),
             owner: owner.into(),
         }
-    }
-}
-
-/// The resource on which the webhook is installed.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum TargetType {
-    /// A GitHub App installation target.
-    Integration,
-    /// A repository webhook target.
-    Repository,
-    /// An organization webhook target.
-    Organization,
-    /// A wire value unknown to this version of the crate.
-    Unknown(String),
-}
-
-impl Serialize for TargetType {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for TargetType {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        String::deserialize(deserializer)
-            .map(|value| Self::from_str(&value).unwrap_or_else(|never| match never {}))
-    }
-}
-
-impl TargetType {
-    /// Returns GitHub's wire representation.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Integration => "integration",
-            Self::Repository => "repository",
-            Self::Organization => "organization",
-            Self::Unknown(value) => value,
-        }
-    }
-}
-
-impl FromStr for TargetType {
-    type Err = std::convert::Infallible;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Ok(match value {
-            "integration" => Self::Integration,
-            "repository" => Self::Repository,
-            "organization" => Self::Organization,
-            value => Self::Unknown(value.to_owned()),
-        })
     }
 }
 
@@ -645,13 +586,9 @@ impl Envelope {
 
         let delivery_id = required_header(headers.delivery_id.as_deref(), header::DELIVERY_ID)?;
         let event_name = required_header(headers.event_name.as_deref(), header::EVENT_NAME)?;
-        let kind = EventKind::from_str(event_name).unwrap_or_else(|never| match never {});
 
-        let mut envelope = Self::probed(delivery_id, kind, body);
-        envelope.meta.target_type = headers
-            .target_type
-            .as_deref()
-            .map(|value| TargetType::from_str(value).unwrap_or_else(|never| match never {}));
+        let mut envelope = Self::probed(delivery_id, EventKind::from(event_name), body);
+        envelope.meta.target_type = headers.target_type.as_deref().map(TargetType::from);
         envelope.meta.target_id = headers
             .target_id
             .as_deref()
@@ -718,7 +655,7 @@ impl Envelope {
         meta.action = probe
             .action
             .and_then(parse_probe::<String>)
-            .map(|action| Action::from_str(&action).unwrap_or_else(|never| match never {}));
+            .map(|action| Action::from(action.as_str()));
         meta.installation_id = probe
             .installation
             .and_then(parse_probe::<IdOnly>)
@@ -764,8 +701,12 @@ pub enum ReceiveError {
     #[error(transparent)]
     Verify(#[from] VerifyError),
     /// A required delivery header was absent or empty.
-    #[error("missing {0} header")]
-    MissingHeader(&'static str),
+    #[error("missing {name} header")]
+    MissingHeader {
+        /// The header's lowercase name, one of the constants in
+        /// [`header`](crate::header).
+        name: &'static str,
+    },
     /// The request was not configured as JSON.
     #[error(
         "unsupported content type; configure the GitHub webhook content type as application/json"
@@ -909,7 +850,7 @@ fn required_header<'a>(
 ) -> Result<&'a str, ReceiveError> {
     value
         .filter(|value| !value.is_empty())
-        .ok_or(ReceiveError::MissingHeader(name))
+        .ok_or(ReceiveError::MissingHeader { name })
 }
 
 fn is_json_content_type(value: &str) -> bool {
@@ -986,14 +927,14 @@ struct LoginOnly {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, str::FromStr as _};
+    use std::collections::{HashMap, HashSet};
 
     use bytes::Bytes;
 
-    use super::{
-        DecodeError, Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef, TargetType,
+    use super::{DecodeError, Envelope, EventMeta, HeaderView, ReceiveError, RepositoryRef};
+    use crate::{
+        Action, EventKind, Secret, TargetType, Verifier, VerifyError, header, test_support,
     };
-    use crate::{Action, EventKind, Secret, Verifier, VerifyError, header, test_support};
 
     const BODY: &[u8] = br#"{
         "action":"opened",
@@ -1159,21 +1100,18 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_target_type_keeps_its_wire_value() {
-        // Matches `EventKind::Unknown` and `Action::Unknown`: a value this
-        // version does not know is carried verbatim, not dropped.
-        let target_type = TargetType::from_str("enterprise").unwrap();
+    fn a_meta_is_a_set_member_by_value() {
+        // `Hash` agrees with `Eq`: two metas read from the same payload are
+        // one key, so a policy that remembers what it saw needs no key of
+        // its own.
+        let first = Envelope::new("delivery", EventKind::PullRequest, BODY).meta;
+        let again = Envelope::new("delivery", EventKind::PullRequest, BODY).meta;
+        let other = Envelope::new("other", EventKind::PullRequest, BODY).meta;
 
-        assert_eq!(target_type, TargetType::Unknown("enterprise".to_owned()));
-        assert_eq!(target_type.as_str(), "enterprise");
-        assert_eq!(
-            serde_json::to_string(&target_type).unwrap(),
-            r#""enterprise""#
-        );
-        assert_eq!(
-            serde_json::from_str::<TargetType>(r#""enterprise""#).unwrap(),
-            target_type
-        );
+        let seen: HashSet<EventMeta> = [first, again, other].into_iter().collect();
+
+        assert_eq!(seen.len(), 2);
+        assert!(seen.contains(&Envelope::new("delivery", EventKind::PullRequest, BODY).meta));
     }
 
     #[test]
@@ -1289,10 +1227,15 @@ mod tests {
             .content_type("application/json");
         assert_eq!(
             Envelope::from_signed(&verifier(), &no_delivery, Bytes::new()),
-            Err(ReceiveError::MissingHeader(header::DELIVERY_ID))
+            Err(ReceiveError::MissingHeader {
+                name: header::DELIVERY_ID
+            })
         );
         assert_eq!(
-            ReceiveError::MissingHeader(header::DELIVERY_ID).to_string(),
+            ReceiveError::MissingHeader {
+                name: header::DELIVERY_ID
+            }
+            .to_string(),
             "missing x-github-delivery header"
         );
     }
@@ -1376,7 +1319,9 @@ mod tests {
                 &headers(&signature).delivery_id(""),
                 Bytes::new()
             ),
-            Err(ReceiveError::MissingHeader(header::DELIVERY_ID))
+            Err(ReceiveError::MissingHeader {
+                name: header::DELIVERY_ID
+            })
         );
         assert_eq!(
             Envelope::from_signed(
@@ -1384,7 +1329,9 @@ mod tests {
                 &headers(&signature).event_name(""),
                 Bytes::new()
             ),
-            Err(ReceiveError::MissingHeader(header::EVENT_NAME))
+            Err(ReceiveError::MissingHeader {
+                name: header::EVENT_NAME
+            })
         );
     }
 
@@ -1398,10 +1345,15 @@ mod tests {
 
         assert_eq!(
             Envelope::from_signed(&verifier(), &no_event_name, Bytes::new()),
-            Err(ReceiveError::MissingHeader(header::EVENT_NAME))
+            Err(ReceiveError::MissingHeader {
+                name: header::EVENT_NAME
+            })
         );
         assert_eq!(
-            ReceiveError::MissingHeader(header::EVENT_NAME).to_string(),
+            ReceiveError::MissingHeader {
+                name: header::EVENT_NAME
+            }
+            .to_string(),
             "missing x-github-event header"
         );
     }

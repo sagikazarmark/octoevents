@@ -16,7 +16,7 @@
 
 // The handlers here log instead of awaiting a database or the GitHub API,
 // which is what a real `async fn handle` would do.
-#![allow(clippy::unused_async_trait_impl)]
+#![expect(clippy::unused_async_trait_impl)]
 
 use octoevents::{
     AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind, Handler, Secret, Verifier,
@@ -123,13 +123,18 @@ async fn fetch(
     let secret = env.secret("GITHUB_WEBHOOK_SECRET")?.to_string();
     let object_url = env.var("RESTATE_OBJECT_URL")?.to_string();
 
+    // The verifier is built per request, so an empty secret is reported as a
+    // value the runtime turns into a response, not a panic that traps the
+    // wasm instance.
+    let verifier = Verifier::try_new(Secret::new(secret))
+        .map_err(|error| worker::Error::RustError(error.to_string()))?;
+
     let dispatcher = Dispatcher::<AppError>::builder()
         .always(Forward { object_url })
         .on(AnyAction, InstallationLog)
         .build();
 
-    let receiver =
-        WebhookReceiverBuilder::new(Verifier::new(Secret::new(secret))).build(dispatcher);
+    let receiver = WebhookReceiverBuilder::new(verifier).build(dispatcher);
 
     Ok(receiver.receive(request).await)
 }

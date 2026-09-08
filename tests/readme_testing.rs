@@ -192,7 +192,7 @@ async fn the_boxed_observer_reaches_the_serde_field_from_error_source_source() {
     /// decode is the point. The README derives its kind; here the impl is
     /// written by hand so the file compiles without the `derive` feature.
     #[derive(serde::Deserialize)]
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     struct IssueOpened {
         issue: Issue,
     }
@@ -201,7 +201,7 @@ async fn the_boxed_observer_reaches_the_serde_field_from_error_source_source() {
     }
 
     #[derive(serde::Deserialize)]
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     struct Issue {
         title: String,
     }

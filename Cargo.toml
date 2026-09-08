@@ -22,6 +22,19 @@ license.workspace = true
 repository.workspace = true
 keywords = ["github", "webhook", "tower", "cloudflare", "wasm"]
 categories = ["web-programming", "cryptography"]
+# What the published crate ships: the sources, the examples, the tests with
+# their fixture corpus, the README and the licences. The design docs, the
+# glossary, the CI and the devenv/dagger files stay in the repository, and so
+# does `examples/worker`, a package of its own that cargo leaves out on its
+# own account.
+include = [
+  "/src/**",
+  "/examples/**",
+  "/tests/**",
+  "/README.md",
+  "/LICENSE-APACHE",
+  "/LICENSE-MIT",
+]
 
 [features]
 default = ["http", "derive"]
@@ -64,6 +77,19 @@ tracing-subscriber = { version = "0.3.20", features = ["registry"] }
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+# `cargo release` turns the Unreleased section of CHANGELOG.md into the
+# version's and opens a new one. On this package alone: the workspace's two
+# crates share one version and one changelog, and a workspace-level entry
+# would run the replacements once per crate.
+[package.metadata.release]
+pre-release-replacements = [
+  { file = "CHANGELOG.md", search = "Unreleased", replace = "{{version}}", min = 1 },
+  { file = "CHANGELOG.md", search = "\\.\\.\\.HEAD", replace = "...{{tag_name}}", exactly = 1 },
+  { file = "CHANGELOG.md", search = "ReleaseDate", replace = "{{date}}", min = 1 },
+  { file = "CHANGELOG.md", search = "<!-- next-header -->", replace = "<!-- next-header -->\n\n## [Unreleased] - ReleaseDate", exactly = 1 },
+  { file = "CHANGELOG.md", search = "<!-- next-url -->", replace = "<!-- next-url -->\n[Unreleased]: https://github.com/sagikazarmark/octoevents/compare/{{tag_name}}...HEAD", exactly = 1 },
+]
+
 [[example]]
 name = "axum"
 required-features = ["tower"]
@@ -76,6 +102,7 @@ required-features = ["tower", "octocrab"]
 workspace = true
 
 [workspace.lints.rust]
+missing_debug_implementations = "warn"
 missing_docs = "warn"
 unsafe_code = "forbid"
 

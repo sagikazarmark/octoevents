@@ -47,7 +47,7 @@ impl ResponseStatus {
                 Self::Unauthorized
             }
             ReceiveError::Verify(VerifyError::MalformedSignature)
-            | ReceiveError::MissingHeader(_)
+            | ReceiveError::MissingHeader { .. }
             | ReceiveError::UnsupportedContentType => Self::BadRequest,
             ReceiveError::BodyTooLarge { .. } => Self::PayloadTooLarge,
         }
@@ -81,7 +81,9 @@ mod tests {
                 ResponseStatus::BadRequest,
             ),
             (
-                ReceiveError::MissingHeader(header::DELIVERY_ID),
+                ReceiveError::MissingHeader {
+                    name: header::DELIVERY_ID,
+                },
                 ResponseStatus::BadRequest,
             ),
             (

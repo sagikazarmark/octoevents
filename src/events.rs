@@ -37,14 +37,22 @@ macro_rules! string_enum {
             }
         }
 
+        impl From<&str> for $name {
+            /// The variant for a GitHub wire value, or [`Unknown`](Self::Unknown)
+            /// carrying the value verbatim; never a failure.
+            fn from(value: &str) -> Self {
+                match value {
+                    $($wire => Self::$variant,)*
+                    value => Self::Unknown(value.to_owned()),
+                }
+            }
+        }
+
         impl FromStr for $name {
             type Err = Infallible;
 
             fn from_str(value: &str) -> Result<Self, Self::Err> {
-                Ok(match value {
-                    $($wire => Self::$variant,)*
-                    value => Self::Unknown(value.to_owned()),
-                })
+                Ok(Self::from(value))
             }
         }
 
@@ -68,9 +76,7 @@ macro_rules! string_enum {
             where
                 D: Deserializer<'de>,
             {
-                String::deserialize(deserializer).map(|value| {
-                    value.parse().unwrap_or_else(|never| match never {})
-                })
+                String::deserialize(deserializer).map(|value| Self::from(value.as_str()))
             }
         }
     };
@@ -290,41 +296,83 @@ string_enum! {
     }
 }
 
+string_enum! {
+    /// The resource on which the webhook is installed, from
+    /// `X-GitHub-Hook-Installation-Target-Type`: `integration` for a GitHub
+    /// App, `repository` for a repository webhook and `organization` for an
+    /// organization webhook.
+    pub enum TargetType {
+        Integration => "integration",
+        Repository => "repository",
+        Organization => "organization",
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Action, EventKind};
+    use std::fmt;
 
-    #[test]
-    fn event_names_round_trip() {
-        for value in EventKind::known_values() {
-            let parsed: EventKind = value.as_str().parse().unwrap();
-            assert_eq!(&parsed, value);
+    use serde::Serialize;
+
+    use super::{Action, EventKind, TargetType};
+
+    /// Every known value comes back from its own wire string, displays as it
+    /// and serializes as it quoted.
+    fn round_trips<T>(values: &[T])
+    where
+        T: fmt::Debug + fmt::Display + PartialEq + Serialize + for<'a> From<&'a str>,
+    {
+        for value in values {
+            let wire = value.to_string();
+            assert_eq!(&T::from(wire.as_str()), value);
             assert_eq!(
                 serde_json::to_string(value).unwrap(),
-                format!("\"{}\"", value.as_str())
+                format!("\"{wire}\""),
+                "{value:?}"
             );
         }
     }
 
     #[test]
+    fn event_names_round_trip() {
+        round_trips(EventKind::known_values());
+    }
+
+    #[test]
     fn action_names_round_trip() {
-        for value in Action::known_values() {
-            let parsed: Action = value.as_str().parse().unwrap();
-            assert_eq!(&parsed, value);
-            assert_eq!(
-                serde_json::to_string(value).unwrap(),
-                format!("\"{}\"", value.as_str())
-            );
-        }
+        round_trips(Action::known_values());
+    }
+
+    #[test]
+    fn target_types_round_trip() {
+        round_trips(TargetType::known_values());
+    }
+
+    #[test]
+    fn the_wire_values_are_githubs() {
+        // The header and payload strings GitHub sends, so a rename of a
+        // variant cannot silently change what it parses from.
+        assert_eq!(EventKind::from("pull_request"), EventKind::PullRequest);
+        assert_eq!(Action::from("ready_for_review"), Action::ReadyForReview);
+        assert_eq!(TargetType::from("integration"), TargetType::Integration);
+        assert_eq!(TargetType::from("repository"), TargetType::Repository);
+        assert_eq!(TargetType::from("organization"), TargetType::Organization);
     }
 
     #[test]
     fn unknown_values_are_lossless() {
         let event: EventKind = serde_json::from_str("\"future_event\"").unwrap();
-        let action: Action = "future_action".parse().unwrap();
+        let action = Action::from("future_action");
+        let target_type: TargetType = "enterprise".parse().unwrap();
 
         assert_eq!(event, EventKind::Unknown("future_event".into()));
         assert_eq!(action, Action::Unknown("future_action".into()));
+        assert_eq!(target_type, TargetType::Unknown("enterprise".into()));
         assert_eq!(serde_json::to_string(&event).unwrap(), "\"future_event\"");
+        assert_eq!(target_type.to_string(), "enterprise");
+        assert_eq!(
+            serde_json::from_str::<TargetType>(r#""enterprise""#).unwrap(),
+            target_type
+        );
     }
 }
