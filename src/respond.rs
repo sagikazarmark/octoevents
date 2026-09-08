@@ -130,6 +130,28 @@ mod tests {
 
     #[cfg(feature = "http")]
     #[test]
+    fn labels_every_status_with_the_outcome_the_receive_span_records() {
+        // The whole table, one row per status. The labels are the front
+        // page's vocabulary for the receive span's `outcome`, and a dashboard
+        // filters on them verbatim, so each is a literal here, not derived
+        // from the variant's name. That the receiver records them on the
+        // span, beside the code as `status`, is `tests/tracing_outcome.rs`'s
+        // test.
+        let table = [
+            (ResponseStatus::NoContent, "ok"),
+            (ResponseStatus::BadRequest, "bad_request"),
+            (ResponseStatus::Unauthorized, "unauthorized"),
+            (ResponseStatus::PayloadTooLarge, "payload_too_large"),
+            (ResponseStatus::InternalServerError, "handler_error"),
+        ];
+
+        for (status, label) in table {
+            assert_eq!(status.label(), label, "{status:?}");
+        }
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
     fn converts_to_the_matching_http_status_code() {
         for status in [
             ResponseStatus::NoContent,
