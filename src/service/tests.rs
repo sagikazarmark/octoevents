@@ -183,13 +183,13 @@ fn request(body: &'static [u8], event: &str) -> Request<Full<Bytes>> {
     request_over(
         Full::new(Bytes::from_static(body)),
         event,
-        &verifier().sign(body),
+        &verifier().sign(body).to_string(),
     )
 }
 
 /// A request over a body the test shapes itself, carrying `signature` as
 /// its signature header: `verifier().sign(..)` over the bytes the body
-/// yields authenticates, anything else does not.
+/// yields, rendered, authenticates, anything else does not.
 fn request_over<B>(body: B, event: &str, signature: &str) -> Request<B> {
     Request::builder()
         .header("content-type", "application/json")
@@ -428,11 +428,32 @@ mod receive {
         // the receiver records its fixed text on the receive span as `error`
         // while omitting `source` is covered by `tests/tracing_outcome.rs`,
         // where another 400 for a malformed header reads differently.
-        let signed = verifier().sign(b"{}");
+        let signed = verifier().sign(b"{}").to_string();
         assert_eq!(
             receiver().receive(request(Some(&signed))).await.status(),
             StatusCode::BAD_REQUEST
         );
+    }
+
+    #[tokio::test]
+    async fn refuses_a_malformed_signature_header_without_reading_the_body() {
+        // A malformed header is 400, as a body the transport cannot read is,
+        // so the status alone cannot say whether the body was reached; the
+        // body counts its polls instead, and none means the headers were
+        // decisive alone. The header is parsed before the body is read, so
+        // a value that is not `sha256=` and 64 hex digits never costs the
+        // receiver `body_limit` bytes of memory.
+        let receiver =
+            WebhookReceiverBuilder::new(verifier()).build(|_: Envelope| async { Ok::<_, ()>(()) });
+        let body = Frames::data(&[b"{}"]);
+        let polls = body.polls();
+
+        let response = receiver
+            .receive(request_over(body, "push", "sha256=not-hex"))
+            .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(polls.load(Ordering::Relaxed), 0, "the body was polled");
     }
 
     #[tokio::test]
@@ -509,7 +530,7 @@ mod receive {
         // were assembled in order.
         const CHUNKS: &[&[u8]] = &[br#"{"a":"#, br#"1,"b""#, b":2}"];
         const PAYLOAD: &[u8] = br#"{"a":1,"b":2}"#;
-        let signed = verifier().sign(PAYLOAD);
+        let signed = verifier().sign(PAYLOAD).to_string();
         let receiver = |limit: usize| {
             WebhookReceiverBuilder::new(verifier())
                 .body_limit(limit)
@@ -556,7 +577,7 @@ mod receive {
             .receive(request_over(
                 Pinned::data(b"{}"),
                 "push",
-                &verifier().sign(b"{}"),
+                &verifier().sign(b"{}").to_string(),
             ))
             .await;
 
@@ -576,7 +597,11 @@ mod receive {
             .build(|_: Envelope| async { Ok::<_, ()>(()) });
 
         let response = receiver
-            .receive(request_over(body, "push", &verifier().sign(b"")))
+            .receive(request_over(
+                body,
+                "push",
+                &verifier().sign(b"").to_string(),
+            ))
             .await;
 
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
@@ -830,7 +855,7 @@ mod tower {
             .oneshot(request_over(
                 Pinned::data(b"{}"),
                 "push",
-                &verifier().sign(b"{}"),
+                &verifier().sign(b"{}").to_string(),
             ))
             .await
             .unwrap();

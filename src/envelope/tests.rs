@@ -50,7 +50,7 @@ mod receive {
     #[test]
     fn verifies_then_extracts_the_metadata() {
         let verifier = verifier();
-        let signature = verifier.sign(BODY);
+        let signature = verifier.sign(BODY).to_string();
 
         let envelope =
             Envelope::from_signed(&verifier, &headers(&signature), Bytes::from_static(BODY))
@@ -77,7 +77,7 @@ mod receive {
         // The target is the one thing the receiving path knows and the test
         // path does not: it comes from headers, not from the payload.
         let body = Bytes::from_static(b"not json");
-        let signature = verifier().sign(&body);
+        let signature = verifier().sign(&body).to_string();
 
         let envelope =
             Envelope::from_signed(&verifier(), &headers(&signature), body.clone()).unwrap();
@@ -92,7 +92,7 @@ mod receive {
     #[test]
     fn unknown_event_and_action_remain_routable() {
         let body = Bytes::from_static(br#"{"action":"brand_new"}"#);
-        let signature = verifier().sign(&body);
+        let signature = verifier().sign(&body).to_string();
         let headers = HeaderView::new()
             .signature(&signature)
             .delivery_id("delivery")
@@ -144,7 +144,7 @@ mod receive {
         const UNICODE_BODY: &[u8] =
             "{\"action\":\"opened\",\"zen\":\"⚡ \\u00e9 caf\u{e9} 🐙\"}".as_bytes();
 
-        let signature = verifier().sign(UNICODE_BODY);
+        let signature = verifier().sign(UNICODE_BODY).to_string();
         let headers = HeaderView::new()
             .signature(&signature)
             .delivery_id("delivery")
@@ -174,7 +174,7 @@ mod header_rules {
     /// What the receiving path makes of a signed, otherwise well-formed empty
     /// delivery under `content_type`, reduced to the kind it read.
     fn received_as(content_type: &str) -> Result<EventKind, ReceiveError> {
-        let signature = verifier().sign(b"");
+        let signature = verifier().sign(b"").to_string();
         let headers = headers(&signature).content_type(content_type);
 
         Envelope::from_signed(&verifier(), &headers, Bytes::new())
@@ -192,7 +192,7 @@ mod header_rules {
             Err(ReceiveError::Signature(SignatureError::Missing))
         );
 
-        let signature = verifier().sign(b"");
+        let signature = verifier().sign(b"").to_string();
         let form = HeaderView::new()
             .signature(&signature)
             .delivery_id("delivery")
@@ -267,7 +267,7 @@ mod header_rules {
         }
 
         // No `Content-Type` header at all is refused the same way.
-        let signature = verifier().sign(b"");
+        let signature = verifier().sign(b"").to_string();
         let no_content_type = HeaderView::new()
             .signature(&signature)
             .delivery_id("delivery")
@@ -283,7 +283,7 @@ mod header_rules {
         // A header sent with no value is as good as not sent: the error names
         // the header, so no envelope is built with an empty delivery ID or an
         // event name that parses as `Unknown("")`.
-        let signature = verifier().sign(b"");
+        let signature = verifier().sign(b"").to_string();
 
         assert_eq!(
             Envelope::from_signed(
@@ -309,7 +309,7 @@ mod header_rules {
 
     #[test]
     fn requires_the_event_name() {
-        let signature = verifier().sign(b"");
+        let signature = verifier().sign(b"").to_string();
         let no_event_name = HeaderView::new()
             .signature(&signature)
             .delivery_id("delivery")
@@ -355,7 +355,7 @@ mod probe {
         // The test path and the receiving path probe the same payload the
         // same way; only the header-derived target differs, since `new` has
         // no headers to read it from.
-        let signature = verifier().sign(BODY);
+        let signature = verifier().sign(BODY).to_string();
         let signed =
             Envelope::from_signed(&verifier(), &headers(&signature), Bytes::from_static(BODY))
                 .unwrap();
@@ -492,7 +492,7 @@ mod wire_format {
 
     #[test]
     fn serializes_the_metadata_flat_beside_the_raw_payload() {
-        let signature = verifier().sign(BODY);
+        let signature = verifier().sign(BODY).to_string();
         let envelope =
             Envelope::from_signed(&verifier(), &headers(&signature), Bytes::from_static(BODY))
                 .unwrap();
@@ -525,7 +525,7 @@ mod wire_format {
     #[test]
     fn serializes_the_raw_payload_as_base64() {
         let verifier = verifier();
-        let signature = verifier.sign(BODY);
+        let signature = verifier.sign(BODY).to_string();
         let envelope =
             Envelope::from_signed(&verifier, &headers(&signature), Bytes::from_static(BODY))
                 .unwrap();
@@ -541,7 +541,7 @@ mod wire_format {
 
     #[test]
     fn survives_a_json_round_trip_to_a_forwarding_target() {
-        let signature = verifier().sign(BODY);
+        let signature = verifier().sign(BODY).to_string();
         let envelope =
             Envelope::from_signed(&verifier(), &headers(&signature), Bytes::from_static(BODY))
                 .unwrap();
@@ -733,7 +733,7 @@ mod header_view {
         // HTTP/1.1 hands a serverless runtime the names as GitHub wrote them.
         // The constants are lowercase and the lookup compares nothing itself,
         // so the transport lowercases its keys before asking.
-        let signature = verifier().sign(BODY);
+        let signature = verifier().sign(BODY).to_string();
         let received: HashMap<String, String> = [
             ("X-Hub-Signature-256", signature.as_str()),
             ("X-GitHub-Delivery", "delivery"),
@@ -760,10 +760,8 @@ mod header_view {
 
     #[test]
     fn from_lookup_reports_an_absent_signature_as_missing() {
-        // A string map cannot hold a header whose bytes are not a string, so
-        // the only header failure this path can earn for the signature is its
-        // absence. The lookup hands over owned values here: either flavour of
-        // string is accepted, as the setters accept both.
+        // The lookup hands over owned values here: either flavour of string
+        // is accepted, as the setters accept both.
         let received: HashMap<String, String> = [
             ("x-github-delivery", "delivery"),
             ("x-github-event", "push"),
@@ -781,10 +779,37 @@ mod header_view {
         );
     }
 
+    #[test]
+    fn from_lookup_reports_a_value_that_is_not_a_signature_as_malformed() {
+        // A string map cannot hold bytes that are not a string, so this is
+        // the one malformed shape it can carry: a value that is present but
+        // not `sha256=` and 64 hex digits. It is refused from the headers,
+        // before any secret is used, the same as the `http` path refuses one
+        // whose bytes are not ASCII.
+        let received: HashMap<&str, &str> = [
+            (
+                "x-hub-signature-256",
+                "sha1=757107ea0eb2509fc211221cce984b8a37570b6d",
+            ),
+            ("x-github-delivery", "delivery"),
+            ("x-github-event", "push"),
+            ("content-type", "application/json"),
+        ]
+        .into_iter()
+        .collect();
+
+        let headers = HeaderView::from_lookup(|name| received.get(name).copied());
+
+        assert_eq!(
+            Envelope::from_signed(&verifier(), &headers, Bytes::new()),
+            Err(ReceiveError::Signature(SignatureError::Malformed))
+        );
+    }
+
     #[cfg(feature = "http")]
     #[test]
     fn constructs_from_an_http_header_map() {
-        let signature = verifier().sign(BODY);
+        let signature = verifier().sign(BODY).to_string();
         let mut map = http::HeaderMap::new();
         map.insert(header::SIGNATURE, signature.parse().unwrap());
         map.insert(header::DELIVERY_ID, "delivery".parse().unwrap());

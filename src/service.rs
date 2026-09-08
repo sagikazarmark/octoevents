@@ -412,9 +412,9 @@ where
     /// The request is any `http::Request` whose body yields [`Bytes`]:
     /// axum's, a Cloudflare Worker's, or a `String` in a test, which drives
     /// the receiver with a signed synthetic request and no server.
-    /// [`Verifier::sign`] gives the signature GitHub would send for the
-    /// body, and a request needs the four headers [`header`](crate::header)
-    /// names:
+    /// [`Verifier::sign`] gives the [`Signature`](crate::Signature) GitHub
+    /// would send for the body, whose `to_string()` is the header value, and
+    /// a request needs the four headers [`header`](crate::header) names:
     ///
     /// ```
     /// use octoevents::{Dispatcher, Verifier, WebhookReceiverBuilder, WebhookSecret, header};
@@ -427,13 +427,14 @@ where
     /// let webhook = WebhookReceiverBuilder::new(verifier.clone()).build(dispatcher);
     ///
     /// let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
+    /// let signature = verifier.sign(body.as_bytes());
     /// let request = http::Request::builder()
     ///     .method("POST")
     ///     .uri("/webhook")
     ///     .header(header::CONTENT_TYPE, "application/json")
     ///     .header(header::DELIVERY_ID, "delivery-1")
     ///     .header(header::EVENT_NAME, "issues")
-    ///     .header(header::SIGNATURE, verifier.sign(body.as_bytes()))
+    ///     .header(header::SIGNATURE, signature.to_string())
     ///     .body(body.to_string())
     ///     .unwrap();
     ///
@@ -513,10 +514,12 @@ where
         let headers = HeaderView::from(&parts.headers);
         record_headers(&headers);
 
-        // A request whose signature header cannot authenticate is refused on
-        // the headers alone, so unsigned traffic never occupies `body_limit`
-        // bytes of memory. `Envelope::from_signed` repeats the check for
-        // transports that construct envelopes directly.
+        // A request whose signature header is absent or not a signature is
+        // refused on the headers alone, so unsigned traffic never occupies
+        // `body_limit` bytes of memory. `Envelope::from_signed` repeats the
+        // check for transports that construct envelopes directly, and parses
+        // the header again for the verifier; the header is 71 bytes, so the
+        // second parse is cheaper than handing the first one across.
         if let Err(error) = headers.require_signature() {
             return refuse(&error.into());
         }

@@ -14,8 +14,10 @@
 //!   beside `status`, the HTTP code, and for a request refused before any
 //!   handler ran, the text of the `ReceiveError` that selected the status as
 //!   `error`.
-//! - `octoevents.verify` records how verification ended: `verified`,
-//!   `mismatch` or `malformed`, beside `secret_count` and `body_len`.
+//! - `octoevents.verify` records how verification ended: `verified` or
+//!   `mismatch`, beside `secret_count` and `body_len`. A malformed header
+//!   never reaches it: the header is parsed into a `Signature` before the
+//!   verifier is asked, so the span is about the HMAC and nothing else.
 //!
 //! The fields the receive and dispatch spans share are recorded in the same
 //! form on both.
@@ -32,7 +34,7 @@ mod common;
 use common::{Fields, SpanRecord, Value};
 use octoevents::{
     Action, AnyAction, DecodeError, DispatchError, Dispatcher, Envelope, EventKind, Handler as _,
-    Match, Outcome, SignatureError, Verifier, WebhookSecret,
+    Match, Outcome, Signature, SignatureError, Verifier, WebhookSecret,
 };
 
 #[derive(Debug, PartialEq)]
@@ -362,8 +364,10 @@ const BODY: &[u8] = br#"{"action":"opened","installation":{"id":42}}"#;
 /// The secret the verifier under test holds.
 const SECRET: &str = "It's a Secret to Everybody";
 
-/// A signature that is not `sha256=` and 64 hex characters: GitHub's legacy
-/// SHA-1 header value.
+/// A header value that is not `sha256=` and 64 hex digits: GitHub's legacy
+/// SHA-1 header value. Refused from the headers, before the verifier is
+/// asked; the receiver answers 400 and no verify span opens.
+#[cfg(feature = "http")]
 const MALFORMED_SIGNATURE: &str = "sha1=757107ea0eb2509fc211221cce984b8a37570b6d";
 
 /// The verifier under test, and the one the receiver is built with; it signs
@@ -381,18 +385,23 @@ fn another_verifier() -> Verifier {
 /// Runs `verify` over [`BODY`] under a fresh recording subscriber and returns
 /// the `octoevents.verify` span it opened alongside what it returned.
 #[track_caller]
-fn traced_verify(verifier: &Verifier, signature: &str) -> (SpanRecord, Result<(), SignatureError>) {
+fn traced_verify(
+    verifier: &Verifier,
+    signature: &Signature,
+) -> (SpanRecord, Result<(), SignatureError>) {
     let (recording, returned) = common::traced(async { verifier.verify(signature, BODY) });
     (recording.span("octoevents.verify").clone(), returned)
 }
 
 #[test]
-fn the_verify_span_records_the_secret_count_the_body_length_and_one_of_three_outcomes() {
-    // The three outcomes are the three ways `verify` can end, each read as a
-    // label from what the span closed with. `secret_count` and `body_len` are
-    // read from what it opened with, as integers: both are known before any
-    // comparison runs, and a rotated verifier counts every secret it holds,
-    // whichever of them verified the signature.
+fn the_verify_span_records_the_secret_count_the_body_length_and_one_of_two_outcomes() {
+    // The two outcomes are the two ways `verify` can end, each read as a
+    // label from what the span closed with: the signature arrives parsed, so
+    // a malformed header is refused before the span opens and is no outcome
+    // of it. `secret_count` and `body_len` are read from what it opened
+    // with, as integers: both are known before any comparison runs, and a
+    // rotated verifier counts every secret it holds, whichever of them
+    // verified the signature.
     let rotated =
         Verifier::new(WebhookSecret::new("previous secret")).also(WebhookSecret::new(SECRET));
     let cases = [
@@ -411,14 +420,6 @@ fn the_verify_span_records_the_secret_count_the_body_length_and_one_of_three_out
             1,
             "mismatch",
             Err(SignatureError::Mismatch),
-        ),
-        (
-            "a malformed signature",
-            verifier(),
-            MALFORMED_SIGNATURE.to_owned(),
-            1,
-            "malformed",
-            Err(SignatureError::Malformed),
         ),
         (
             "a rotated verifier, the signature under the secret it was rotated to",
@@ -487,7 +488,7 @@ mod receiving {
     /// The request the receiver accepts: [`BODY`] signed by the verifier it
     /// was built with.
     pub(super) fn signed_request() -> Request<Full<Bytes>> {
-        request_with_signature(&verifier().sign(BODY))
+        request_with_signature(&verifier().sign(BODY).to_string())
     }
 
     /// The same request carrying `signature` as its `X-Hub-Signature-256`:
@@ -556,7 +557,7 @@ fn the_receive_span_records_one_of_five_outcomes_beside_the_status_answered() {
         (
             "a signature under another secret",
             receiving::receiver(dispatcher()),
-            receiving::request_with_signature(&another_verifier().sign(BODY)),
+            receiving::request_with_signature(&another_verifier().sign(BODY).to_string()),
             "unauthorized",
             401,
         ),
@@ -626,7 +627,7 @@ fn a_refusal_before_any_handler_ran_records_its_error_on_the_receive_span() {
 
     let unreadable = receiving::request_over(
         receiving::FailingBody("connection reset by peer"),
-        &verifier().sign(BODY),
+        &verifier().sign(BODY).to_string(),
     );
     let (recording, response) = common::traced(receiver.receive(unreadable));
     assert_eq!(response.status(), 400);
@@ -646,6 +647,34 @@ fn a_refusal_before_any_handler_ran_records_its_error_on_the_receive_span() {
     assert_eq!(response.status(), 204);
     let fields = &recording.span("octoevents.receive").at_close;
     assert_eq!(fields.get("error"), None, "{fields}");
+}
+
+/// The verify span is about the HMAC comparison and nothing else: a header
+/// that is not a signature is refused from the headers, before the verifier
+/// is asked, so the receive span records the refusal and no verify span opens.
+/// The refusal is told apart from a mismatch by the receive span's `outcome`
+/// and `error`, not by an outcome of a span that never ran.
+#[cfg(feature = "http")]
+#[test]
+fn a_malformed_signature_header_is_refused_before_any_verify_span_opens() {
+    let receiver = receiving::receiver(dispatcher());
+
+    let (recording, response) =
+        common::traced(receiver.receive(receiving::request_with_signature(MALFORMED_SIGNATURE)));
+
+    assert_eq!(response.status(), 400);
+    assert!(!recording.has_span("octoevents.verify"), "{recording}");
+    let fields = &recording.span("octoevents.receive").at_close;
+    assert_eq!(
+        fields.get("outcome"),
+        Some(&Value::Str("bad_request".into())),
+        "{fields}"
+    );
+    assert_eq!(
+        fields.debug("error"),
+        Some("malformed X-Hub-Signature-256 header"),
+        "{fields}"
+    );
 }
 
 /// A field recorded on more than one span is the same field to a dashboard
@@ -687,9 +716,9 @@ fn the_receive_and_dispatch_spans_record_their_shared_fields_in_the_same_form() 
 
 /// The receive and dispatch spans are one per delivery and carry the fields
 /// an operator filters on, so they open at INFO. The verify span is the
-/// detail behind the receive span's `unauthorized` and `bad_request`
-/// outcomes, one more span per delivery at scale, so it opens at DEBUG: a
-/// subscriber at INFO never sees it, and one at DEBUG sees all three.
+/// detail behind the receive span's `unauthorized` outcome, one more span
+/// per delivery at scale, so it opens at DEBUG: a subscriber at INFO never
+/// sees it, and one at DEBUG sees all three.
 #[cfg(feature = "http")]
 #[test]
 fn the_verify_span_opens_at_debug_and_the_receive_and_dispatch_spans_at_info() {

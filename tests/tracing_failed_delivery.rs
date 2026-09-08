@@ -49,7 +49,7 @@ fn request_with(event: &str, body: &'static [u8]) -> Request<Full<Bytes>> {
         .header("content-type", "application/json")
         .header("x-github-delivery", "delivery")
         .header("x-github-event", event)
-        .header("x-hub-signature-256", verifier().sign(body))
+        .header("x-hub-signature-256", verifier().sign(body).to_string())
         .body(Full::new(Bytes::from_static(body)))
         .unwrap()
 }

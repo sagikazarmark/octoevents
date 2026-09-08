@@ -126,7 +126,9 @@ fn a_refusal_records_its_error_on_the_receive_span_but_nothing_secret_derived() 
     let receiver = WebhookReceiverBuilder::new(verifier()).build(|_| async { Ok::<_, ()>(()) });
     let (signature, _) = signed_request();
 
-    let another = Verifier::new(WebhookSecret::new("another secret")).sign(BODY);
+    let another = Verifier::new(WebhookSecret::new("another secret"))
+        .sign(BODY)
+        .to_string();
     let (recording, response) = common::traced(receiver.receive(request_signed_with(&another)));
     assert_eq!(response.status(), 401);
     let receive = &recording.span("octoevents.receive").at_close;
@@ -185,8 +187,10 @@ impl http_body::Body for FailingBody {
     }
 }
 
+/// The request the receivers here accept, beside the signature it carries as
+/// text, for the assertions to look for in the output.
 fn signed_request() -> (String, Request<Full<Bytes>>) {
-    let signature = verifier().sign(BODY);
+    let signature = verifier().sign(BODY).to_string();
     (signature.clone(), request_signed_with(&signature))
 }
 

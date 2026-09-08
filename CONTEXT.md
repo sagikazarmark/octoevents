@@ -166,9 +166,25 @@ idempotency key. In prose, "delivery" names one attempt ("runs for every
 delivery", "fails the delivery"); it never names the envelope or any type.
 
 **Verify**:
-The mechanism: HMAC comparison of `X-Hub-Signature-256` against the body.
-"Authenticate" is acceptable in prose for the goal verification achieves.
+The mechanism: HMAC comparison of `X-Hub-Signature-256` against the body,
+`Verifier::verify`, over a `Signature` already parsed. It decides `Mismatch`
+and nothing else: whether the header is there is decided from the headers
+(`Missing`), and whether it is a signature by parsing it (`Malformed`), both
+before the verifier is asked. "Authenticate" is acceptable in prose for the
+goal verification achieves.
 _Avoid_: Validate (collides with schema validation, despite GitHub's docs)
+
+**Signature**:
+The `X-Hub-Signature-256` value parsed once, as the type `Signature`: the 32
+MAC bytes, nothing else. A header value becomes one through `str::parse`, or
+`TryFrom<&[u8]>` for a transport with the header's bytes and no string, and
+that parse is the one origin of `Malformed`; `Display` renders the header
+value back, `Debug` is redacted, equality is constant-time. What
+`Verifier::sign` produces and `Verifier::verify` takes, so the verifier is
+handed a settled format and can only mismatch. In prose, "signature" alone
+names the value once the header is in context; "signature header" names the
+wire string before parsing, as "event name" does for the kind.
+_Avoid_: MAC or tag as the type (the bytes inside, not the parsed header value), digest (a hash, not a MAC), signature header as the type (the unparsed string), `HeaderValue` (the `http` type it may arrive as)
 
 **Verifier**:
 The component owning the configured secrets and performing signature
@@ -197,11 +213,15 @@ _Avoid_: Token, key, `Secret` as the type (the former name; generic at the root 
 **SignatureError**:
 Why a body did not authenticate: the `X-Hub-Signature-256` header was
 `Missing`, `Malformed` (not `sha256=` and 64 hex digits), or a `Mismatch`
-under every configured secret. Named for its subject, the signature, not
-for the operation: `Missing` is decided from the headers before `verify`
-runs, so an error named after verifying misdescribed a third of itself. The
-`Signature` variant of `ReceiveError`. Distinct from `WebhookSecretError`,
-a configuration failure found before any delivery arrives.
+under every configured secret. Each variant has one origin: `Missing` is
+decided from the headers, `Malformed` by parsing the header into a
+`Signature`, `Mismatch` by `Verifier::verify`, in that order, so the verifier
+is handed a parsed value and has no format left to refuse. Named for its
+subject, the signature, not for the operation: two of its three variants are
+decided before `verify` runs, so an error named after verifying misdescribed
+most of itself. The `Signature` variant of `ReceiveError`. Distinct from
+`WebhookSecretError`, a configuration failure found before any delivery
+arrives.
 _Avoid_: `VerifyError` (the former name), `MissingSignature` and `MalformedSignature` (the former variants; the type already says signature), authentication error (the goal, not the mechanism; also reads as GitHub App auth)
 
 **Payload**:

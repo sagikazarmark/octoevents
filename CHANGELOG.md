@@ -19,8 +19,14 @@ reads the "Changed" and "Removed" lists first.
 - `WebhookSecretError`: the error `str::parse::<WebhookSecret>` returns for
   an empty secret, for a deployment that reads its secret per request and
   answers instead of panicking.
-- `Verifier::sign`: the `X-Hub-Signature-256` value GitHub would send for a
-  body, so a test drives the receiver it built with no HMAC code of its own.
+- `Signature`: the `X-Hub-Signature-256` value parsed once, as the 32 MAC
+  bytes. `str::parse` and `TryFrom<&[u8]>` refuse anything that is not
+  `sha256=` and 64 hex digits as `SignatureError::Malformed`, `Display`
+  renders the header value back, `Debug` is redacted, and equality is
+  `subtle::ConstantTimeEq`.
+- `Verifier::sign`: the `Signature` GitHub would send for a body, whose
+  `to_string()` is the header value, so a test drives the receiver it built
+  with no HMAC code of its own.
 - `Envelope::new`: an unverified envelope for a test, its meta read from the
   same bytes the receiver would read.
 - `Envelope::decode_payload`: a kind-checked decode into any `Payload`.
@@ -130,6 +136,20 @@ reads the "Changed" and "Removed" lists first.
   `Verifier::new` and `Verifier::also` have nothing left to refuse. An empty
   secret is the unset-environment-variable failure mode, and verifying
   against it would accept any sender who guessed the key.
+- **Breaking:** `Verifier::verify` takes a `&Signature` where it took the
+  header as `&str`, and fails only with `SignatureError::Mismatch`: a direct
+  caller parses the header first, `header.parse::<Signature>()?`, and that
+  parse is the one place `Malformed` comes from. `Missing` is decided from
+  the headers by `Envelope::from_signed` and the receiver, `Malformed` by the
+  parse, `Mismatch` by `verify`, each in exactly one place. The receiver now
+  refuses a header that is not a signature before reading the body, as it
+  already did an absent one; the statuses are unchanged, 400 and 401.
+- **Breaking:** `tracing` feature: the `octoevents.verify` span's `outcome`
+  is `verified` or `mismatch`; `malformed` is gone, since a malformed header
+  is refused before the verifier is asked and opens no verify span. The
+  receive span still records that refusal as `bad_request` with `error` =
+  `malformed X-Hub-Signature-256 header`; before, whether a pre-HMAC refusal
+  opened the verify span depended on which check caught it.
 - **Breaking:** `tracing` feature: the `octoevents.receive` span records
   `outcome` as a label (`ok`, `unauthorized`, `bad_request`,
   `payload_too_large`, `handler_error`) and the HTTP status as a separate
