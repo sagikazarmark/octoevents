@@ -1,6 +1,6 @@
 # The test suite in tiers, cheapest first; CONTRIBUTING.md says which to run
 # when and what a plain `cargo test` leaves out. The four test tiers pass
-# `--all-features` so that nothing is; matrix, wasm and lint then vary the
+# `--all-features` so that nothing is skipped; matrix, wasm and lint then vary the
 # feature set and the target on purpose.
 #
 # The wasm tier checks the lib at both feature extremes, then builds the two
