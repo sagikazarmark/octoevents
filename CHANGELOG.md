@@ -48,6 +48,10 @@ reads the "Changed" and "Removed" lists first.
   the handler's error before the 500 is answered.
 - `WebhookReceiverBuilder::trace_errors` and `trace_boxed_errors` (`tracing`
   feature): put the error's text and source on the failed-delivery event.
+  `trace_errors` asks `TracedError`, a sealed trait every `Error` implements,
+  and `trace_boxed_errors` asks `BoxedError`, an error behind a pointer or a
+  `DispatchError` over one; asking `trace_errors` of a boxed error is a
+  compile error that names `trace_boxed_errors`.
 - `HeaderView::from_lookup`: a view built by asking a string map for each
   header this crate reads.
 - The `header` module: the lowercase names of the headers the crate reads.

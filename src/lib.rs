@@ -151,16 +151,18 @@
 //! By default the event carries no text of the error, since the receiver
 //! places no bound on the handler's error type. The text is a setting on the
 //! receiver builder, and it goes on the same event, never a second one:
-//! `WebhookReceiverBuilder::trace_errors`, for an `E: Error`, records the
-//! error's `Display` as `error` and its `source()` as `source`, an error
-//! value the subscriber renders with the sources beneath it (the `fmt`
-//! subscriber prints `error=<text> source=<cause> source.sources=[<cause>,
-//! ..]`); `WebhookReceiverBuilder::trace_boxed_errors` does the same for a
-//! `BoxedError`, an error behind a pointer (`Box<dyn Error + Send + Sync>`,
-//! `anyhow::Error`) or a [`DispatchError`] over one, which is no `Error`
-//! itself. With a dispatcher, `error` says where (the tier, the handler and
-//! its registration site) and `source` why (the application error). An
-//! `on_error` observer runs beside the event and changes nothing about it.
+//! `WebhookReceiverBuilder::trace_errors`, for a `TracedError` (any
+//! `E: Error`), records the error's `Display` as `error` and its `source()`
+//! as `source`, an error value the subscriber renders with the sources
+//! beneath it (the `fmt` subscriber prints `error=<text> source=<cause>
+//! source.sources=[<cause>, ..]`); `WebhookReceiverBuilder::trace_boxed_errors`
+//! does the same for a `BoxedError`, an error behind a pointer (`Box<dyn
+//! Error + Send + Sync>`, `anyhow::Error`) or a [`DispatchError`] over one,
+//! which is no `Error` itself, and asking `trace_errors` of one is a compile
+//! error that says so. With a dispatcher, `error` says where (the tier, the
+//! handler and its registration site) and `source` why (the application
+//! error). An `on_error` observer runs beside the event and changes nothing
+//! about it.
 //!
 //! Nothing secret-derived is recorded anywhere: not the secret, the
 //! signature header, nor a computed MAC.
@@ -236,6 +238,8 @@ mod service;
 #[cfg(test)]
 mod test_support;
 mod trace;
+#[cfg(all(feature = "http", feature = "tracing"))]
+mod traced_error;
 mod verify;
 
 #[cfg(all(feature = "http", feature = "tracing"))]
@@ -257,6 +261,8 @@ pub use runtime::{MaybeSend, MaybeSync};
 pub use secret::Secret;
 #[cfg(feature = "http")]
 pub use service::{WebhookReceiver, WebhookReceiverBuilder};
+#[cfg(all(feature = "http", feature = "tracing"))]
+pub use traced_error::TracedError;
 pub use verify::{SecretError, Verifier, VerifyError};
 
 /// The byte buffer type of [`Envelope::raw_payload`] and of the body

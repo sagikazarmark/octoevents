@@ -350,9 +350,23 @@ over a box is no `Error`; a borrowed view that made it one would not be
 `'static`. A `Display`-bounded third method reopens if a run meets an error
 type that is only `Display`; `trace_boxed_errors` folds into `trace_errors`
 if std ever implements `Error` for the unsized box, the impl the E0119 note
-reserves. Recorded on `trace_errors` (the bound and the `Display`-only
-cost), `trace_boxed_errors` and `BoxedError` (the shapes admitted, and the
-two fields).
+reserves.
+
+The name `TracedError` was then taken for what does compile: a sealed trait
+with the one blanket impl over `E: Error` and no second, which `trace_errors`
+asks in place of `E: Error`. It admits exactly what the bare bound admitted,
+and exists for its `#[diagnostic::on_unimplemented]`: the comparative review
+(run 4) found that `.trace_errors()` on the front page's own
+`Dispatcher<Box<dyn Error + Send + Sync>>` was a ten-line rustc report about
+an unsized `dyn Error`, naming neither method. With the trait, and
+`#[diagnostic::do_not_recommend]` on its blanket so rustc does not name the
+impl in place of the message, the report is the crate's: "`DispatchError<Box<dyn
+Error + Send + Sync>>` is not an `Error`, so `trace_errors` cannot record
+it", with a note naming `trace_boxed_errors`. `Error` is its supertrait, so
+the receiver reads the error through `Error` as before, and the method's
+doctest holds the refusal as E0277. Recorded on `trace_errors` (the bound and
+the `Display`-only cost), `TracedError`, `trace_boxed_errors` and
+`BoxedError` (the shapes admitted, and the two fields).
 
 ## No `trace_error` observer
 
