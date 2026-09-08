@@ -537,6 +537,34 @@ under `I: Payload` and reads `I::KIND`, as the shipped relative shapes do,
 and both compile beside the shipped impls (probed). Recorded on `on`,
 `IntoMatcher` and `AnyAction`.
 
+## `From`, not a `map_err` adapter, to convert a route's errors
+
+A routed handler's error and the decode's `DecodeError` both become the
+dispatcher's `E` through `From`: `on` asks `E: From<H::Error> +
+From<DecodeError>`, `always` and `fallback` ask `E: From<H::Error>` alone.
+The dispatcher survey ranked the other shape, tower's, as portable: a
+`map_err`-style adapter at registration, a closure from the handler's error
+to `E` handed in beside the handler, instead of a bound on `E`
+([`rust-dispatch-designs.md`](../research/rust-dispatch-designs.md), the
+tower section's portable ideas). Declined. `From` is what `?` converts
+through and what `thiserror`'s `#[from]` exists to derive, so the conversion
+a handler's body already uses to return its error is the one the dispatcher
+uses to absorb it, and a handler written against `E` itself converts
+through nothing at all. The adapter would be a second conversion mechanism
+for the same error, spelled per registration, and the survey's own reason
+for it, that tower services are combinators with no shared error type, does
+not hold for a dispatcher whose one `E` is the point.
+
+What the bound costs was measured: the platform persona's application error
+needed one `#[from] DecodeError` variant (run 3), the quickstart's
+`Box<dyn Error + Send + Sync>` needs nothing, and `anyhow::Error` and
+`String` handlers register on it with no glue (the comparative review's
+probe). An adapter would reopen for a handler whose error `E` cannot
+convert from and the consumer cannot touch, a foreign type with no `From`
+either side may write; a closure over the handler does that today.
+Recorded on `Dispatcher` (the paragraph on `From` at registration) and `on`
+(which asks `From<DecodeError>` and why `always` does not).
+
 ## `fallback` stays, with one job
 
 No persona registered a fallback in run 2 or run 3: 0/4 in each of the two
@@ -576,7 +604,8 @@ registration was 25 lines, 19 of code, and buys the
 dispatch error (tier, handler name, registration site) and the outcome,
 which the adapter would have to reinvent. The third shape, a handler over
 `Envelope` that decodes its own view with `Envelope::decode_payload`, was
-22 lines, and is what the front page shows under "One event, one handler".
+22 lines, and is the shape `decode_payload`'s own docs and the `Handler`
+docs point the one-kind case at.
 What the adapter would save, the dispatcher already saves, in fewer lines
 and saying more.
 

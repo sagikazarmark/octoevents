@@ -149,9 +149,12 @@ impl Envelope {
     /// `P`'s kind.
     ///
     /// This is the decode of a single-purpose receiver: a handler over the
-    /// [`Envelope`] for one kind calls it instead of matching on
-    /// [`EventMeta::kind`] itself, and it is what a serde [`Payload`] decodes
-    /// through as a handler input. The kind check reports a wrong payload
+    /// [`Envelope`] whose webhook delivers one kind calls it instead of
+    /// matching on [`EventMeta::kind`] itself, and it is what a serde
+    /// [`Payload`] decodes through as a handler input. When the webhook
+    /// delivers several kinds, a handler that sees every envelope guards on
+    /// `meta.kind` (and the action) first, or every other kind fails the
+    /// delivery with a kind mismatch. The kind check reports a wrong payload
     /// type at the kind, not as a missing field somewhere in the JSON:
     ///
     #[cfg_attr(feature = "derive", doc = "```")]
