@@ -146,6 +146,11 @@ mod tests {
     use super::*;
     use syn::parse_quote;
 
+    /// The expansion rendered through `TokenStream::to_string`, the same
+    /// path an expected stream written with `quote!` is rendered through, so
+    /// a positive test compares two renderings of proc-macro2's making and
+    /// never a hand-spaced string: how proc-macro2 spaces tokens is not a
+    /// contract of that crate.
     fn expand(input: &DeriveInput) -> Result<String> {
         expand_payload(input).map(|tokens| tokens.to_string())
     }
@@ -158,10 +163,19 @@ mod tests {
         })
         .unwrap();
 
-        assert!(tokens.contains(
-            "impl :: octoevents :: Payload for IssueOpened where IssueOpened : :: serde :: de :: DeserializeOwned {"
-        ));
-        assert!(tokens.contains("const KIND : :: octoevents :: EventKind = EventKind :: Issues ;"));
+        assert_eq!(
+            tokens,
+            quote! {
+                #[automatically_derived]
+                impl ::octoevents::Payload for IssueOpened
+                where
+                    IssueOpened: ::serde::de::DeserializeOwned
+                {
+                    const KIND: ::octoevents::EventKind = EventKind::Issues;
+                }
+            }
+            .to_string()
+        );
     }
 
     #[test]
@@ -188,7 +202,19 @@ mod tests {
         })
         .unwrap();
 
-        assert!(tokens.contains("= octoevents :: EventKind :: PullRequest ;"));
+        assert_eq!(
+            tokens,
+            quote! {
+                #[automatically_derived]
+                impl ::octoevents::Payload for PullRequestNumber
+                where
+                    PullRequestNumber: ::serde::de::DeserializeOwned
+                {
+                    const KIND: ::octoevents::EventKind = octoevents::EventKind::PullRequest;
+                }
+            }
+            .to_string()
+        );
     }
 
     #[test]
@@ -199,9 +225,20 @@ mod tests {
         })
         .unwrap();
 
-        assert!(tokens.contains(
-            "impl < T : Clone > :: octoevents :: Payload for View < T > where T : Send , View < T > : :: serde :: de :: DeserializeOwned {"
-        ));
+        assert_eq!(
+            tokens,
+            quote! {
+                #[automatically_derived]
+                impl<T: Clone> ::octoevents::Payload for View<T>
+                where
+                    T: Send,
+                    View<T>: ::serde::de::DeserializeOwned
+                {
+                    const KIND: ::octoevents::EventKind = EventKind::Issues;
+                }
+            }
+            .to_string()
+        );
     }
 
     #[test]
@@ -212,14 +249,29 @@ mod tests {
         })
         .unwrap();
 
-        assert!(tokens.contains(
-            "impl < T > :: octoevents :: Payload for View < T > where View < T > : :: serde :: de :: DeserializeOwned {"
-        ));
+        assert_eq!(
+            tokens,
+            quote! {
+                #[automatically_derived]
+                impl<T> ::octoevents::Payload for View<T>
+                where
+                    View<T>: ::serde::de::DeserializeOwned
+                {
+                    const KIND: ::octoevents::EventKind = EventKind::Issues;
+                }
+            }
+            .to_string()
+        );
     }
 
     #[test]
     fn other_attributes_are_ignored() {
-        let tokens = expand(&parse_quote! {
+        let alone = expand(&parse_quote! {
+            #[payload(EventKind::Issues)]
+            struct IssueOpened;
+        })
+        .unwrap();
+        let among_others = expand(&parse_quote! {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "snake_case")]
             #[payload(EventKind::Issues)]
@@ -227,7 +279,7 @@ mod tests {
         })
         .unwrap();
 
-        assert!(tokens.contains("for IssueOpened"));
+        assert_eq!(among_others, alone);
     }
 
     #[test]

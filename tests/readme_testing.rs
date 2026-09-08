@@ -236,5 +236,7 @@ async fn the_boxed_observer_reaches_the_serde_field_from_error_source_source() {
         "{}",
         lines[0]
     );
-    assert!(lines[1].contains("missing field `title`"), "{}", lines[1]);
+    // The field name is the README's claim; the sentence around it is
+    // serde_json's.
+    assert!(lines[1].contains("`title`"), "{}", lines[1]);
 }
