@@ -807,9 +807,6 @@ fn handler_failed(
     );
 }
 
-// The tests run on tokio and drive the `tower` service through `tower::ServiceExt`,
-// both native-only dev-dependencies, so the module is gated off `wasm32` as
-// `runtime` says; `tests/wasm_handlers.rs` is what compiles for that target.
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use std::{

@@ -1,15 +1,17 @@
 # The test suite in tiers, cheapest first; CONTRIBUTING.md says which to run
 # when and what a plain `cargo test` leaves out. The four test tiers pass
-# `--all-features` so that nothing is skipped; matrix, wasm, msrv and lint then
-# vary the feature set, the target and the toolchain on purpose.
+# `--all-features` so that nothing is skipped; rustdoc, matrix, wasm, msrv and
+# lint then vary the feature set, the target and the toolchain on purpose.
+#
+# The rustdoc tier exists because a doctest run does not resolve links: the
+# front page links to items behind `http`, and only `cargo doc` under
+# `--no-default-features` says whether they still resolve without it.
 #
 # The matrix tier runs the suite at the three feature extremes, and between
 # them `cargo hack --each-feature` (from devenv) type-checks every test target
 # under each feature alone, where an import gated on one feature but used under
 # another goes stale unseen by the extremes; the suite itself runs only at the
-# extremes because nine runs of it would be slow for what a check catches. The
-# rustdoc tier is where a front-page link to an item behind `http` breaks under
-# `--no-default-features`; a doctest run does not resolve links.
+# extremes because nine runs of it would be slow for what a check catches.
 #
 # The wasm tier checks the lib at both feature extremes, then every test target
 # under one command (the unit test modules on tokio gate themselves off the
@@ -25,7 +27,7 @@
 #
 # CI runs what the Dagger module in `dagger.toml` runs, not this file; the
 # "Continuous integration" section of CONTRIBUTING.md says which tiers it
-# should be aligned with. Every tier is a plain cargo command so that wiring
+# should be aligned with. Every check here is a plain cargo command, so wiring
 # one is a line.
 
 # List the tiers.
@@ -48,29 +50,29 @@ integration:
 docs:
   cargo test --workspace --doc --all-features
 
-# Everything the suite has, under one feature set.
-full:
-  cargo test --workspace --all-features
-
-# Rustdoc at both feature extremes, warnings as errors: docs.rs builds with every feature, a consumer with none.
+# Rustdoc under no features and under all, warnings as errors.
 rustdoc:
   RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --no-default-features
   RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --all-features
 
-# The feature matrix: the suite under all (via full), rustdoc under none and all, every test target under each feature alone, then the suite under none and default.
+# Everything the suite has, under one feature set.
+full:
+  cargo test --workspace --all-features
+
+# The suite at the three feature extremes, rustdoc, and each feature alone with cargo hack.
 matrix: full rustdoc
   cargo hack --workspace --each-feature check --tests
   cargo test --workspace --no-default-features
   cargo test --workspace
 
-# The wasm32 target: lib checks at both extremes, every test target under one command, then the Worker example.
+# The wasm32 target: the lib at both extremes, every test target, then the Worker example.
 wasm:
   cargo check --target wasm32-unknown-unknown --no-default-features
   cargo check --target wasm32-unknown-unknown --all-features
   cargo check --tests --target wasm32-unknown-unknown --features octocrab,tower
   cargo check --manifest-path examples/worker/Cargo.toml --target wasm32-unknown-unknown
 
-# The declared minimum, Rust 1.88, at the three feature extremes with every target, against the lockfile; skipped with a message without that toolchain.
+# Rust 1.88, the declared minimum, at the three feature extremes; skipped without that toolchain.
 msrv:
   #!/usr/bin/env sh
   set -eu
@@ -82,6 +84,7 @@ msrv:
     echo 'msrv: skipped, no Rust 1.88 toolchain; `rustup toolchain install 1.88`, or put one first on PATH' >&2
     exit 0
   fi
+  # Unquoted on purpose: `cargo +1.88` is two words.
   set -x
   $cargo check --workspace --all-targets --locked --all-features
   $cargo check --workspace --all-targets --locked --no-default-features
