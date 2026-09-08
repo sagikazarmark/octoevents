@@ -35,11 +35,6 @@
 //! # let _ = request;
 //! ```
 //!
-//! A `HeaderName` is lowercase by construction and an `http::HeaderMap`
-//! matches names case-insensitively, so a request whose headers arrived as
-//! GitHub writes them (`X-GitHub-Delivery`), lowercased by an HTTP/2 hop, or
-//! re-cased by a proxy reads the same.
-//!
 //! [`Envelope::from_signed`]: crate::Envelope::from_signed
 
 use http::HeaderName;

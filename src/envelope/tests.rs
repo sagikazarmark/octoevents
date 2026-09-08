@@ -43,9 +43,9 @@ fn headers(signature: &str) -> HeaderMap {
     ])
 }
 
-/// A header map from `(name, value)` string pairs, the names parsed as a
-/// consumer hand-parsing an invocation event would parse them.
-fn header_map<const N: usize>(entries: [(&str, &str); N]) -> HeaderMap {
+/// A header map from `(name, value)` string pairs, each name parsed into a
+/// `HeaderName`.
+fn headers_from<const N: usize>(entries: [(&str, &str); N]) -> HeaderMap {
     entries
         .into_iter()
         .map(|(name, value)| (name.parse().unwrap(), value.parse().unwrap()))
@@ -57,7 +57,7 @@ fn header_map<const N: usize>(entries: [(&str, &str); N]) -> HeaderMap {
 mod receive {
     use bytes::Bytes;
 
-    use super::{BODY, header_map, headers, verifier};
+    use super::{BODY, headers, headers_from, verifier};
     use crate::{
         Action, BodyError, Envelope, EventKind, EventMeta, ReceiveError, RepositoryRef,
         SignatureError, TargetType,
@@ -109,7 +109,7 @@ mod receive {
     fn unknown_event_and_action_remain_routable() {
         let body = Bytes::from_static(br#"{"action":"brand_new"}"#);
         let signature = verifier().sign(&body).to_string();
-        let headers = header_map([
+        let headers = headers_from([
             ("x-hub-signature-256", signature.as_str()),
             ("x-github-delivery", "delivery"),
             ("x-github-event", "brand_new"),
@@ -127,7 +127,7 @@ mod receive {
 
     #[test]
     fn authenticates_before_rejecting_content_type() {
-        let headers = header_map([
+        let headers = headers_from([
             (
                 "x-hub-signature-256",
                 "sha256=0000000000000000000000000000000000000000000000000000000000000000",
@@ -166,7 +166,7 @@ mod receive {
             "{\"action\":\"opened\",\"zen\":\"⚡ \\u00e9 caf\u{e9} 🐙\"}".as_bytes();
 
         let signature = verifier().sign(UNICODE_BODY).to_string();
-        let headers = header_map([
+        let headers = headers_from([
             ("x-hub-signature-256", signature.as_str()),
             ("x-github-delivery", "delivery"),
             ("x-github-event", "pull_request"),
@@ -353,7 +353,7 @@ mod header_map {
     use bytes::Bytes;
     use http::{HeaderMap, HeaderValue};
 
-    use super::{BODY, header_map, headers, verifier};
+    use super::{BODY, headers, headers_from, verifier};
     use crate::{Action, Envelope, EventKind, ReceiveError, SignatureError, TargetType, header};
 
     #[test]
@@ -363,7 +363,7 @@ mod header_map {
         // and the map matches case-insensitively, so no casing policy on the
         // way here can turn into a 401.
         let signature = verifier().sign(BODY).to_string();
-        let headers = header_map([
+        let headers = headers_from([
             ("X-Hub-Signature-256", signature.as_str()),
             ("X-GitHub-Delivery", "delivery"),
             ("X-GitHub-Event", "pull_request"),
@@ -406,7 +406,7 @@ mod header_map {
         // A value that is present but not `sha256=` and 64 hex digits, here
         // GitHub's legacy SHA-1 header value. Refused from the headers,
         // before any secret is used.
-        let headers = header_map([
+        let headers = headers_from([
             (
                 "x-hub-signature-256",
                 "sha1=757107ea0eb2509fc211221cce984b8a37570b6d",

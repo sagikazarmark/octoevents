@@ -108,8 +108,8 @@
 //! dispatcher) depends on none of them and builds for `wasm32-unknown-unknown`.
 //! [`Envelope::from_signed`] over an `http::HeaderMap`, the [`header`]
 //! constants and [`ResponseStatus`] into `http::StatusCode` are part of it:
-//! the `http` crate is not optional, since every Rust runtime hands over its
-//! types, and it adds one entry to the dependency tree.
+//! the `http` crate is not optional, since every surveyed Rust runtime hands
+//! over its types, and it adds one entry to the dependency tree.
 //!
 //! # Tracing
 //!

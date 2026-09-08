@@ -580,8 +580,8 @@ let app: Router = Router::new().route("/webhook", post(move |request: Request| {
 
 **Without the `http-body` feature**, the core is sans-I/O: the verifier,
 `Envelope::from_signed` over an `http::HeaderMap` and the body as `Bytes`, the
-dispatcher and the wire format. That is the shape every Rust runtime hands
-over: `lambda_http`, `spin-sdk` and `wstd` give an `http::Request`, `worker`
+dispatcher and the wire format. That is the shape every surveyed Rust runtime
+hands over: `lambda_http`, `spin-sdk` and `wstd` give an `http::Request`, `worker`
 and `fastly` convert to one (`HeaderMap::from(&request.headers())` on a
 Worker), and `aws_lambda_events` carries a `HeaderMap` in its event structs; a
 consumer hand-parsing a raw invocation event collects its `(name, value)`
@@ -679,8 +679,8 @@ The core (envelope, verification, the handler trait and its inputs, the
 dispatcher) depends on none of them and builds for `wasm32-unknown-unknown`.
 `Envelope::from_signed` over an `http::HeaderMap`, the `header` constants and
 `ResponseStatus` into `http::StatusCode` are part of it: the `http` crate is
-not optional, since every Rust runtime hands over its types, and it adds one
-entry to the dependency tree.
+not optional, since every surveyed Rust runtime hands over its types, and it
+adds one entry to the dependency tree.
 
 ## License
 

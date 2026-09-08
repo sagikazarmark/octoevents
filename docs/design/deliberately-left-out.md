@@ -2,7 +2,7 @@
 
 Some requests come up in every webhook library, and some came up while this
 crate's handler API was reviewed. The ones below are declined on purpose, so
-the question is answered once. The evidence for the first five is in
+the question is answered once. The evidence for the first six is in
 [`../research/`](../research/), a survey of GitHub-webhook receivers in other
 ecosystems ([`webhook-libraries.md`](../research/webhook-libraries.md)) and of
 dispatcher designs in Rust
@@ -44,8 +44,8 @@ types could use the sans-I/O path. The survey in
 transport to be empty: `worker`, `lambda_http`, `aws_lambda_events`, `spin-sdk`
 4 and 7, `fastly`, `vercel_runtime` and `wstd` every one depend on `http`
 non-optionally and either are `http::Request` or convert to it with a `From`
-impl; the repo's own Workers example enables `http`. The only string-map
-transport is a consumer hand-parsing the raw invocation JSON, and
+impl; the repo's own Workers example already ran on `http` types. The only
+string-map transport is a consumer hand-parsing the raw invocation JSON, and
 `HeaderMap: FromIterator<(HeaderName, V)>` covers that in one line. The two
 Rust verifiers that take a container (svix, standardwebhooks) take
 `http::HeaderMap` and made `http` required; none takes a closure, a trait or
@@ -72,8 +72,10 @@ the survey found no precedent for any of them in Rust and no runtime that
 would use them. The `header` constants stayed, as `HeaderName`s, for the two
 uses that exist: a streaming transport's pre-body signature check and a test's
 `http::Request::builder()`. Recorded on `from_signed` and on the `header`
-module; the feature that gated the crate and the receiver together is
-`http-body`, gating the receiver's body handling alone.
+module. The feature that gated the crate and the receiver together is
+`http-body`, gating the receiver's body handling alone and named for what it
+turns on in dependency terms; `receiver`, named for what it provides, was the
+alternative and is deferred, not rejected.
 
 ## Kind from the header, not the payload's shape
 

@@ -44,8 +44,8 @@ derive = ["dep:octoevents-derive"]
 # The receiver's body handling: `WebhookReceiver`, its builder and `receive`
 # over an `http_body::Body`. The `http` crate itself is not optional: every
 # surveyed Rust runtime hands over an `http::HeaderMap`, so `from_signed` reads
-# one (`docs/research/header-abstractions.md`). `receiver` is the alternative
-# name, deferred; this one says what it turns on in dependency terms.
+# one; the survey and the feature's name are under "No header view" in
+# `docs/design/deliberately-left-out.md`.
 http-body = ["dep:http-body", "dep:http-body-util"]
 octocrab = ["dep:octocrab"]
 tower = ["http-body", "dep:tower-service"]

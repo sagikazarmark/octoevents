@@ -295,7 +295,7 @@ impl Envelope {
     /// This is the sans-I/O entry point: the receiver (`http-body` feature)
     /// is built on it, and a transport with no `http_body::Body` calls it
     /// directly with the request's `http::HeaderMap` and the body as
-    /// [`Bytes`], which is the shape every Rust runtime hands over:
+    /// [`Bytes`], which is the shape every surveyed Rust runtime hands over:
     /// `lambda_http` and `spin-sdk` give an `http::Request`, `worker` and
     /// `fastly` convert to one, and `aws_lambda_events` carries a `HeaderMap`
     /// in its event structs. A consumer hand-parsing a raw invocation event
@@ -311,7 +311,8 @@ impl Envelope {
     /// reads as its first value. The signature is parsed from the header
     /// value's bytes, so a value that is not visible ASCII is
     /// [`SignatureError::Malformed`], not `Missing`; for every other header
-    /// such a value reads as absent, and so does an empty one.
+    /// such a value reads as absent, and an empty delivery ID or event name
+    /// is [`ReceiveError::MissingHeader`] as an absent one is.
     ///
     /// The probe of the payload is best-effort and never fails the
     /// construction; the rules are on [`Envelope::new`], which reads the

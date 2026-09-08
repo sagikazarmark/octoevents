@@ -14,7 +14,7 @@
 //! them is re-blessed with `TRYBUILD=overwrite cargo test --all-features
 //! --test diagnostics`, and the diff is reviewed as the message is.
 //!
-//! The fixtures use the receiver, so the harness exists with `http` and
+//! The fixtures use the receiver, so the harness exists with `http-body` and
 //! `tracing` together.
 
 #![cfg(all(

@@ -1,8 +1,8 @@
 //! The bound `WebhookReceiverBuilder::trace_boxed_errors` places on the
 //! handler's error: an error behind a pointer, or a `DispatchError` over one.
 //!
-//! The receiver is its only consumer and the receiver exists with `http`, so
-//! the module and the export exist with `http` and `tracing` together; a
+//! The receiver is its only consumer and the receiver exists with `http-body`,
+//! so the module and the export exist with `http-body` and `tracing` together; a
 //! `tracing`-only build has nothing that could use it and does not compile
 //! it. It is a module of its own rather than part of the receiver because the
 //! impl for [`DispatchError`] names the dispatcher's error type, and the
