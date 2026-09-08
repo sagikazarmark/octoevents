@@ -155,7 +155,13 @@ mod tests {
     use bytes::Bytes;
     use octocrab::models::webhook_events::{WebhookEventPayload, WebhookEventType};
 
-    use crate::{EventKind, test_support::envelope};
+    use crate::{
+        DecodeError, Envelope, EventKind,
+        test_support::{
+            check_run_completed, envelope, installation_created, installation_repositories_removed,
+            ping, pull_request_opened, unknown, unrepresentable,
+        },
+    };
 
     #[test]
     fn returns_octocrab_models_when_the_payload_is_supported() {
@@ -184,12 +190,19 @@ mod tests {
 
     #[test]
     fn fails_for_payloads_octocrab_cannot_represent() {
-        let envelope = envelope(EventKind::PullRequest, br#"{"future":true}"#);
+        // The fixture the dispatcher tests route to a handler over
+        // `WebhookEvent` when a decode must fail: valid JSON under a known
+        // kind, carrying nothing octocrab's model of that kind requires. A
+        // consumer view over the same bytes still decodes; only octocrab's
+        // path refuses them, and the raw payload is untouched either way.
+        let envelope = unrepresentable();
 
-        assert!(envelope.decode_event().is_err());
+        let error = envelope.decode_event().unwrap_err();
+
+        assert!(matches!(error, DecodeError::Json(_)), "{error:?}");
         assert_eq!(
             envelope.raw_payload,
-            Bytes::from_static(br#"{"future":true}"#)
+            Bytes::from_static(include_bytes!("../tests/fixtures/unrepresentable.json"))
         );
     }
 
@@ -203,8 +216,6 @@ mod tests {
 
     #[test]
     fn octocrab_payload_types_decode_the_fixture_corpus_for_their_kind() {
-        use std::str::FromStr as _;
-
         use octocrab::models::webhook_events::payload::{
             CheckRunWebhookEventPayload, InstallationRepositoriesWebhookEventPayload,
             InstallationWebhookEventPayload, PingWebhookEventPayload,
@@ -213,34 +224,87 @@ mod tests {
 
         use crate::Payload;
 
-        fn decodes<P: Payload + serde::de::DeserializeOwned>(
-            event_name: &str,
-            payload: &'static [u8],
-        ) -> bool {
-            let kind = EventKind::from_str(event_name).unwrap();
-            assert_eq!(P::KIND, kind, "{event_name} maps to the wrong kind");
-            envelope(kind, payload).decode_payload::<P>().is_ok()
+        /// The type is bound to the fixture's kind, and the fixture decodes
+        /// into it: the two halves of `Payload` for one of octocrab's structs.
+        fn assert_decodes<P: Payload + serde::de::DeserializeOwned>(envelope: &Envelope) {
+            assert_eq!(P::KIND, envelope.meta.kind, "bound to the wrong kind");
+            envelope
+                .decode_payload::<P>()
+                .unwrap_or_else(|error| panic!("{}: {error}", envelope.meta.kind));
         }
 
-        assert!(decodes::<PullRequestWebhookEventPayload>(
-            "pull_request",
-            include_bytes!("../tests/fixtures/pull_request.opened.json"),
-        ));
-        assert!(decodes::<CheckRunWebhookEventPayload>(
-            "check_run",
-            include_bytes!("../tests/fixtures/check_run.completed.json"),
-        ));
-        assert!(decodes::<InstallationWebhookEventPayload>(
-            "installation",
-            include_bytes!("../tests/fixtures/installation.created.json"),
-        ));
-        assert!(decodes::<InstallationRepositoriesWebhookEventPayload>(
-            "installation_repositories",
-            include_bytes!("../tests/fixtures/installation_repositories.removed.json"),
-        ));
-        assert!(decodes::<PingWebhookEventPayload>(
-            "ping",
-            include_bytes!("../tests/fixtures/ping.json")
-        ));
+        assert_decodes::<PullRequestWebhookEventPayload>(&pull_request_opened());
+        assert_decodes::<CheckRunWebhookEventPayload>(&check_run_completed());
+        assert_decodes::<InstallationWebhookEventPayload>(&installation_created());
+        assert_decodes::<InstallationRepositoriesWebhookEventPayload>(
+            &installation_repositories_removed(),
+        );
+        assert_decodes::<PingWebhookEventPayload>(&ping());
+    }
+
+    #[test]
+    fn decode_event_represents_every_corpus_fixture_as_its_kinds_payload() {
+        use octocrab::models::webhook_events::payload::{
+            CheckRunWebhookEventAction, InstallationRepositoriesWebhookEventAction,
+            InstallationWebhookEventAction, PullRequestWebhookEventAction,
+        };
+
+        // Every fixture the corpus holds, with octocrab's kind for it. The
+        // payload each decodes into is checked against a value the fixture is
+        // known to carry, so a drift in octocrab's model of a kind fails at
+        // the fixture that shows it, and an event name the crate does not
+        // know still decodes, as generic JSON.
+        let corpus = [
+            (pull_request_opened(), WebhookEventType::PullRequest),
+            (check_run_completed(), WebhookEventType::CheckRun),
+            (installation_created(), WebhookEventType::Installation),
+            (
+                installation_repositories_removed(),
+                WebhookEventType::InstallationRepositories,
+            ),
+            (ping(), WebhookEventType::Ping),
+            (
+                unknown(),
+                WebhookEventType::Unknown("future_event".to_owned()),
+            ),
+        ];
+
+        for (envelope, kind) in corpus {
+            let event = envelope
+                .decode_event()
+                .unwrap_or_else(|error| panic!("{}: {error}", envelope.meta.kind));
+
+            assert_eq!(event.kind, kind);
+            match (kind, event.specific) {
+                (WebhookEventType::PullRequest, WebhookEventPayload::PullRequest(payload)) => {
+                    assert_eq!(payload.action, PullRequestWebhookEventAction::Opened);
+                    assert_eq!(payload.number, 2);
+                }
+                (WebhookEventType::CheckRun, WebhookEventPayload::CheckRun(payload)) => {
+                    assert_eq!(payload.action, CheckRunWebhookEventAction::Completed);
+                    assert_eq!(payload.check_run["name"], "Octocoders-linter");
+                }
+                (WebhookEventType::Installation, WebhookEventPayload::Installation(payload)) => {
+                    assert_eq!(payload.action, InstallationWebhookEventAction::Created);
+                }
+                (
+                    WebhookEventType::InstallationRepositories,
+                    WebhookEventPayload::InstallationRepositories(payload),
+                ) => {
+                    assert_eq!(
+                        payload.action,
+                        InstallationRepositoriesWebhookEventAction::Removed
+                    );
+                    assert_eq!(payload.repositories_removed.len(), 1);
+                }
+                (WebhookEventType::Ping, WebhookEventPayload::Ping(payload)) => {
+                    assert_eq!(payload.zen.as_deref(), Some("Design for failure."));
+                }
+                (WebhookEventType::Unknown(_), WebhookEventPayload::Unknown(json)) => {
+                    assert_eq!(json["zen"], "Design for failure.");
+                }
+                (kind, specific) => panic!("{kind:?} decoded as {specific:?}"),
+            }
+        }
     }
 }
