@@ -26,7 +26,7 @@ The suite is run through the `justfile` in tiers; `just` lists them.
 
 A plain `cargo test` is partial. `tracing` and `octocrab` are off by default
 and the README's doctests need `tower` (beside `derive`, which is on), so it
-skips the README's programs, the fixture corpus tests in `src/decode.rs` and
+skips the README's programs, the fixture corpus tests in `src/octocrab.rs` and
 every test in the three `tracing_*` binaries, `tracing_hygiene` among them,
 and passes with nothing to say about them. `just full` is the complete run.
 

@@ -249,7 +249,7 @@ mod receive {
     };
     use crate::{
         BodyError, Dispatcher, Envelope, EventKind, ReceiveError, WebhookReceiverBuilder,
-        service::read_body, test_support::AppError,
+        receiver::read_body, test_support::AppError,
     };
 
     #[tokio::test]
@@ -938,7 +938,7 @@ mod respond {
 
     use crate::{
         ResponseStatus,
-        service::{empty_response, outcome_label},
+        receiver::{empty_response, outcome_label},
     };
 
     #[test]

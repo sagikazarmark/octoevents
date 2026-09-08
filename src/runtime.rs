@@ -5,7 +5,7 @@
 //! they impose no bound and allow futures and handlers containing JS values.
 //!
 //! Every `target_arch = "wasm32"` split in the crate's bounds lives here,
-//! except the `dyn Fn` alias for the receiver's error observer in `service`,
+//! except the `dyn Fn` alias for the receiver's error observer in `receiver`,
 //! which cannot be expressed through these traits because a trait object
 //! admits only one non-auto trait. Test modules that need tokio are gated on
 //! native separately.

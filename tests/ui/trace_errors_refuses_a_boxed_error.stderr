@@ -7,7 +7,7 @@ error[E0277]: `DispatchError<Box<(dyn std::error::Error + Send + Sync + 'static)
    = help: the trait `TracedError` is not implemented for `DispatchError<Box<(dyn std::error::Error + Send + Sync + 'static)>>`
    = note: `Box<dyn Error + Send + Sync>`, `anyhow::Error` and a `DispatchError` over them are traced with `trace_boxed_errors` instead
 note: required by a bound in `WebhookReceiverBuilder::<E>::trace_errors`
-  --> src/service.rs
+  --> src/receiver.rs
    |
    |     pub fn trace_errors(mut self) -> Self
    |            ------------ required by a bound in this associated function

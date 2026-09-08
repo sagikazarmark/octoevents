@@ -233,30 +233,24 @@
 // no separate `doc(cfg(...))`.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-#[cfg(all(feature = "http-body", feature = "tracing"))]
-mod boxed_error;
-#[cfg(feature = "octocrab")]
-mod decode;
 mod dispatch;
 mod envelope;
 mod events;
 mod handler;
 pub mod header;
 mod matcher;
+#[cfg(feature = "octocrab")]
+mod octocrab;
 mod payload;
+#[cfg(feature = "http-body")]
+mod receiver;
 mod respond;
 mod runtime;
-#[cfg(feature = "http-body")]
-mod service;
 mod signature;
 #[cfg(test)]
 mod test_support;
 mod trace;
-#[cfg(all(feature = "http-body", feature = "tracing"))]
-mod traced_error;
 
-#[cfg(all(feature = "http-body", feature = "tracing"))]
-pub use boxed_error::BoxedError;
 pub use dispatch::{DispatchError, Dispatcher, DispatcherBuilder, Match, Outcome, Tier};
 pub use envelope::{BodyError, DecodeError, Envelope, EventMeta, ReceiveError, RepositoryRef};
 pub use events::{Action, EventKind, TargetType};
@@ -267,13 +261,13 @@ pub use matcher::{AnyAction, EventMatcher, IntoMatcher};
 #[cfg(feature = "derive")]
 pub use octoevents_derive::Payload;
 pub use payload::{Event, FromEnvelope, Payload};
+#[cfg(feature = "http-body")]
+pub use receiver::{WebhookReceiver, WebhookReceiverBuilder};
 pub use respond::ResponseStatus;
 pub use runtime::{MaybeSend, MaybeSync};
-#[cfg(feature = "http-body")]
-pub use service::{WebhookReceiver, WebhookReceiverBuilder};
 pub use signature::{Signature, SignatureError, Verifier, WebhookSecret, WebhookSecretError};
 #[cfg(all(feature = "http-body", feature = "tracing"))]
-pub use traced_error::TracedError;
+pub use trace::{BoxedError, TracedError};
 
 /// The byte buffer type of [`Envelope::raw_payload`] and of the body
 /// [`Envelope::from_signed`] takes, re-exported from the `bytes` crate.
