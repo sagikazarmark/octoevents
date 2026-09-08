@@ -167,7 +167,8 @@ impl<E> WebhookReceiverBuilder<E> {
     /// use std::error::Error as _;
     ///
     /// use octoevents::{
-    ///     DispatchError, Dispatcher, Envelope, EventMeta, Secret, Verifier, WebhookReceiverBuilder,
+    ///     DispatchError, Dispatcher, Envelope, EventMeta, Verifier, WebhookReceiverBuilder,
+    ///     WebhookSecret,
     /// };
     /// # use octoevents::DecodeError;
     /// # #[derive(Debug, thiserror::Error)]
@@ -185,7 +186,7 @@ impl<E> WebhookReceiverBuilder<E> {
     /// // A failed delivery logs, before the 500:
     /// //   delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (issues.opened) failed in the always tier at the handler `app::main::{{closure}}` registered at src/main.rs:12:6
     /// //     caused by: database is down
-    /// let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("current secret")))
+    /// let receiver = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("current secret")))
     ///     .on_error(|_: &EventMeta, error: &DispatchError<AppError>| {
     ///         eprintln!("{error}");
     ///         let mut cause = error.source();
@@ -228,11 +229,11 @@ impl<E> WebhookReceiverBuilder<E> {
     /// says so, in the crate's words, for the front page's own error type:
     ///
     /// ```compile_fail,E0277
-    /// use octoevents::{Dispatcher, Secret, Verifier, WebhookReceiverBuilder};
+    /// use octoevents::{Dispatcher, Verifier, WebhookReceiverBuilder, WebhookSecret};
     /// type BoxError = Box<dyn std::error::Error + Send + Sync>;
     ///
     /// let dispatcher = Dispatcher::<BoxError>::builder().build();
-    /// let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("current secret")))
+    /// let receiver = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("current secret")))
     ///     .trace_errors() // `DispatchError<Box<dyn Error + Send + Sync>>` is not an `Error`, so `trace_errors` cannot record it
     ///     .build(dispatcher);
     /// ```
@@ -249,7 +250,7 @@ impl<E> WebhookReceiverBuilder<E> {
     /// ```
     ///
     /// ```
-    /// use octoevents::{DecodeError, Dispatcher, Envelope, Secret, Verifier, WebhookReceiverBuilder};
+    /// use octoevents::{DecodeError, Dispatcher, Envelope, Verifier, WebhookReceiverBuilder, WebhookSecret};
     /// # #[derive(Debug, thiserror::Error)]
     /// # enum AppError {
     /// #     #[error(transparent)]
@@ -262,7 +263,7 @@ impl<E> WebhookReceiverBuilder<E> {
     ///     .always(|_: Envelope| async { Err::<(), _>(AppError::Database) })
     ///     .build();
     ///
-    /// let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("current secret")))
+    /// let receiver = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("current secret")))
     ///     .trace_errors()
     ///     .build(dispatcher);
     /// # let _ = receiver;
@@ -293,7 +294,7 @@ impl<E> WebhookReceiverBuilder<E> {
     /// the crate front page's does:
     ///
     /// ```
-    /// use octoevents::{Dispatcher, Envelope, Secret, Verifier, WebhookReceiverBuilder};
+    /// use octoevents::{Dispatcher, Envelope, Verifier, WebhookReceiverBuilder, WebhookSecret};
     ///
     /// type BoxError = Box<dyn std::error::Error + Send + Sync>;
     ///
@@ -303,7 +304,7 @@ impl<E> WebhookReceiverBuilder<E> {
     /// }
     ///
     /// let dispatcher = Dispatcher::<BoxError>::builder().always(print).build();
-    /// let webhook = WebhookReceiverBuilder::new(Verifier::new(Secret::new("development-secret")))
+    /// let webhook = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("development-secret")))
     ///     .trace_boxed_errors()
     ///     .build(dispatcher);
     /// # let _ = webhook;
@@ -416,13 +417,13 @@ where
     /// names:
     ///
     /// ```
-    /// use octoevents::{Dispatcher, Secret, Verifier, WebhookReceiverBuilder, header};
+    /// use octoevents::{Dispatcher, Verifier, WebhookReceiverBuilder, WebhookSecret, header};
     ///
     /// type BoxError = Box<dyn std::error::Error + Send + Sync>;
     ///
     /// # tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
     /// let dispatcher = Dispatcher::<BoxError>::builder().build();
-    /// let verifier = Verifier::new(Secret::new("test-secret"));
+    /// let verifier = Verifier::new(WebhookSecret::new("test-secret"));
     /// let webhook = WebhookReceiverBuilder::new(verifier.clone()).build(dispatcher);
     ///
     /// let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
@@ -572,7 +573,7 @@ where
 ///
 /// ```
 /// use axum::{Router, routing::post_service};
-/// use octoevents::{Envelope, Handler, Secret, Verifier, WebhookReceiverBuilder};
+/// use octoevents::{Envelope, Handler, Verifier, WebhookReceiverBuilder, WebhookSecret};
 ///
 /// struct Persist { /* database pool */ }
 ///
@@ -586,8 +587,8 @@ where
 ///     }
 /// }
 ///
-/// let verifier = Verifier::new(Secret::new("current secret"))
-///     .also(Secret::new("previous secret"));
+/// let verifier = Verifier::new(WebhookSecret::new("current secret"))
+///     .also(WebhookSecret::new("previous secret"));
 ///
 /// let webhook = WebhookReceiverBuilder::new(verifier)
 ///     .body_limit(1024 * 1024)

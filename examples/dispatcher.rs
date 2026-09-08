@@ -51,7 +51,7 @@ use axum::{Router, routing::post_service};
 use octocrab::models::webhook_events::{WebhookEvent, payload::PullRequestWebhookEventPayload};
 use octoevents::{
     Action, DecodeError, DispatchError, Dispatcher, Envelope, Event, EventKind, EventMeta, Handler,
-    Match, Secret, Verifier, WebhookReceiverBuilder,
+    Match, Verifier, WebhookReceiverBuilder, WebhookSecret,
 };
 
 /// The application error every handler inside the dispatcher returns.
@@ -218,7 +218,7 @@ impl Handler<Event<PullRequestWebhookEventPayload>> for Labeler {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let secret = std::env::var("GITHUB_WEBHOOK_SECRET")?;
-    let verifier = Verifier::new(Secret::new(secret));
+    let verifier = Verifier::new(WebhookSecret::new(secret));
 
     // Routing only: what runs for which kind and action. Whether a delivery
     // is routed at all is the wrapper's decision.

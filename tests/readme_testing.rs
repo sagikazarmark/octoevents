@@ -16,8 +16,8 @@
 #![cfg(all(feature = "http", not(target_arch = "wasm32")))]
 
 use octoevents::{
-    Action, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, Match, Secret, Verifier,
-    WebhookReceiverBuilder, header,
+    Action, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, Match, Verifier,
+    WebhookReceiverBuilder, WebhookSecret, header,
 };
 
 /// The quickstart's application error: no error enum, `?` converts anything.
@@ -65,7 +65,7 @@ async fn accepts_a_signed_delivery() {
     let dispatcher = Dispatcher::<BoxError>::builder()
         .on((EventKind::Issues, Action::Opened), thank)
         .build();
-    let verifier = Verifier::new(Secret::new("test-secret"));
+    let verifier = Verifier::new(WebhookSecret::new("test-secret"));
     let webhook = WebhookReceiverBuilder::new(verifier.clone()).build(dispatcher);
 
     let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
@@ -104,9 +104,9 @@ fn the_readme_request(verifier: &Verifier) -> http::Request<String> {
 /// another secret answers the same request 401.
 #[tokio::test]
 async fn refuses_the_same_delivery_under_another_secret() {
-    let webhook = WebhookReceiverBuilder::new(Verifier::new(Secret::new("other-secret")))
+    let webhook = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("other-secret")))
         .build(thanks_opened_issues());
-    let request = the_readme_request(&Verifier::new(Secret::new("test-secret")));
+    let request = the_readme_request(&Verifier::new(WebhookSecret::new("test-secret")));
 
     let response = webhook.receive(request).await;
 
@@ -118,11 +118,13 @@ async fn refuses_the_same_delivery_under_another_secret() {
 /// it signs and one over the previous secret alone refuses it.
 #[tokio::test]
 async fn a_verifier_with_a_previous_secret_signs_under_its_first() {
-    let rotated = Verifier::new(Secret::new("test-secret")).also(Secret::new("previous-secret"));
-    let over_the_first = WebhookReceiverBuilder::new(Verifier::new(Secret::new("test-secret")))
-        .build(thanks_opened_issues());
+    let rotated = Verifier::new(WebhookSecret::new("test-secret"))
+        .also(WebhookSecret::new("previous-secret"));
+    let over_the_first =
+        WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("test-secret")))
+            .build(thanks_opened_issues());
     let over_the_previous =
-        WebhookReceiverBuilder::new(Verifier::new(Secret::new("previous-secret")))
+        WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("previous-secret")))
             .build(thanks_opened_issues());
 
     let accepted = over_the_first.receive(the_readme_request(&rotated)).await;

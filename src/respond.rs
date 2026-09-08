@@ -1,4 +1,4 @@
-use crate::{ReceiveError, VerifyError};
+use crate::{ReceiveError, SignatureError};
 
 /// The transport-independent status selected for a receive outcome.
 ///
@@ -43,10 +43,10 @@ impl ResponseStatus {
     #[must_use]
     pub fn for_receive_error(error: &ReceiveError) -> Self {
         match error {
-            ReceiveError::Verify(VerifyError::MissingSignature | VerifyError::Mismatch) => {
+            ReceiveError::Signature(SignatureError::Missing | SignatureError::Mismatch) => {
                 Self::Unauthorized
             }
-            ReceiveError::Verify(VerifyError::MalformedSignature)
+            ReceiveError::Signature(SignatureError::Malformed)
             | ReceiveError::MissingHeader { .. }
             | ReceiveError::UnsupportedContentType
             | ReceiveError::BodyRead(_) => Self::BadRequest,
@@ -57,7 +57,7 @@ impl ResponseStatus {
 
 #[cfg(test)]
 mod tests {
-    use crate::{BodyError, ReceiveError, ResponseStatus, VerifyError, header};
+    use crate::{BodyError, ReceiveError, ResponseStatus, SignatureError, header};
 
     #[test]
     fn maps_every_receive_error_to_the_status_the_contract_names() {
@@ -71,15 +71,15 @@ mod tests {
         // receiver answers with the mapped status is its own.
         let table = [
             (
-                ReceiveError::Verify(VerifyError::MissingSignature),
+                ReceiveError::Signature(SignatureError::Missing),
                 ResponseStatus::Unauthorized,
             ),
             (
-                ReceiveError::Verify(VerifyError::Mismatch),
+                ReceiveError::Signature(SignatureError::Mismatch),
                 ResponseStatus::Unauthorized,
             ),
             (
-                ReceiveError::Verify(VerifyError::MalformedSignature),
+                ReceiveError::Signature(SignatureError::Malformed),
                 ResponseStatus::BadRequest,
             ),
             (

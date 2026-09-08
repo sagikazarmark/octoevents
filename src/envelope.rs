@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_json::value::RawValue;
 use thiserror::Error;
 
-use crate::{Action, EventKind, TargetType, Verifier, VerifyError, header};
+use crate::{Action, EventKind, SignatureError, TargetType, Verifier, header};
 
 /// The routing metadata of a webhook: everything in an [`Envelope`] except
 /// the payload bytes.
@@ -152,7 +152,7 @@ impl RepositoryRef {
 /// step and every delivery is 401 with the secret correct: a map keyed
 /// `X-Hub-Signature-256` answers `None` for `x-hub-signature-256`, so the
 /// view has no signature and [`Envelope::from_signed`] refuses the request as
-/// [`VerifyError::MissingSignature`] before it reads anything else.
+/// [`SignatureError::Missing`] before it reads anything else.
 #[derive(Clone, Default)]
 pub struct HeaderView<'a> {
     signature: Option<Cow<'a, str>>,
@@ -223,14 +223,14 @@ impl<'a> HeaderView<'a> {
     /// name but a 401 on every delivery, the secret notwithstanding: the map
     /// answers `None` for `x-hub-signature-256` as for every other name, the
     /// view has no signature, and [`Envelope::from_signed`] reports
-    /// [`VerifyError::MissingSignature`] before it looks at the rest.
+    /// [`SignatureError::Missing`] before it looks at the rest.
     ///
     /// A string map cannot hold a header whose bytes are not a string, so
     /// this constructor never marks the signature malformed the way the
     /// `From<&http::HeaderMap>` conversion (`http` feature) does for a
     /// header value that is not visible ASCII. A signature that is present
     /// but not `sha256=` followed by 64 hexadecimal characters is still
-    /// [`VerifyError::MalformedSignature`], from the verifier.
+    /// [`SignatureError::Malformed`], from the verifier.
     ///
     /// ```
     /// use std::collections::HashMap;
@@ -315,13 +315,11 @@ impl<'a> HeaderView<'a> {
     /// Decidable from the headers alone, so the receiver uses it to refuse an
     /// unsigned request before reading the body, and `from_signed` uses it so
     /// both paths agree on which failure a header earns.
-    pub(crate) fn require_signature(&self) -> Result<&str, VerifyError> {
+    pub(crate) fn require_signature(&self) -> Result<&str, SignatureError> {
         if self.malformed_signature {
-            return Err(VerifyError::MalformedSignature);
+            return Err(SignatureError::Malformed);
         }
-        self.signature
-            .as_deref()
-            .ok_or(VerifyError::MissingSignature)
+        self.signature.as_deref().ok_or(SignatureError::Missing)
     }
 }
 
@@ -513,7 +511,7 @@ impl Envelope {
     ///
     /// use octoevents::{
     ///     Bytes, DEFAULT_BODY_LIMIT, Envelope, EventKind, Handler, HeaderView, ReceiveError,
-    ///     ResponseStatus, Verifier, VerifyError, header,
+    ///     ResponseStatus, SignatureError, Verifier, header,
     /// };
     ///
     /// async fn receive<H: Handler<Envelope>>(
@@ -527,7 +525,7 @@ impl Envelope {
     ///     // headers, so a transport that streams runs it before buffering;
     ///     // `from_signed` reaches the same answer for one that does not.
     ///     if received.get(header::SIGNATURE).is_none() {
-    ///         let error = ReceiveError::from(VerifyError::MissingSignature);
+    ///         let error = ReceiveError::from(SignatureError::Missing);
     ///         return ResponseStatus::for_receive_error(&error);
     ///     }
     ///
@@ -699,8 +697,8 @@ impl Envelope {
 /// A failure while receiving a webhook.
 ///
 /// What the receiving path reports before any handler runs, each variant
-/// naming the step that refused the request: [`Verify`](Self::Verify), when
-/// the signature header is absent, malformed or does not match;
+/// naming the step that refused the request: [`Signature`](Self::Signature),
+/// when the signature header is absent, malformed or does not match;
 /// [`MissingHeader`](Self::MissingHeader), when a required delivery header is
 /// absent or empty; [`UnsupportedContentType`](Self::UnsupportedContentType),
 /// when the webhook is not configured as JSON; [`BodyRead`](Self::BodyRead),
@@ -715,9 +713,10 @@ impl Envelope {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Error)]
 #[non_exhaustive]
 pub enum ReceiveError {
-    /// Authentication failed.
+    /// The signature was absent, malformed or did not match: the request
+    /// did not authenticate.
     #[error(transparent)]
-    Verify(#[from] VerifyError),
+    Signature(#[from] SignatureError),
     /// A required delivery header was absent or empty.
     #[error("missing {name} header")]
     MissingHeader {

@@ -50,16 +50,16 @@ impl From<std::convert::Infallible> for AppError {
 #[cfg(feature = "http")]
 #[test]
 fn the_receiver_accepts_single_threaded_handler_state() {
-    use octoevents::{Secret, Verifier, WebhookReceiverBuilder};
+    use octoevents::{Verifier, WebhookReceiverBuilder, WebhookSecret};
 
     let calls = Rc::new(Cell::new(0));
     let _receiver =
-        WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(Counter {
+        WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("secret"))).build(Counter {
             calls: Rc::clone(&calls),
         });
 
     let closure_calls = Rc::clone(&calls);
-    let _receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
+    let _receiver = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("secret"))).build(
         move |_: Envelope| {
             let calls = Rc::clone(&closure_calls);
             async move {
@@ -85,7 +85,7 @@ fn receive_accepts_a_single_threaded_body_and_handler() {
     use bytes::Bytes;
     use http::Request;
     use http_body::{Body, Frame};
-    use octoevents::{Secret, Verifier, WebhookReceiverBuilder};
+    use octoevents::{Verifier, WebhookReceiverBuilder, WebhookSecret};
 
     /// A Worker-shaped body: holds a non-`Send`, non-`Sync` value.
     struct JsBody {
@@ -106,7 +106,7 @@ fn receive_accepts_a_single_threaded_body_and_handler() {
     }
 
     let receiver =
-        WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(Counter {
+        WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("secret"))).build(Counter {
             calls: Rc::new(Cell::new(0)),
         });
     let request = Request::new(JsBody {
@@ -121,13 +121,13 @@ fn receive_accepts_a_single_threaded_body_and_handler() {
 #[cfg(feature = "http")]
 #[test]
 fn the_receiver_accepts_a_single_threaded_error_observer() {
-    use octoevents::{EventMeta, Secret, Verifier, WebhookReceiverBuilder};
+    use octoevents::{EventMeta, Verifier, WebhookReceiverBuilder, WebhookSecret};
 
     struct JsValue;
 
     let failures = Rc::new(Cell::new(0));
     let observer_failures = Rc::clone(&failures);
-    let _receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+    let _receiver = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("secret")))
         .on_error(move |_: &EventMeta, _: &JsValue| {
             observer_failures.set(observer_failures.get() + 1);
         })
@@ -140,7 +140,7 @@ fn the_receiver_accepts_a_single_threaded_error_observer() {
 #[cfg(feature = "http")]
 #[test]
 fn the_receiver_accepts_a_dispatcher_over_single_threaded_always_and_fallback_handlers() {
-    use octoevents::{Dispatcher, Secret, Verifier, WebhookReceiverBuilder};
+    use octoevents::{Dispatcher, Verifier, WebhookReceiverBuilder, WebhookSecret};
 
     let calls = Rc::new(Cell::new(0));
     let closure_calls = Rc::clone(&calls);
@@ -157,7 +157,7 @@ fn the_receiver_accepts_a_dispatcher_over_single_threaded_always_and_fallback_ha
         })
         .build();
     let _receiver =
-        WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(dispatcher);
+        WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("secret"))).build(dispatcher);
 }
 
 /// The `tower_service::Service` impl boxes the handler's future, and that box
@@ -168,13 +168,13 @@ fn the_tower_service_impl_accepts_single_threaded_handler_state() {
     use bytes::Bytes;
     use http::Request;
     use http_body_util::Full;
-    use octoevents::{Secret, Verifier, WebhookReceiverBuilder};
+    use octoevents::{Verifier, WebhookReceiverBuilder, WebhookSecret};
     use tower_service::Service;
 
     fn assert_service<S: Service<Request<Full<Bytes>>>>(_: &S) {}
 
     let receiver =
-        WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(Counter {
+        WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("secret"))).build(Counter {
             calls: Rc::new(Cell::new(0)),
         });
     assert_service(&receiver);
@@ -189,7 +189,7 @@ fn the_dispatcher_accepts_single_threaded_handlers_over_the_meta_the_envelope_a_
 {
     use octoevents::{
         Action, DecodeError, Dispatcher, Envelope, Event, EventKind, EventMeta, FromEnvelope,
-        Secret, Verifier, WebhookReceiverBuilder,
+        Verifier, WebhookReceiverBuilder, WebhookSecret,
     };
 
     #[derive(serde::Deserialize)]
@@ -267,7 +267,7 @@ fn the_dispatcher_accepts_single_threaded_handlers_over_the_meta_the_envelope_a_
         )
         .build();
     let _receiver =
-        WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(dispatcher);
+        WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("secret"))).build(dispatcher);
 }
 
 #[cfg(feature = "octocrab")]
@@ -343,10 +343,10 @@ fn the_dispatcher_accepts_single_threaded_handler_state_over_every_input() {
 
     #[cfg(feature = "http")]
     {
-        use octoevents::{Secret, Verifier, WebhookReceiverBuilder};
+        use octoevents::{Verifier, WebhookReceiverBuilder, WebhookSecret};
 
-        let _receiver =
-            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(dispatcher);
+        let _receiver = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("secret")))
+            .build(dispatcher);
     }
     // Without `http` there is no receiver to hand it to; building it was the point.
     #[cfg(not(feature = "http"))]

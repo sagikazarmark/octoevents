@@ -32,7 +32,7 @@ mod common;
 use common::{Fields, SpanRecord, Value};
 use octoevents::{
     Action, AnyAction, DecodeError, DispatchError, Dispatcher, Envelope, EventKind, Handler as _,
-    Match, Outcome, Secret, Verifier, VerifyError,
+    Match, Outcome, SignatureError, Verifier, WebhookSecret,
 };
 
 #[derive(Debug, PartialEq)]
@@ -369,19 +369,19 @@ const MALFORMED_SIGNATURE: &str = "sha1=757107ea0eb2509fc211221cce984b8a37570b6d
 /// The verifier under test, and the one the receiver is built with; it signs
 /// what they accept.
 fn verifier() -> Verifier {
-    Verifier::new(Secret::new(SECRET))
+    Verifier::new(WebhookSecret::new(SECRET))
 }
 
 /// A verifier over a secret [`verifier`] does not hold: what it signs, the
 /// verifier under test rejects.
 fn another_verifier() -> Verifier {
-    Verifier::new(Secret::new("another secret"))
+    Verifier::new(WebhookSecret::new("another secret"))
 }
 
 /// Runs `verify` over [`BODY`] under a fresh recording subscriber and returns
 /// the `octoevents.verify` span it opened alongside what it returned.
 #[track_caller]
-fn traced_verify(verifier: &Verifier, signature: &str) -> (SpanRecord, Result<(), VerifyError>) {
+fn traced_verify(verifier: &Verifier, signature: &str) -> (SpanRecord, Result<(), SignatureError>) {
     let (recording, returned) = common::traced(async { verifier.verify(signature, BODY) });
     (recording.span("octoevents.verify").clone(), returned)
 }
@@ -393,7 +393,8 @@ fn the_verify_span_records_the_secret_count_the_body_length_and_one_of_three_out
     // read from what it opened with, as integers: both are known before any
     // comparison runs, and a rotated verifier counts every secret it holds,
     // whichever of them verified the signature.
-    let rotated = Verifier::new(Secret::new("previous secret")).also(Secret::new(SECRET));
+    let rotated =
+        Verifier::new(WebhookSecret::new("previous secret")).also(WebhookSecret::new(SECRET));
     let cases = [
         (
             "a signature under the verifier's secret",
@@ -409,7 +410,7 @@ fn the_verify_span_records_the_secret_count_the_body_length_and_one_of_three_out
             another_verifier().sign(BODY),
             1,
             "mismatch",
-            Err(VerifyError::Mismatch),
+            Err(SignatureError::Mismatch),
         ),
         (
             "a malformed signature",
@@ -417,7 +418,7 @@ fn the_verify_span_records_the_secret_count_the_body_length_and_one_of_three_out
             MALFORMED_SIGNATURE.to_owned(),
             1,
             "malformed",
-            Err(VerifyError::MalformedSignature),
+            Err(SignatureError::Malformed),
         ),
         (
             "a rotated verifier, the signature under the secret it was rotated to",
@@ -706,7 +707,7 @@ fn the_verify_span_opens_at_debug_and_the_receive_and_dispatch_spans_at_info() {
         common::traced_at(Level::DEBUG, receiver.receive(receiving::signed_request()));
     let verify = recording.span("octoevents.verify");
     assert_eq!(verify.level, Level::DEBUG);
-    assert_eq!(verify.target, "octoevents::verify");
+    assert_eq!(verify.target, "octoevents::signature");
     assert_eq!(recording.span("octoevents.receive").level, Level::INFO);
     assert_eq!(recording.span("octoevents.dispatch").level, Level::INFO);
 }

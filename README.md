@@ -22,7 +22,7 @@ A receiver that thanks the author of every opened issue:
 
 ```rust,no_run
 use axum::{Router, routing::post_service};
-use octoevents::{Action, Dispatcher, Envelope, EventKind, Secret, Verifier, WebhookReceiverBuilder};
+use octoevents::{Action, Dispatcher, Envelope, EventKind, Verifier, WebhookReceiverBuilder, WebhookSecret};
 
 // The error every handler returns. Any error converts into it with `?`.
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -46,7 +46,7 @@ async fn main() -> Result<(), BoxError> {
 
     // Verifies `X-Hub-Signature-256` against the body with this secret.
     // A receiver cannot be built without one.
-    let verifier = Verifier::new(Secret::new(secret));
+    let verifier = Verifier::new(WebhookSecret::new(secret));
 
     // Refuses what does not verify; hands everything else to the dispatcher.
     let webhook = WebhookReceiverBuilder::new(verifier).build(dispatcher);
@@ -410,7 +410,7 @@ alternative is an enum:
 ```rust
 use std::error::Error as _;
 
-use octoevents::{DecodeError, DispatchError, Dispatcher, EventMeta, Secret, Verifier, WebhookReceiverBuilder};
+use octoevents::{DecodeError, DispatchError, Dispatcher, EventMeta, Verifier, WebhookReceiverBuilder, WebhookSecret};
 
 #[derive(Debug, thiserror::Error)]
 enum AppError {
@@ -435,7 +435,7 @@ fn report(_: &EventMeta, error: &DispatchError<AppError>) {
 
 let dispatcher = Dispatcher::<AppError>::builder().build();
 
-let webhook = WebhookReceiverBuilder::new(Verifier::new(Secret::new("development-secret")))
+let webhook = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("development-secret")))
     .on_error(report)
     .build(dispatcher);
 ```
@@ -525,7 +525,7 @@ async fn accepts_a_signed_delivery() {
     let dispatcher = Dispatcher::<BoxError>::builder()
         .on((EventKind::Issues, Action::Opened), thank)
         .build();
-    let verifier = Verifier::new(Secret::new("test-secret"));
+    let verifier = Verifier::new(WebhookSecret::new("test-secret"));
     let webhook = WebhookReceiverBuilder::new(verifier.clone()).build(dispatcher);
 
     let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
@@ -561,12 +561,12 @@ and mounts with `post_service`, as the quickstart does.
 
 ```rust
 use axum::{Router, extract::Request, routing::post};
-use octoevents::{Dispatcher, Secret, Verifier, WebhookReceiverBuilder};
+use octoevents::{Dispatcher, Verifier, WebhookReceiverBuilder, WebhookSecret};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 let dispatcher = Dispatcher::<BoxError>::builder().build();
-let webhook = WebhookReceiverBuilder::new(Verifier::new(Secret::new("development-secret")))
+let webhook = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("development-secret")))
     .build(dispatcher);
 
 let app: Router = Router::new().route("/webhook", post(move |request: Request| {
@@ -618,11 +618,11 @@ recorded anywhere. The full contract, span by span and field by field, is
   under `also`, change the secret in the webhook's settings, then drop the
   `also` once deliveries signed with the old one have drained. The order
   matters only to `Verifier::sign`, which signs under the first secret. A
-  `Secret` is never empty, so a verifier over a guessable key cannot be
-  expressed: `Secret::new` panics at construction, for a deployment that reads
-  its secret at startup, and `str::parse::<Secret>` returns
-  `SecretError::Empty` for one that reads it per request, where a panic is
-  the wrong answer.
+  `WebhookSecret` is never empty, so a verifier over a guessable key cannot
+  be expressed: `WebhookSecret::new` panics at construction, for a deployment
+  that reads its secret at startup, and `str::parse::<WebhookSecret>` returns
+  `WebhookSecretError::Empty` for one that reads it per request, where a
+  panic is the wrong answer.
 - **Bounded bodies.** The body is capped at GitHub's 25 MiB maximum before
   verification; `.body_limit(..)` on the receiver builder lowers it when your
   events are smaller.

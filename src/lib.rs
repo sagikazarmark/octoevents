@@ -8,7 +8,7 @@
 //! A receiver that thanks the author of every opened issue:
 //!
 //! ```
-//! use octoevents::{Action, Dispatcher, Envelope, EventKind, Secret, Verifier};
+//! use octoevents::{Action, Dispatcher, Envelope, EventKind, Verifier, WebhookSecret};
 //! # #[cfg(feature = "http")]
 //! use octoevents::WebhookReceiverBuilder;
 //!
@@ -32,7 +32,7 @@
 //! # #[cfg(feature = "http")] {
 //! // Verifies `X-Hub-Signature-256` against the body with the secret, refuses
 //! // what does not verify, and hands everything else to the dispatcher.
-//! let webhook = WebhookReceiverBuilder::new(Verifier::new(Secret::new("development-secret")))
+//! let webhook = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("development-secret")))
 //!     .build(dispatcher);
 //! # let _ = webhook;
 //! # }
@@ -81,9 +81,10 @@
 //!   Built with [`WebhookReceiverBuilder`], which takes the [`Verifier`], the
 //!   body limit, `ping` handling and the
 //!   [`on_error`][WebhookReceiverBuilder::on_error] observer.
-//! - [`Verifier`] and [`Secret`]: the configured secrets and the HMAC
+//! - [`Verifier`] and [`WebhookSecret`]: the configured secrets and the HMAC
 //!   comparison; [`Verifier::also`] opens a rotation window, and
-//!   [`Verifier::sign`] signs a test's synthetic request.
+//!   [`Verifier::sign`] signs a test's synthetic request. A signature that
+//!   does not authenticate is a [`SignatureError`].
 //! - [`HeaderView`], [`ResponseStatus`] and [`Envelope::from_signed`]: the
 //!   sans-I/O path for a transport with no `http::Request`.
 //!
@@ -235,15 +236,14 @@ mod matcher;
 mod payload;
 mod respond;
 mod runtime;
-mod secret;
 #[cfg(feature = "http")]
 mod service;
+mod signature;
 #[cfg(test)]
 mod test_support;
 mod trace;
 #[cfg(all(feature = "http", feature = "tracing"))]
 mod traced_error;
-mod verify;
 
 #[cfg(all(feature = "http", feature = "tracing"))]
 pub use boxed_error::BoxedError;
@@ -261,12 +261,11 @@ pub use octoevents_derive::Payload;
 pub use payload::{Event, FromEnvelope, Payload};
 pub use respond::ResponseStatus;
 pub use runtime::{MaybeSend, MaybeSync};
-pub use secret::{Secret, SecretError};
 #[cfg(feature = "http")]
 pub use service::{WebhookReceiver, WebhookReceiverBuilder};
+pub use signature::{SignatureError, Verifier, WebhookSecret, WebhookSecretError};
 #[cfg(all(feature = "http", feature = "tracing"))]
 pub use traced_error::TracedError;
-pub use verify::{Verifier, VerifyError};
 
 /// The byte buffer type of [`Envelope::raw_payload`] and of the body
 /// [`Envelope::from_signed`] takes, re-exported from the `bytes` crate.

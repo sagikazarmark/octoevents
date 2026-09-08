@@ -1,29 +1,139 @@
-use std::sync::Arc;
+//! The `X-Hub-Signature-256` signature: the secret it is computed under, the
+//! verifier that checks (and, for a test, produces) it, and the failures a
+//! signature can have. The secret's bytes leave this module only as an HMAC.
+
+use std::{fmt, str::FromStr, sync::Arc};
 
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 use thiserror::Error;
+use zeroize::Zeroizing;
 
-use crate::{Secret, trace};
+use crate::trace;
 
 const SHA256_PREFIX: &str = "sha256=";
 const SHA256_BYTES: usize = 32;
 const SHA256_HEX_CHARS: usize = SHA256_BYTES * 2;
 
-/// A failure to authenticate a webhook body.
+/// Bytes that cannot be a [`WebhookSecret`].
+///
+/// Reported by [`str::parse`] into a [`WebhookSecret`]; the panicking
+/// [`WebhookSecret::new`] panics with the same message instead. This is a
+/// configuration failure, found before any delivery arrives, and so is kept
+/// apart from [`SignatureError`], which reports a body that did not
+/// authenticate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Error)]
 #[non_exhaustive]
-pub enum VerifyError {
+pub enum WebhookSecretError {
+    /// The secret has no bytes.
+    ///
+    /// An empty secret is the unset- or mistyped-environment-variable failure
+    /// mode, not a configuration: every delivery would verify against a
+    /// guessable key.
+    #[error("webhook secret must not be empty")]
+    Empty,
+}
+
+/// A webhook secret whose owned bytes are zeroed when dropped.
+///
+/// A secret is never empty: an empty one is the unset- or
+/// mistyped-environment-variable failure mode, and verifying against it would
+/// accept any sender who guessed the key. Both constructors refuse one, so a
+/// [`Verifier`] cannot be handed one and has nothing left to check.
+///
+/// `Display` is deliberately not implemented: interpolating a secret into a
+/// format string is a compile error rather than silently redacted output.
+/// `Debug` output is redacted.
+///
+/// Each clone owns and independently zeroizes its own copy. The HMAC
+/// implementation necessarily keeps derived key material outside this value;
+/// that internal state is not guaranteed to be zeroized by the `hmac` crate.
+pub struct WebhookSecret(Zeroizing<Vec<u8>>);
+
+impl WebhookSecret {
+    /// Creates a secret from raw bytes.
+    ///
+    /// For a deployment that reads its secret at startup, where an empty one
+    /// should stop the process. [`str::parse`] reports the same failure as a
+    /// value, for one that reads it per request.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `bytes` is empty, with [`WebhookSecretError::Empty`]'s
+    /// message.
+    #[must_use]
+    #[track_caller]
+    pub fn new(bytes: impl Into<Vec<u8>>) -> Self {
+        match Self::try_new(bytes.into()) {
+            Ok(secret) => secret,
+            Err(error) => panic!("{error}"),
+        }
+    }
+
+    fn try_new(bytes: Vec<u8>) -> Result<Self, WebhookSecretError> {
+        if bytes.is_empty() {
+            return Err(WebhookSecretError::Empty);
+        }
+        Ok(Self(Zeroizing::new(bytes)))
+    }
+
+    /// The key bytes, for [`hmac_sha256`] alone.
+    fn expose(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+}
+
+impl Clone for WebhookSecret {
+    fn clone(&self) -> Self {
+        // The bytes were checked when `self` was made.
+        Self(Zeroizing::new(self.0.to_vec()))
+    }
+}
+
+/// Reads a secret from a string, refusing an empty one as a value.
+///
+/// The fallible counterpart of [`WebhookSecret::new`], for a deployment that
+/// builds its verifier where a panic is the wrong answer: a serverless
+/// function reading its secret per request, say, where an unset variable
+/// should be a response and not a trap.
+///
+/// ```
+/// use octoevents::{WebhookSecret, WebhookSecretError};
+///
+/// let secret: WebhookSecret = "current secret".parse()?;
+/// # let _ = secret;
+///
+/// assert_eq!("".parse::<WebhookSecret>().unwrap_err(), WebhookSecretError::Empty);
+/// # Ok::<(), WebhookSecretError>(())
+/// ```
+impl FromStr for WebhookSecret {
+    type Err = WebhookSecretError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::try_new(value.as_bytes().to_vec())
+    }
+}
+
+impl fmt::Debug for WebhookSecret {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("WebhookSecret([REDACTED])")
+    }
+}
+
+/// A failure to authenticate a webhook body by its signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Error)]
+#[non_exhaustive]
+pub enum SignatureError {
     /// The `X-Hub-Signature-256` header was absent.
     ///
     /// Envelope constructors produce this variant while extracting headers;
     /// [`Verifier::verify`] itself accepts an already-extracted header value.
     #[error("missing X-Hub-Signature-256 header")]
-    MissingSignature,
+    Missing,
     /// The signature was not `sha256=` followed by exactly 64 hexadecimal characters.
     #[error("malformed X-Hub-Signature-256 header")]
-    MalformedSignature,
+    Malformed,
     /// None of the configured secrets matched the signature.
     #[error("webhook signature mismatch")]
     Mismatch,
@@ -33,7 +143,7 @@ pub enum VerifyError {
 ///
 /// A verifier is required to receive a webhook: it is constructed from one
 /// secret, so a deployment without a secret cannot be expressed, and a
-/// [`Secret`] is never empty, so neither can one with a guessable key.
+/// [`WebhookSecret`] is never empty, so neither can one with a guessable key.
 /// Additional secrets are added with [`Verifier::also`] to open a client-side
 /// rotation window.
 ///
@@ -45,26 +155,26 @@ pub enum VerifyError {
 ///
 /// Only `X-Hub-Signature-256` is verified. GitHub sends the SHA-1
 /// `X-Hub-Signature` beside it, and a request carrying only that header is
-/// [`VerifyError::MissingSignature`]: the SHA-256 header is always there to
+/// [`SignatureError::Missing`]: the SHA-256 header is always there to
 /// verify, so falling back to the SHA-1 one would protect no delivery and
 /// would let a sender choose the weaker algorithm.
 ///
 /// ```
-/// use octoevents::{Secret, Verifier};
+/// use octoevents::{Verifier, WebhookSecret};
 ///
-/// let verifier = Verifier::new(Secret::new("current secret"))
-///     .also(Secret::new("previous secret"));
+/// let verifier = Verifier::new(WebhookSecret::new("current secret"))
+///     .also(WebhookSecret::new("previous secret"));
 /// # let _ = verifier;
 /// ```
 #[derive(Debug, Clone)]
 pub struct Verifier {
-    secrets: Arc<Vec<Secret>>,
+    secrets: Arc<Vec<WebhookSecret>>,
 }
 
 impl Verifier {
     /// Creates a verifier authenticating against one secret.
     #[must_use]
-    pub fn new(secret: Secret) -> Self {
+    pub fn new(secret: WebhookSecret) -> Self {
         Self {
             secrets: Arc::new(vec![secret]),
         }
@@ -79,7 +189,7 @@ impl Verifier {
     /// matters only to [`Verifier::sign`], which signs under the first, the
     /// one [`Verifier::new`] received.
     #[must_use]
-    pub fn also(mut self, secret: Secret) -> Self {
+    pub fn also(mut self, secret: WebhookSecret) -> Self {
         Arc::make_mut(&mut self.secrets).push(secret);
         self
     }
@@ -92,22 +202,22 @@ impl Verifier {
     ///
     /// The `sha256=` prefix is matched case-sensitively because that is what
     /// GitHub sends; the hexadecimal digits after it accept either case. An
-    /// uppercase prefix is [`VerifyError::MalformedSignature`], not a mismatch.
+    /// uppercase prefix is [`SignatureError::Malformed`], not a mismatch.
     ///
     /// ```
-    /// use octoevents::{Secret, Verifier};
+    /// use octoevents::{Verifier, WebhookSecret};
     ///
-    /// let verifier = Verifier::new(Secret::new("It's a Secret to Everybody"));
+    /// let verifier = Verifier::new(WebhookSecret::new("It's a Secret to Everybody"));
     /// let signature = "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17";
     /// verifier.verify(signature, b"Hello, World!")?;
-    /// # Ok::<(), octoevents::VerifyError>(())
+    /// # Ok::<(), octoevents::SignatureError>(())
     /// ```
     ///
     /// # Errors
     ///
-    /// Returns [`VerifyError::MalformedSignature`] for any value not matching
-    /// GitHub's `sha256=<64 hex characters>` format and [`VerifyError::Mismatch`]
-    /// when no secret matches.
+    /// Returns [`SignatureError::Malformed`] for any value not matching
+    /// GitHub's `sha256=<64 hex characters>` format and
+    /// [`SignatureError::Mismatch`] when no secret matches.
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(
@@ -117,7 +227,7 @@ impl Verifier {
             fields(secret_count = self.secrets.len(), body_len = body.len(), outcome = tracing::field::Empty)
         )
     )]
-    pub fn verify(&self, signature_header: &str, body: &[u8]) -> Result<(), VerifyError> {
+    pub fn verify(&self, signature_header: &str, body: &[u8]) -> Result<(), SignatureError> {
         let received = match decode_signature(signature_header) {
             Ok(received) => received,
             Err(error) => {
@@ -137,7 +247,7 @@ impl Verifier {
             Ok(())
         } else {
             trace::record("outcome", "mismatch");
-            Err(VerifyError::Mismatch)
+            Err(SignatureError::Mismatch)
         }
     }
 
@@ -159,14 +269,14 @@ impl Verifier {
     /// records neither the secret nor anything computed from it.
     ///
     /// ```
-    /// use octoevents::{Secret, Verifier};
+    /// use octoevents::{Verifier, WebhookSecret};
     ///
-    /// let verifier = Verifier::new(Secret::new("It's a Secret to Everybody"));
+    /// let verifier = Verifier::new(WebhookSecret::new("It's a Secret to Everybody"));
     /// let signature = verifier.sign(b"Hello, World!");
     ///
     /// assert_eq!(signature, "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17");
     /// verifier.verify(&signature, b"Hello, World!")?;
-    /// # Ok::<(), octoevents::VerifyError>(())
+    /// # Ok::<(), octoevents::SignatureError>(())
     /// ```
     #[must_use]
     pub fn sign(&self, body: &[u8]) -> String {
@@ -177,7 +287,7 @@ impl Verifier {
 }
 
 /// The HMAC-SHA256 of `body` under `secret`.
-fn hmac_sha256(secret: &Secret, body: &[u8]) -> [u8; SHA256_BYTES] {
+fn hmac_sha256(secret: &WebhookSecret, body: &[u8]) -> [u8; SHA256_BYTES] {
     // HMAC takes a key of any length: a long one is hashed to fit and a short
     // one is padded, so the key is never invalid.
     let mut mac =
@@ -204,20 +314,20 @@ fn hex_digit(nibble: u8) -> char {
     char::from(DIGITS[usize::from(nibble & 0x0f)])
 }
 
-fn decode_signature(value: &str) -> Result<[u8; SHA256_BYTES], VerifyError> {
+fn decode_signature(value: &str) -> Result<[u8; SHA256_BYTES], SignatureError> {
     let hex = value
         .strip_prefix(SHA256_PREFIX)
-        .ok_or(VerifyError::MalformedSignature)?;
+        .ok_or(SignatureError::Malformed)?;
     if hex.len() != SHA256_HEX_CHARS {
-        return Err(VerifyError::MalformedSignature);
+        return Err(SignatureError::Malformed);
     }
 
     // The length check above guarantees an exact number of pairs and no remainder.
     let (pairs, _) = hex.as_bytes().as_chunks::<2>();
     let mut decoded = [0_u8; SHA256_BYTES];
     for (output, &[high, low]) in decoded.iter_mut().zip(pairs) {
-        let high = hex_nibble(high).ok_or(VerifyError::MalformedSignature)?;
-        let low = hex_nibble(low).ok_or(VerifyError::MalformedSignature)?;
+        let high = hex_nibble(high).ok_or(SignatureError::Malformed)?;
+        let low = hex_nibble(low).ok_or(SignatureError::Malformed)?;
         *output = (high << 4) | low;
     }
     Ok(decoded)
@@ -233,166 +343,4 @@ const fn hex_nibble(byte: u8) -> Option<u8> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use super::{Verifier, VerifyError};
-    use crate::Secret;
-
-    /// GitHub's documented test vector: `Hello, World!` under `It's a
-    /// Secret to Everybody`.
-    const DOCUMENTED_SIGNATURE: &str =
-        "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17";
-    /// The empty body under `secret`.
-    const EMPTY_BODY_SIGNATURE: &str =
-        "sha256=f9e66e179b6747ae54108f82f8ade8b3c25d76fd30afde6c395822c530196169";
-
-    #[test]
-    fn accepts_githubs_documented_test_vector() {
-        let verifier = Verifier::new(Secret::new("It's a Secret to Everybody"));
-
-        assert_eq!(
-            verifier.verify(DOCUMENTED_SIGNATURE, b"Hello, World!"),
-            Ok(())
-        );
-    }
-
-    #[test]
-    fn accepts_uppercase_hex() {
-        let verifier = Verifier::new(Secret::new("It's a Secret to Everybody"));
-
-        assert_eq!(
-            verifier.verify(
-                &DOCUMENTED_SIGNATURE
-                    .to_uppercase()
-                    .replacen("SHA256", "sha256", 1),
-                b"Hello, World!"
-            ),
-            Ok(())
-        );
-    }
-
-    #[test]
-    fn tries_every_configured_secret() {
-        let verifier =
-            Verifier::new(Secret::new("wrong")).also(Secret::new("It's a Secret to Everybody"));
-
-        assert_eq!(
-            verifier.verify(DOCUMENTED_SIGNATURE, b"Hello, World!"),
-            Ok(())
-        );
-    }
-
-    #[test]
-    fn clones_share_the_secrets_until_one_of_them_adds_another() {
-        let original = Verifier::new(Secret::new("It's a Secret to Everybody"));
-        let clone = original.clone();
-        assert!(Arc::ptr_eq(&original.secrets, &clone.secrets));
-
-        let extended = clone.also(Secret::new("wrong"));
-        assert_eq!(original.secrets.len(), 1);
-        assert_eq!(extended.secrets.len(), 2);
-        assert_eq!(
-            original.verify(DOCUMENTED_SIGNATURE, b"Hello, World!"),
-            Ok(())
-        );
-    }
-
-    #[test]
-    fn rejects_wrong_secrets() {
-        let verifier = Verifier::new(Secret::new("wrong")).also(Secret::new("also wrong"));
-
-        assert_eq!(
-            verifier.verify(DOCUMENTED_SIGNATURE, b"Hello, World!"),
-            Err(VerifyError::Mismatch)
-        );
-    }
-
-    #[test]
-    fn rejects_malformed_signatures_distinctly() {
-        let verifier = Verifier::new(Secret::new("secret"));
-        for signature in [
-            "",
-            "sha1=757107ea0eb2509fc211221cce984b8a37570b6d",
-            "757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17",
-            "sha256=757107ea",
-            "sha256=z57107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17",
-            // The prefix is deliberately case-sensitive: GitHub sends lowercase.
-            "SHA256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17",
-        ] {
-            assert_eq!(
-                verifier.verify(signature, b"Hello, World!"),
-                Err(VerifyError::MalformedSignature),
-                "signature: {signature}"
-            );
-        }
-    }
-
-    #[test]
-    fn empty_body_is_still_authenticated() {
-        let verifier = Verifier::new(Secret::new("secret"));
-
-        assert_eq!(verifier.verify(EMPTY_BODY_SIGNATURE, b""), Ok(()));
-    }
-
-    #[test]
-    fn signs_githubs_documented_test_vector() {
-        let verifier = Verifier::new(Secret::new("It's a Secret to Everybody"));
-
-        assert_eq!(verifier.sign(b"Hello, World!"), DOCUMENTED_SIGNATURE);
-    }
-
-    #[test]
-    fn signs_the_empty_body() {
-        let verifier = Verifier::new(Secret::new("secret"));
-
-        assert_eq!(verifier.sign(b""), EMPTY_BODY_SIGNATURE);
-    }
-
-    #[test]
-    fn what_it_signs_it_verifies() {
-        let verifier = Verifier::new(Secret::new("a secret nobody documented"));
-        let body = "{\"action\":\"opened\",\"title\":\"caf\u{e9} \u{1F680}\"}".as_bytes();
-
-        let signature = verifier.sign(body);
-
-        assert_eq!(verifier.verify(&signature, body), Ok(()));
-        assert_eq!(
-            verifier.verify(&signature, b"{}"),
-            Err(VerifyError::Mismatch),
-            "the signature is over the body, not a constant"
-        );
-    }
-
-    #[test]
-    fn a_rotated_verifier_signs_under_its_first_secret() {
-        let current_first = Verifier::new(Secret::new("It's a Secret to Everybody"))
-            .also(Secret::new("previous secret"));
-        let previous_first = Verifier::new(Secret::new("previous secret"))
-            .also(Secret::new("It's a Secret to Everybody"));
-
-        assert_eq!(current_first.sign(b"Hello, World!"), DOCUMENTED_SIGNATURE);
-
-        let under_previous = previous_first.sign(b"Hello, World!");
-        assert_ne!(under_previous, DOCUMENTED_SIGNATURE);
-        assert_eq!(
-            Verifier::new(Secret::new("previous secret")).verify(&under_previous, b"Hello, World!"),
-            Ok(()),
-            "the first secret signed it, so a verifier over that secret alone accepts it"
-        );
-        assert_eq!(
-            previous_first.verify(&under_previous, b"Hello, World!"),
-            Ok(()),
-            "and so does the rotated verifier itself"
-        );
-    }
-
-    #[test]
-    fn debug_output_redacts_the_secrets() {
-        let verifier = Verifier::new(Secret::new("super-secret"));
-
-        let debug = format!("{verifier:?}");
-        assert!(debug.contains("[REDACTED]"));
-        assert!(!debug.contains("super-secret"));
-    }
-}
+mod tests;

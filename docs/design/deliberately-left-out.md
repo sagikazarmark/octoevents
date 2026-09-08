@@ -17,7 +17,7 @@ not. Where a type's own docs also state the decision, the entry says so.
 Only `X-Hub-Signature-256` is verified. GitHub sends the SHA-1
 `X-Hub-Signature` beside it, and go-github falls back to that header when the
 SHA-256 one is absent; here a request carrying only the SHA-1 header is
-refused as unsigned, with `VerifyError::MissingSignature`. The stronger header
+refused as unsigned, with `SignatureError::Missing`. The stronger header
 is always present to verify, so the fallback would protect no delivery and
 would only let a sender choose the weaker algorithm. Recorded on `Verifier`.
 

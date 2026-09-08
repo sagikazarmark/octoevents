@@ -26,7 +26,7 @@ use common::{Recording, Value};
 use http::Request;
 use http_body::Frame;
 use http_body_util::Full;
-use octoevents::{EventMeta, Secret, Verifier, WebhookReceiverBuilder};
+use octoevents::{EventMeta, Verifier, WebhookReceiverBuilder, WebhookSecret};
 use tracing::Level;
 
 /// The secret, named so the assertions can look for it in the output.
@@ -36,7 +36,7 @@ const BODY: &[u8] = br#"{"action":"opened","installation":{"id":42}}"#;
 /// The verifier every receiver here is built with; it signs the request
 /// they accept.
 fn verifier() -> Verifier {
-    Verifier::new(Secret::new(SECRET))
+    Verifier::new(WebhookSecret::new(SECRET))
 }
 
 #[test]
@@ -126,7 +126,7 @@ fn a_refusal_records_its_error_on_the_receive_span_but_nothing_secret_derived() 
     let receiver = WebhookReceiverBuilder::new(verifier()).build(|_| async { Ok::<_, ()>(()) });
     let (signature, _) = signed_request();
 
-    let another = Verifier::new(Secret::new("another secret")).sign(BODY);
+    let another = Verifier::new(WebhookSecret::new("another secret")).sign(BODY);
     let (recording, response) = common::traced(receiver.receive(request_signed_with(&another)));
     assert_eq!(response.status(), 401);
     let receive = &recording.span("octoevents.receive").at_close;

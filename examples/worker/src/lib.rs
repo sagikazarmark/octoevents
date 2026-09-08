@@ -19,8 +19,8 @@
 #![expect(clippy::unused_async_trait_impl)]
 
 use octoevents::{
-    AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind, Handler, Secret, SecretError,
-    Verifier, WebhookReceiverBuilder,
+    AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind, Handler, Verifier,
+    WebhookReceiverBuilder, WebhookSecret, WebhookSecretError,
 };
 use worker::{Context, Env, Fetch, HttpRequest, Method, Request, RequestInit, console_log, event};
 
@@ -126,9 +126,9 @@ async fn fetch(
     // The secret is read per request, so an empty one is reported as a value
     // the runtime turns into a response, not a panic that traps the wasm
     // instance.
-    let secret: Secret = secret
+    let secret: WebhookSecret = secret
         .parse()
-        .map_err(|error: SecretError| worker::Error::RustError(error.to_string()))?;
+        .map_err(|error: WebhookSecretError| worker::Error::RustError(error.to_string()))?;
     let verifier = Verifier::new(secret);
 
     let dispatcher = Dispatcher::<AppError>::builder()
