@@ -619,6 +619,9 @@ fn empty_response(status: ResponseStatus) -> ServiceResponse {
         .expect("an empty response with a fixed status always builds")
 }
 
+// A `respond` type's conversion, kept here rather than beside the type so
+// `respond` stays free of the `http` cfg: the receiver is the one place that
+// answers with an `http::StatusCode`.
 impl From<ResponseStatus> for http::StatusCode {
     fn from(status: ResponseStatus) -> Self {
         match status {
@@ -681,8 +684,8 @@ const fn outcome_label(status: ResponseStatus) -> &'static str {
 /// receiver knows which it emits, where an `on_error` observer emitting the
 /// text could not tell the receiver to stay quiet.
 ///
-/// Without the `tracing` feature the setting has nothing to hold and the
-/// methods are no-ops, so the receiver's call sites carry no `cfg`.
+/// Without the `tracing` feature the setting has nothing to hold and its
+/// methods are no-ops, so the receiver calls them without a `cfg`.
 struct ErrorFields<E> {
     #[cfg(feature = "tracing")]
     emit: Option<fn(&EventMeta, &E, u16)>,
@@ -759,8 +762,8 @@ impl<E> ErrorFields<E> {
     }
 }
 
-// The stubs are methods, so the receiver's call sites carry no `cfg`; the
-// setting they would read does not exist without the feature.
+// The stubs are methods, as the struct doc says, so the receiver reads a
+// setting that does not exist without the feature through the same calls.
 #[cfg(not(feature = "tracing"))]
 #[allow(clippy::unused_self)]
 impl<E> ErrorFields<E> {

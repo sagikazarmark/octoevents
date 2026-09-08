@@ -1,6 +1,10 @@
 use crate::{ReceiveError, VerifyError};
 
 /// The transport-independent status selected for a receive outcome.
+///
+/// [`as_u16`](Self::as_u16) is the code for a transport with its own status
+/// type; with the `http` feature it also converts into `http::StatusCode`,
+/// an impl that lives with the receiver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ResponseStatus {

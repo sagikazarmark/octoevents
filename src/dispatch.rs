@@ -57,7 +57,8 @@ where
 /// input is known to be the envelope: it is cloned once, here, without going
 /// through `Envelope::from_envelope`, and so without asking
 /// `E: From<DecodeError>` of a tier that decodes nothing. A detail of those
-/// two tiers, not a second kind of handler.
+/// two tiers: the consumer's handler is the same `Handler<Envelope>` as
+/// anywhere.
 struct OverEnvelope<H> {
     handler: H,
 }
@@ -491,8 +492,8 @@ where
 ///
 /// The dispatcher produces this and consumers only read it, so it is
 /// `#[non_exhaustive]` for the reason [`DispatchError`] is: another field
-/// can be added without that becoming a breaking change here. A test that
-/// needs one dispatches, and compares the fields it cares about.
+/// can be added without that becoming a breaking change here. A consumer's
+/// test that needs one dispatches, and compares the fields it cares about.
 ///
 /// ```compile_fail,E0639
 /// use octoevents::{Match, Outcome};
@@ -1247,6 +1248,8 @@ where
     }
 }
 
+// Outside the `E: 'static` block above: the run loop is generic over `E`
+// with no lifetime bound, and building a dispatch error needs none.
 impl<E> Route<E> {
     /// Wraps this route's failure with the tier it ran in, the delivery, and
     /// the handler name and registration site the route carries.
@@ -1685,9 +1688,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_dispatcher_over_an_error_that_is_not_send_builds_and_dispatches() {
-        // `Box<dyn Error>` without `Send`: the error type never crosses an
-        // await inside the dispatcher, so nothing asks it to be `Send`, and
-        // a decode failure converts into it as into any `Box<dyn Error>`.
+        // `Box<dyn Error>` without `Send`. Nothing asks the error type to be
+        // `Send`: no `E` is live across an await inside the dispatcher, which
+        // is why `run_chain` keeps the decode and the await as two
+        // statements. A decode failure converts into it as into any
+        // `Box<dyn Error>`.
         type Local = Box<dyn std::error::Error>;
 
         let dispatcher = Dispatcher::<Local>::builder()
@@ -2930,8 +2935,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_routed_handler_decodes_from_the_dispatchers_envelope_and_not_a_clone_of_it() {
-        use crate::FromEnvelope;
+    async fn a_routed_handler_over_a_payload_decodes_from_the_dispatchers_envelope_and_not_a_clone_of_it()
+     {
+        use crate::{FromEnvelope, Payload};
 
         /// Whether the decode saw the only handle on the payload bytes.
         ///
@@ -2939,27 +2945,30 @@ mod tests {
         /// and `dispatch` takes the envelope by value, so at decode time the
         /// dispatcher's envelope is the only one unless a route cloned it to
         /// decode from: a clone shares the bytes, is live while
-        /// `from_envelope` runs, and `Bytes::is_unique` says so.
+        /// `from_envelope` runs, and `Bytes::is_unique` says so. A `Payload`
+        /// with a decode of its own rather than a serde view, so the handler
+        /// is routed as a payload's is, under actions alone, and the decode
+        /// can look at the envelope it is handed.
         struct SoleHandle(bool);
         impl FromEnvelope for SoleHandle {
             fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError> {
                 Ok(Self(envelope.raw_payload.is_unique()))
             }
         }
+        impl Payload for SoleHandle {
+            const KIND: EventKind = EventKind::PullRequest;
+        }
 
         let seen = Arc::new(Mutex::new(Vec::new()));
         let handler_seen = Arc::clone(&seen);
         let dispatcher = Dispatcher::<AppError>::builder()
-            .on(
-                EventKind::PullRequest,
-                move |SoleHandle(unique): SoleHandle| {
-                    let seen = Arc::clone(&handler_seen);
-                    async move {
-                        seen.lock().await.push(unique);
-                        Ok::<_, std::convert::Infallible>(())
-                    }
-                },
-            )
+            .on(AnyAction, move |SoleHandle(unique): SoleHandle| {
+                let seen = Arc::clone(&handler_seen);
+                async move {
+                    seen.lock().await.push(unique);
+                    Ok::<_, std::convert::Infallible>(())
+                }
+            })
             .build();
 
         let envelope = pull_request_opened();
