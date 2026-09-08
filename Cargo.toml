@@ -74,13 +74,15 @@ axum = "0.8.4"
 tokio = { version = "1.47.1", features = ["macros", "net", "rt-multi-thread", "sync"] }
 tower = { version = "0.5.2", features = ["util"] }
 tracing-subscriber = { version = "0.3.20", features = ["registry"] }
+trybuild = "1.0.121"
 
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 # `cargo release` turns the Unreleased section of CHANGELOG.md into the
-# version's and opens a new one. On this package alone: the workspace's two
+# version's and opens a new one, and pins the README's dependency snippet to
+# the version being released. On this package alone: the workspace's two
 # crates share one version and one changelog, and a workspace-level entry
 # would run the replacements once per crate.
 [package.metadata.release]
@@ -90,6 +92,7 @@ pre-release-replacements = [
   { file = "CHANGELOG.md", search = "ReleaseDate", replace = "{{date}}", min = 1 },
   { file = "CHANGELOG.md", search = "<!-- next-header -->", replace = "<!-- next-header -->\n\n## [Unreleased] - ReleaseDate", exactly = 1 },
   { file = "CHANGELOG.md", search = "<!-- next-url -->", replace = "<!-- next-url -->\n[Unreleased]: https://github.com/sagikazarmark/octoevents/compare/{{tag_name}}...HEAD", exactly = 1 },
+  { file = "README.md", search = "octoevents = \\{ version = \"[^\"]+\"", replace = "octoevents = { version = \"{{version}}\"", exactly = 1 },
 ]
 
 [[example]]

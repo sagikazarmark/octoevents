@@ -15,7 +15,7 @@ use tower_service::Service;
 #[cfg(feature = "tower")]
 use crate::runtime::BoxFuture;
 #[cfg(feature = "tracing")]
-use crate::{Action, BoxedError};
+use crate::{Action, BoxedError, TracedError};
 use crate::{
     BodyError, DEFAULT_BODY_LIMIT, Envelope, EventKind, EventMeta, Handler, HeaderView, MaybeSend,
     MaybeSync, ReceiveError, ResponseStatus, Verifier, trace,
@@ -213,20 +213,33 @@ impl<E> WebhookReceiverBuilder<E> {
     /// With the `tracing` feature the receiver emits one event at ERROR for
     /// every failed delivery, and by default nothing of the error is on it,
     /// since the receiver places no bound on the error type. This asks
-    /// `E: Error` and records the error on that same event, still one, in
-    /// the `octoevents.receive` span; an [`on_error`](Self::on_error)
-    /// observer, if any, runs beside it. The fields and their forms are
-    /// under [Tracing](crate#tracing).
+    /// [`TracedError`], which every `Error` is, and records the error on
+    /// that same event, still one, in the `octoevents.receive` span; an
+    /// [`on_error`](Self::on_error) observer, if any, runs beside it. The
+    /// fields and their forms are under [Tracing](crate#tracing).
     ///
     /// `Error` rather than `Display`, because a `Display` bound cannot walk
     /// `source()`: the text of a [`DispatchError`](crate::DispatchError) says
     /// where the delivery failed, and why is its source, the application
     /// error. A `thiserror` enum qualifies, and so does a `DispatchError`
     /// over one. `Box<dyn Error + Send + Sync>` and a `DispatchError` over
-    /// it are no `Error`, and are
-    /// [`trace_boxed_errors`](Self::trace_boxed_errors)'; an error type that
-    /// is only `Display` (a `String`, say) has no one-line path, and an
-    /// `on_error` observer that emits its own event is the way for one.
+    /// it are no `Error` and go through
+    /// [`trace_boxed_errors`](Self::trace_boxed_errors) instead; the compiler
+    /// says so, in the crate's words, for the front page's own error type:
+    ///
+    /// ```compile_fail,E0277
+    /// use octoevents::{Dispatcher, Secret, Verifier, WebhookReceiverBuilder};
+    /// type BoxError = Box<dyn std::error::Error + Send + Sync>;
+    ///
+    /// let dispatcher = Dispatcher::<BoxError>::builder().build();
+    /// let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("current secret")))
+    ///     .trace_errors() // `DispatchError<Box<dyn Error + Send + Sync>>` is not an `Error`, so `trace_errors` cannot record it
+    ///     .build(dispatcher);
+    /// ```
+    ///
+    /// An error type that is only `Display` (a `String`, say) has no
+    /// one-line path, and an `on_error` observer that emits its own event is
+    /// the way for one.
     ///
     /// With a [`Dispatcher`](crate::Dispatcher) as the handler, the `fmt`
     /// subscriber renders the two fields as:
@@ -254,11 +267,13 @@ impl<E> WebhookReceiverBuilder<E> {
     ///     .build(dispatcher);
     /// # let _ = receiver;
     /// ```
+    ///
+    /// [`TracedError`]: crate::TracedError
     #[cfg(feature = "tracing")]
     #[must_use]
     pub fn trace_errors(mut self) -> Self
     where
-        E: std::error::Error,
+        E: TracedError,
     {
         self.config.error_fields = ErrorFields::of_error();
         self
@@ -795,10 +810,12 @@ impl<E> ErrorFields<E> {
     }
 
     /// The error's [`Display`](std::fmt::Display) as `error` and its
-    /// [`source`](std::error::Error::source) as `source`.
+    /// [`source`](std::error::Error::source) as `source`. The bound is the
+    /// one `trace_errors` asks; `TracedError` is an `Error`, so the body
+    /// reads the error through that.
     const fn of_error() -> Self
     where
-        E: std::error::Error,
+        E: TracedError,
     {
         Self {
             emit: Some(|meta, error, status| {

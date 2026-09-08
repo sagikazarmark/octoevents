@@ -505,7 +505,7 @@ Sources: [octocrab `webhook_events.rs`](https://github.com/XAMPPRocky/octocrab/b
 | **Dotted `issues.opened` name** | octokit, Probot; gidgethub uses `("issues", action="opened")`; no Rust crate routes by action | typed tuple; no string form |
 | **`onAny` / `"*"`** | octokit, Probot, afterparty | `always` — stronger (ordered first, failure fails the delivery, never a match) |
 | **Unmatched delivery is a silent success** | octokit, Probot, gidgethub, octofer, go-github | default, opt-in `fallback`. Only tide-github and go-playground chose strict |
-| **A test path that bypasses HTTP and verification** | octokit/Probot `receive`, gidgethub `Event(...)`, go-github `ParseWebHook` | `Envelope { meta, raw }` hand-construction |
+| **A test path that bypasses HTTP and verification** | octokit/Probot `receive`, gidgethub `Event(...)`, go-github `ParseWebHook` | `Envelope::new(id, kind, bytes)`, its meta probed from the same bytes; `Verifier::sign` for the HTTP path |
 | **Secret is mandatory** | octokit, octoevents | go-playground, go-github, gidgethub, afterparty allow unverified |
 | **Secret rotation** | octokit `additionalSecrets` | `Verifier::also` |
 | **Forward-compat unknown kind** | octocrab `Unknown(String)`, gidgethub plain string | `EventKind::Unknown`, `Action::Unknown` |

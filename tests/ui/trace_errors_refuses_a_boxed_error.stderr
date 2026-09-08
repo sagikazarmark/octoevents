@@ -1,0 +1,16 @@
+error[E0277]: `DispatchError<Box<(dyn std::error::Error + Send + Sync + 'static)>>` is not an `Error`, so `trace_errors` cannot record it
+  --> tests/ui/trace_errors_refuses_a_boxed_error.rs:12:10
+   |
+12 |         .trace_errors()
+   |          ^^^^^^^^^^^^ `trace_errors` asks an `Error`
+   |
+   = help: the trait `TracedError` is not implemented for `DispatchError<Box<(dyn std::error::Error + Send + Sync + 'static)>>`
+   = note: `Box<dyn Error + Send + Sync>`, `anyhow::Error` and a `DispatchError` over them are traced with `trace_boxed_errors` instead
+note: required by a bound in `WebhookReceiverBuilder::<E>::trace_errors`
+  --> src/service.rs
+   |
+   |     pub fn trace_errors(mut self) -> Self
+   |            ------------ required by a bound in this associated function
+   |     where
+   |         E: TracedError,
+   |            ^^^^^^^^^^^ required by this bound in `WebhookReceiverBuilder::<E>::trace_errors`

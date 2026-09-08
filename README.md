@@ -64,8 +64,14 @@ async fn main() -> Result<(), BoxError> {
 [dependencies]
 axum = "0.8"
 octoevents = { version = "0.2", features = ["tower"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
 ```
+
+`serde` is for the payload views under [Handlers](#handlers) and `thiserror`
+for the error enum under [Error handling](#error-handling); the quickstart
+itself reads the envelope's meta, returns a boxed error, and needs neither.
 
 Every request goes through three steps:
 
@@ -82,6 +88,12 @@ Every request goes through three steps:
 | 401 | The signature is missing or does not match |
 | 400 | The signature is malformed, a header is missing, the content type is not JSON, or the body could not be read |
 | 413 | The body is over the limit (25 MiB by default) |
+
+A 500 is a bare status, and out of the box nothing else says a handler
+failed: an observer registered with `on_error` is where the error reaches
+your code, as [Error handling](#error-handling) shows, and with the
+`tracing` feature the receiver also emits one event at ERROR per failed
+delivery, as [Tracing](#tracing) describes.
 
 `thank` took the whole envelope; a handler can take the decoded payload
 instead, and a dispatcher can run several handlers in tiers. The next
@@ -248,9 +260,19 @@ With the `octocrab` feature, octocrab's `WebhookEvent` is an input (on its
 own or inside `Event`) and its per-kind payload structs
 (`PullRequestWebhookEventPayload`, ...) are payloads, so nothing needs to be
 written for a handler over a whole event. The trade-off is whole-model decode:
-a field GitHub changes anywhere in the payload fails the delivery, where a
-view fails only on the fields it names. octocrab goes in your own
-`[dependencies]` to name its types; the caveats are under
+the struct names far more of the payload than a handler reads, and an
+incompatible change to any field it names (removed, renamed, retyped, or made
+null) fails the delivery, where a view names the fields its handler reads and
+fails only on those; a field GitHub adds fails neither. A test fixture for a
+struct is a complete payload. Two gaps to know before choosing a struct for a
+kind: the per-kind
+structs omit the top-level `installation`, `sender`, `repository` and
+`organization` objects (`EventMeta` summarizes them; `WebhookEvent` carries
+them whole, so an `installation` handler that needs the account or the
+permissions takes `Event<WebhookEvent>` or a view), and some leave their main
+object as an untyped `serde_json::Value` (`check_suite`, `workflow_run`,
+`workflow_job`, `team`). octocrab goes in your own `[dependencies]` to name
+its types; the caveats are under
 [Feature caveats](https://docs.rs/octoevents/latest/octoevents/#feature-caveats).
 
 ## Dispatcher
@@ -586,17 +608,20 @@ recorded anywhere. The full contract, span by span and field by field, is
   refused before its body is read; a signed one is verified against the exact
   bytes GitHub sent. Only `X-Hub-Signature-256` is checked, never the SHA-1
   header beside it.
-- **Constant-time comparison.** Every configured secret is evaluated on every
-  request, a match included, so timing reveals neither the secret nor which
-  one matched.
+- **Constant-time comparison.** Every configured secret is evaluated against
+  a well-formed signature, a match included, so timing reveals neither the
+  secret nor which one matched. A malformed signature header is refused
+  before any secret is used.
 - **Secret rotation.** GitHub holds one secret per webhook, so the rotation
-  window is the verifier's: `Verifier::new(current).also(next)` verifies
-  against either while the secret is changed in the webhook's settings, and
-  `Verifier::new(next)` alone once deliveries signed with the old one have
-  drained. An empty secret is refused rather than verified against a
-  guessable key: `Verifier::new` panics at construction, and
-  `Verifier::try_new` returns `SecretError::Empty` for a deployment that
-  reads its secret per request, where a panic is the wrong answer.
+  window is the verifier's: `Verifier::new(current).also(previous)` verifies
+  against either. Deploy the new secret under `new` with the old one kept
+  under `also`, change the secret in the webhook's settings, then drop the
+  `also` once deliveries signed with the old one have drained. The order
+  matters only to `Verifier::sign`, which signs under the first secret. An
+  empty secret is refused rather than verified against a guessable key:
+  `Verifier::new` panics at construction, and `Verifier::try_new` returns
+  `SecretError::Empty` for a deployment that reads its secret per request,
+  where a panic is the wrong answer.
 - **Bounded bodies.** The body is capped at GitHub's 25 MiB maximum before
   verification; `.body_limit(..)` on the receiver builder lowers it when your
   events are smaller.
@@ -623,10 +648,13 @@ matching handler and aggregates.
 | `app.on('issues.opened', h)` | `on((EventKind::Issues, Action::Opened), h)`, or `on(Action::Opened, h)` with the kind taken from `h`'s payload type. There is no string route form |
 | `app.on('issues', h)` | `on(EventKind::Issues, h)`, or `on(AnyAction, h)` |
 | `app.onAny(h)` | `always(h)`: first, for every delivery, over the envelope; its error fails the delivery. Sees `ping` only with `handle_ping(true)` |
-| `app.onError(h)` | `on_error(h)` on the receiver builder |
+| `app.onError(h)` | `on_error(h)` on the receiver builder, called with the meta and the receiver's handler's error. With a dispatcher as that handler, the error is a `DispatchError`: `{error}` says where (tier, handler, registration site), `error.source` says why. Unlike `onError`, it never sees a refused request: a bad signature is a 401, not an error |
 | `app.receive(event)` | `dispatcher.dispatch(envelope)` with an envelope from `Envelope::new`; see [Testing without GitHub](#testing-without-github) |
 | `context.payload` | The handler's input: a serde view of your own (`#[derive(Payload)]`), or octocrab's structs with the `octocrab` feature |
 | `context.id`, `context.name` | `meta.delivery_id` and `meta.kind` on the `EventMeta`; a handler gets it beside the payload as `Event<P>` |
+| `context.payload.action` | `meta.action`, an `Option<Action>`, read from the bytes before any handler runs |
+| `context.payload.installation.id` | `meta.installation_id`, an `Option<u64>`; no octocrab needed, and enough on its own for a handler over `EventMeta` |
+| `context.repo()` | `meta.repository`, an `Option<RepositoryRef>` with `id`, `name`, `full_name` and `owner`; `None` when the payload carries no complete `repository` object |
 
 ## Cargo features
 

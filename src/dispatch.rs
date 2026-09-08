@@ -453,6 +453,74 @@ where
     /// Dispatches the envelope and keeps only the result: an unmatched
     /// delivery succeeds unless a fallback fails it. The `octoevents.dispatch`
     /// span records the outcome on this path too.
+    ///
+    /// This is what lets a dispatcher be the receiver's handler, and what a
+    /// wrapper at [the policy seam](Dispatcher#the-policy-seam) calls around
+    /// instead, to read the [`Outcome`] this discards. It also lets a
+    /// dispatcher be a route of another, and then it is a handler like any
+    /// other: it contributes a result, never a match. The outer outcome
+    /// reports the outer route table's decision alone, `Matched` for a kind
+    /// the inner dispatcher had no route for; each dispatcher's span records
+    /// its own outcome.
+    ///
+    /// A route's error converts into the dispatcher's with `From`, and a
+    /// nested dispatcher's error is a `DispatchError<E>`, which is an
+    /// [`Error`](std::error::Error) only when `E` is. `Box<dyn Error + Send +
+    /// Sync>` is not, so a `Dispatcher<BoxError>` cannot be a route of
+    /// another `Dispatcher<BoxError>` as it stands:
+    ///
+    /// ```compile_fail,E0277
+    /// use octoevents::{Dispatcher, EventKind};
+    /// type BoxError = Box<dyn std::error::Error + Send + Sync>;
+    ///
+    /// let inner = Dispatcher::<BoxError>::builder().build();
+    /// let outer = Dispatcher::<BoxError>::builder()
+    ///     .on(EventKind::Issues, inner)
+    ///     .build();
+    /// ```
+    ///
+    /// A closure that hands back the inner error's `source`, the boxed
+    /// application error, registers; the inner tier, handler and site are
+    /// on the inner span. An application error type that converts from
+    /// `DispatchError` over itself, beside the `From<DecodeError>` that
+    /// [`on`](DispatcherBuilder::on) asks of every `E`, nests without the
+    /// closure.
+    ///
+    /// ```
+    /// use octoevents::{DispatchError, Dispatcher, Envelope, EventKind};
+    /// type BoxError = Box<dyn std::error::Error + Send + Sync>;
+    ///
+    /// let inner = Dispatcher::<BoxError>::builder().build();
+    /// let outer = Dispatcher::<BoxError>::builder()
+    ///     .on(EventKind::Issues, move |envelope: Envelope| {
+    ///         let inner = inner.clone();
+    ///         async move {
+    ///             inner.dispatch(envelope).await.result
+    ///                 .map_err(|error: DispatchError<BoxError>| error.source)
+    ///         }
+    ///     })
+    ///     .build();
+    /// # let _ = outer;
+    /// ```
+    ///
+    /// ```
+    /// use octoevents::{DecodeError, DispatchError, Dispatcher, EventKind};
+    ///
+    /// #[derive(Debug)]
+    /// enum AppError { Decode(DecodeError), Nested(Box<DispatchError<AppError>>) }
+    /// impl From<DecodeError> for AppError {
+    ///     fn from(error: DecodeError) -> Self { Self::Decode(error) }
+    /// }
+    /// impl From<DispatchError<AppError>> for AppError {
+    ///     fn from(error: DispatchError<AppError>) -> Self { Self::Nested(Box::new(error)) }
+    /// }
+    ///
+    /// let inner = Dispatcher::<AppError>::builder().build();
+    /// let outer = Dispatcher::<AppError>::builder()
+    ///     .on(EventKind::Issues, inner)
+    ///     .build();
+    /// # let _ = outer;
+    /// ```
     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
         self.dispatch(envelope).await.result
     }
@@ -472,7 +540,9 @@ where
 /// A handler wrapping a [`Dispatcher`] reads both to set the policy the
 /// tiers cannot, as [The policy seam](Dispatcher#the-policy-seam) describes;
 /// the receiver never sees this type, since [`Handler::handle`] on the
-/// dispatcher returns `result` alone.
+/// dispatcher returns `result` alone. Nor does an outer dispatcher see a
+/// nested one's: the inner outcome is on the inner span, and the outer
+/// reports its own route table's match.
 ///
 /// With the `tracing` feature, the `octoevents.dispatch` span records the
 /// outcome as one label from the same two axes, so a dashboard filters on
