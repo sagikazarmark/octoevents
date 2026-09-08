@@ -107,6 +107,41 @@ impl EventMatcher {
 ///     .on(Action::Deleted, revoke)
 ///     .build();
 /// ```
+///
+/// `AnyAction` is refused the same way; a handler over the
+/// [`Envelope`](crate::Envelope) for
+/// every action of one kind names the kind, `on(EventKind::Push, forward)`:
+///
+/// ```compile_fail,E0277
+/// use octoevents::{AnyAction, Dispatcher, Envelope};
+/// # use octoevents::DecodeError;
+/// # struct AppError;
+/// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
+///
+/// async fn forward(envelope: Envelope) -> Result<(), AppError> { Ok(()) }
+///
+/// let dispatcher = Dispatcher::<AppError>::builder()
+///     .on(AnyAction, forward)
+///     .build();
+/// ```
+///
+/// The trait is open. A consumer's own matcher implements it for any input
+/// through `From<_> for EventMatcher`, which the blanket picks up, or for
+/// payload inputs alone by implementing `IntoMatcher<I>` under `I: Payload`
+/// and reading `I::KIND`, as the shipped relative shapes do:
+///
+/// ```
+/// use octoevents::{Action, EventMatcher, IntoMatcher, Payload};
+///
+/// /// The two actions that open an issue or a pull request, for any payload.
+/// struct Opening;
+///
+/// impl<I: Payload> IntoMatcher<I> for Opening {
+///     fn into_matcher(self) -> EventMatcher {
+///         (I::KIND, [Action::Opened, Action::Reopened]).into()
+///     }
+/// }
+/// ```
 // `{I}` is not named in the text: rustc checks this bound before it has
 // inferred the input from the handler, so it would render as `_`. Actions
 // alone under an input that is no `Payload` never reach this message; rustc
@@ -142,7 +177,7 @@ impl<I, M: Into<EventMatcher>> IntoMatcher<I> for M {
 /// `Event<P>`. It is the whole-kind counterpart of one [`Action`] or an
 /// array of them, and like them it is accepted only for a handler over a
 /// payload, since only a payload declares a kind to take.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct AnyAction;
 
 impl<I: Payload> IntoMatcher<I> for AnyAction {

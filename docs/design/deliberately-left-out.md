@@ -505,8 +505,20 @@ What was given up: `on`'s signature gains a type parameter, `on::<I, H, M>`,
 so a struct handling several inputs names it with one more `_`; the
 `IntoMatcher` message cannot name the input, since rustc checks that bound
 before it has inferred `I` from the handler, so it renders `_` and the text
-does not try. Net surface: two methods removed, one trait and one unit struct
-added. Recorded on `on`, `IntoMatcher` and `AnyAction`.
+does not try; and `on([], label)`, an empty action array, which the removed
+method accepted as registering nothing, is E0283, since three array impls fit
+`[_; 0]`. Nothing writes that on purpose. Net surface: two methods removed,
+one trait and one unit struct added.
+
+`IntoMatcher` is open, as `FromEnvelope` is (the entry above), and for the
+same reason: sealing it would let the crate add a method without a breaking
+change, at the cost of the consumer-defined matcher. The trait has one
+function returning an `EventMatcher`, and that shape is the contract. A
+consumer's matcher for any input is a `From<_> for EventMatcher`, which the
+blanket picks up; one for payload inputs alone implements `IntoMatcher<I>`
+under `I: Payload` and reads `I::KIND`, as the shipped relative shapes do,
+and both compile beside the shipped impls (probed). Recorded on `on`,
+`IntoMatcher` and `AnyAction`.
 
 ## `fallback` stays, with one job
 

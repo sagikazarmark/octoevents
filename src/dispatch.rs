@@ -803,8 +803,7 @@ where
     /// kind, routes for an action run before routes for every action. A
     /// handler that needs the action takes `Event<P>` and reads
     /// `meta.action`, the crate's [`Action`], whose [`Unknown`](Action::Unknown)
-    /// carries a value this crate does not know. An empty array of actions
-    /// registers nothing.
+    /// carries a value this crate does not know.
     ///
     /// A view over fields several kinds share implements `FromEnvelope` itself
     /// and is registered under those kinds:
