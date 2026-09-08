@@ -181,7 +181,11 @@ the sending side's vocabulary (queueing, retries, redelivery) stays out.
 _Avoid_: Validator, authenticator, signer (a role the verifier plays for a test, not a component)
 
 **Secret**:
-The shared HMAC key configured on the GitHub webhook. GitHub's own term.
+The shared HMAC key configured on the GitHub webhook. GitHub's own term. As
+a type (`Secret`), never empty: an empty one is the unset-environment-variable
+failure mode, not a configuration, and both constructors refuse it, `new` by
+panicking and `str::parse` with a `SecretError`, so the verifier has nothing
+left to check.
 _Avoid_: Token, key
 
 **Payload**:

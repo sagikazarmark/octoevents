@@ -617,11 +617,12 @@ recorded anywhere. The full contract, span by span and field by field, is
   against either. Deploy the new secret under `new` with the old one kept
   under `also`, change the secret in the webhook's settings, then drop the
   `also` once deliveries signed with the old one have drained. The order
-  matters only to `Verifier::sign`, which signs under the first secret. An
-  empty secret is refused rather than verified against a guessable key:
-  `Verifier::new` panics at construction, and `Verifier::try_new` returns
-  `SecretError::Empty` for a deployment that reads its secret per request,
-  where a panic is the wrong answer.
+  matters only to `Verifier::sign`, which signs under the first secret. A
+  `Secret` is never empty, so a verifier over a guessable key cannot be
+  expressed: `Secret::new` panics at construction, for a deployment that reads
+  its secret at startup, and `str::parse::<Secret>` returns
+  `SecretError::Empty` for one that reads it per request, where a panic is
+  the wrong answer.
 - **Bounded bodies.** The body is capped at GitHub's 25 MiB maximum before
   verification; `.body_limit(..)` on the receiver builder lowers it when your
   events are smaller.

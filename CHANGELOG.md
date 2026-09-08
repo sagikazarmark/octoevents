@@ -16,10 +16,9 @@ reads the "Changed" and "Removed" lists first.
 
 ### Added
 
-- `Verifier::try_new` and `Verifier::try_also`: the fallible counterparts of
-  `new` and `also`, returning `SecretError::Empty` for an empty secret. The
-  panicking constructors remain for a deployment that reads its secret at
-  startup.
+- `SecretError`: the error `str::parse::<Secret>` returns for an empty
+  secret, for a deployment that reads its secret per request and answers
+  instead of panicking.
 - `Verifier::sign`: the `X-Hub-Signature-256` value GitHub would send for a
   body, so a test drives the receiver it built with no HMAC code of its own.
 - `Envelope::new`: an unverified envelope for a test, its meta read from the
@@ -117,6 +116,11 @@ reads the "Changed" and "Removed" lists first.
   have it. What the receiver renders into `BodyError`.
 - **Breaking:** `ReceiveError::MissingHeader(&'static str)` is the struct
   variant `MissingHeader { name }`.
+- **Breaking:** A `Secret` is never empty. `Secret::new` panics on empty
+  bytes and `FromStr for Secret` returns `SecretError::Empty` where its error
+  was `Infallible`; `Verifier::new` and `Verifier::also` have nothing left to
+  refuse. An empty secret is the unset-environment-variable failure mode, and
+  verifying against it would accept any sender who guessed the key.
 - **Breaking:** `tracing` feature: the `octoevents.receive` span records
   `outcome` as a label (`ok`, `unauthorized`, `bad_request`,
   `payload_too_large`, `handler_error`) and the HTTP status as a separate

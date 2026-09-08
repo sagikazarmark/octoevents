@@ -19,8 +19,8 @@
 #![expect(clippy::unused_async_trait_impl)]
 
 use octoevents::{
-    AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind, Handler, Secret, Verifier,
-    WebhookReceiverBuilder,
+    AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind, Handler, Secret, SecretError,
+    Verifier, WebhookReceiverBuilder,
 };
 use worker::{Context, Env, Fetch, HttpRequest, Method, Request, RequestInit, console_log, event};
 
@@ -123,11 +123,13 @@ async fn fetch(
     let secret = env.secret("GITHUB_WEBHOOK_SECRET")?.to_string();
     let object_url = env.var("RESTATE_OBJECT_URL")?.to_string();
 
-    // The verifier is built per request, so an empty secret is reported as a
-    // value the runtime turns into a response, not a panic that traps the
-    // wasm instance.
-    let verifier = Verifier::try_new(Secret::new(secret))
-        .map_err(|error| worker::Error::RustError(error.to_string()))?;
+    // The secret is read per request, so an empty one is reported as a value
+    // the runtime turns into a response, not a panic that traps the wasm
+    // instance.
+    let secret: Secret = secret
+        .parse()
+        .map_err(|error: SecretError| worker::Error::RustError(error.to_string()))?;
+    let verifier = Verifier::new(secret);
 
     let dispatcher = Dispatcher::<AppError>::builder()
         .always(Forward { object_url })

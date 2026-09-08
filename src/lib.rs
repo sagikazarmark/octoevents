@@ -261,12 +261,12 @@ pub use octoevents_derive::Payload;
 pub use payload::{Event, FromEnvelope, Payload};
 pub use respond::ResponseStatus;
 pub use runtime::{MaybeSend, MaybeSync};
-pub use secret::Secret;
+pub use secret::{Secret, SecretError};
 #[cfg(feature = "http")]
 pub use service::{WebhookReceiver, WebhookReceiverBuilder};
 #[cfg(all(feature = "http", feature = "tracing"))]
 pub use traced_error::TracedError;
-pub use verify::{SecretError, Verifier, VerifyError};
+pub use verify::{Verifier, VerifyError};
 
 /// The byte buffer type of [`Envelope::raw_payload`] and of the body
 /// [`Envelope::from_signed`] takes, re-exported from the `bytes` crate.
