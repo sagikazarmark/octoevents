@@ -937,6 +937,39 @@ mod tests {
         }
     }
 
+    /// A body that cannot be moved once pinned: `PhantomPinned` makes it
+    /// `!Unpin`, and the frames sit behind a `Mutex` so `poll_frame` reads
+    /// them through the pin without projecting. A request over it compiles
+    /// only against a receiver that asks no `Unpin` of the body.
+    struct Pinned {
+        frames: std::sync::Mutex<VecDeque<Frame<Bytes>>>,
+        _pinned: std::marker::PhantomPinned,
+    }
+
+    impl Pinned {
+        /// One data frame holding `payload`.
+        fn data(payload: &'static [u8]) -> Self {
+            Self {
+                frames: std::sync::Mutex::new(VecDeque::from([Frame::data(Bytes::from_static(
+                    payload,
+                ))])),
+                _pinned: std::marker::PhantomPinned,
+            }
+        }
+    }
+
+    impl http_body::Body for Pinned {
+        type Data = Bytes;
+        type Error = std::convert::Infallible;
+
+        fn poll_frame(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+            Poll::Ready(self.frames.lock().unwrap().pop_front().map(Ok))
+        }
+    }
+
     fn request(body: &'static [u8], event: &str) -> Request<Full<Bytes>> {
         request_over(
             Full::new(Bytes::from_static(body)),
@@ -1299,36 +1332,39 @@ mod tests {
     #[tokio::test]
     async fn receives_a_body_that_is_not_unpin() {
         // A transport's body type is whatever it is; the receiver pins it
-        // where it polls it and asks nothing of the caller. This body cannot
-        // be moved once pinned, so the test compiles only while `receive`
-        // places no `Unpin` bound on `B`.
-        struct Pinned {
-            frames: std::sync::Mutex<VecDeque<Frame<Bytes>>>,
-            _pinned: std::marker::PhantomPinned,
-        }
-
-        impl http_body::Body for Pinned {
-            type Data = Bytes;
-            type Error = std::convert::Infallible;
-
-            fn poll_frame(
-                self: Pin<&mut Self>,
-                _context: &mut Context<'_>,
-            ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
-                Poll::Ready(self.frames.lock().unwrap().pop_front().map(Ok))
-            }
-        }
-
-        let body = Pinned {
-            frames: std::sync::Mutex::new(VecDeque::from([Frame::data(Bytes::from_static(b"{}"))])),
-            _pinned: std::marker::PhantomPinned,
-        };
+        // where it polls it and asks nothing of the caller. The test compiles
+        // only while `receive` places no `Unpin` bound on `B`.
         let receiver =
             WebhookReceiverBuilder::new(verifier()).build(|_: Envelope| async { Ok::<_, ()>(()) });
 
         let response = receiver
-            .receive(request_over(body, "push", &verifier().sign(b"{}")))
+            .receive(request_over(
+                Pinned::data(b"{}"),
+                "push",
+                &verifier().sign(b"{}"),
+            ))
             .await;
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[cfg(feature = "tower")]
+    #[tokio::test]
+    async fn the_tower_service_impl_accepts_a_body_that_is_not_unpin() {
+        // The `Service` impl states its own bound on `B`, apart from
+        // `receive`'s, so it is held to the same test: this compiles only
+        // while that bound asks no `Unpin` either.
+        let receiver =
+            WebhookReceiverBuilder::new(verifier()).build(|_: Envelope| async { Ok::<_, ()>(()) });
+
+        let response = receiver
+            .oneshot(request_over(
+                Pinned::data(b"{}"),
+                "push",
+                &verifier().sign(b"{}"),
+            ))
+            .await
+            .unwrap();
 
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
