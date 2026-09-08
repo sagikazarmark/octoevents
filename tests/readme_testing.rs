@@ -199,7 +199,7 @@ async fn the_boxed_observer_reaches_the_serde_field_from_error_source_source() {
     }
 
     let dispatcher = Dispatcher::<BoxError>::builder()
-        .on_payload_action([Action::Opened], label)
+        .on([Action::Opened], label)
         .build();
 
     let envelope = Envelope::new(

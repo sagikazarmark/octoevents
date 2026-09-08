@@ -71,7 +71,9 @@
 //! - [`Dispatcher`]: a handler over the envelope that routes to other
 //!   handlers by kind and action in three [tiers](Tier), always, route and
 //!   fallback, and reports an [`Outcome`]. Built with [`DispatcherBuilder`],
-//!   whose routes take an [`EventMatcher`]. A failure is a [`DispatchError`]
+//!   whose routes take an [`IntoMatcher`]: an [`EventMatcher`] shape that says
+//!   its kinds, or, for a handler over a payload, actions alone or
+//!   [`AnyAction`]. A failure is a [`DispatchError`]
 //!   naming the tier, the handler and its registration site. The policy the
 //!   tiers cannot express lives in a handler wrapping `dispatch`,
 //!   [the policy seam](Dispatcher#the-policy-seam).
@@ -212,7 +214,7 @@ pub use envelope::{
 };
 pub use events::{Action, EventKind};
 pub use handler::Handler;
-pub use matcher::EventMatcher;
+pub use matcher::{AnyAction, EventMatcher, IntoMatcher};
 /// Derives [`Payload`] for a serde type, declaring its kind:
 /// `#[derive(Payload)] #[payload(EventKind::..)]`. See the trait.
 #[cfg(feature = "derive")]

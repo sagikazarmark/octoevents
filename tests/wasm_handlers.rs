@@ -16,7 +16,7 @@
 
 use std::{cell::Cell, rc::Rc};
 
-use octoevents::{Envelope, Handler};
+use octoevents::{AnyAction, Envelope, Handler};
 
 /// A Worker-shaped handler: holds a non-`Send`, non-`Sync` value.
 struct Counter {
@@ -331,9 +331,12 @@ fn the_dispatcher_accepts_single_threaded_handler_state_over_every_input() {
                 calls: Rc::clone(&calls),
             },
         )
-        .on_payload(Labeler {
-            calls: Rc::clone(&calls),
-        })
+        .on(
+            AnyAction,
+            Labeler {
+                calls: Rc::clone(&calls),
+            },
+        )
         .fallback(Counter {
             calls: Rc::clone(&calls),
         })

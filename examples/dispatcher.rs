@@ -240,7 +240,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok::<_, AppError>(())
             },
         )
-        .on_payload_action(
+        .on(
             [Action::Opened],
             Labeler {
                 label: "needs-review".into(),
