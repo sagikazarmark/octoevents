@@ -1,15 +1,22 @@
-//! The `octoevents.dispatch` span records what happened to one delivery: an
-//! `outcome` label derived from the [`Outcome`] the dispatcher returns, the
-//! tier, handler name and registration site of the handler that failed it,
-//! and the `EventMeta` fields it ran with (`delivery_id`, `event`, `action`,
-//! `installation_id`).
+//! Every span the crate opens closes with an `outcome` label, a contract
+//! dashboards filter on, with one vocabulary per span:
 //!
-//! The four labels are a contract dashboards filter on: `ok` and
-//! `handler_error` for a matched delivery, `unmatched_ok` and
-//! `unmatched_error` for an unmatched one, whichever tier failed it. The same
-//! span wraps `Handler::handle`, so the receiver's path records the value
-//! too, and the fields it shares with the `octoevents.receive` span are
-//! recorded in the same form on both.
+//! - `octoevents.dispatch` records what happened to one delivery: `ok` and
+//!   `handler_error` for a matched delivery, `unmatched_ok` and
+//!   `unmatched_error` for an unmatched one, whichever tier failed it, derived
+//!   from the [`Outcome`] the dispatcher returns; beside it the tier, handler
+//!   name and registration site of the handler that failed it, and the
+//!   `EventMeta` fields it ran with (`delivery_id`, `event`, `action`,
+//!   `installation_id`). The same span wraps `Handler::handle`, so the
+//!   receiver's path records the value too.
+//! - `octoevents.receive` records how the receiver answered: `ok`,
+//!   `bad_request`, `unauthorized`, `payload_too_large` or `handler_error`,
+//!   beside `status`, the HTTP code.
+//! - `octoevents.verify` records how verification ended: `verified`,
+//!   `mismatch` or `malformed`, beside `secret_count` and `body_len`.
+//!
+//! The fields the receive and dispatch spans share are recorded in the same
+//! form on both.
 //!
 //! The tests read what the crate recorded, through the recording layer in
 //! `common`, not how a subscriber renders it: a string field is a
@@ -20,10 +27,10 @@
 
 mod common;
 
-use common::{Fields, Value};
+use common::{Fields, SpanRecord, Value};
 use octoevents::{
     Action, AnyAction, DecodeError, DispatchError, Dispatcher, Envelope, EventKind, Handler as _,
-    Match, Outcome,
+    Match, Outcome, Secret, Verifier, VerifyError,
 };
 
 #[derive(Debug, PartialEq)]
@@ -352,38 +359,215 @@ fn the_span_opens_with_the_delivery_id_and_event_and_the_action_and_installation
     }
 }
 
-/// The receiver under test on the `http` paths: the dispatcher above behind
-/// one secret, and a signed `pull_request.opened` request for installation
-/// 42 that it accepts.
+/// The payload every request and verification below carries: a
+/// `pull_request.opened` for installation 42, 44 bytes.
+const BODY: &[u8] = br#"{"action":"opened","installation":{"id":42}}"#;
+
+/// The secret the verifier under test holds.
+const SECRET: &str = "It's a Secret to Everybody";
+
+/// A signature that is not `sha256=` and 64 hex characters: GitHub's legacy
+/// SHA-1 header value.
+const MALFORMED_SIGNATURE: &str = "sha1=757107ea0eb2509fc211221cce984b8a37570b6d";
+
+/// The verifier under test, and the one the receiver is built with; it signs
+/// what they accept.
+fn verifier() -> Verifier {
+    Verifier::new(Secret::new(SECRET))
+}
+
+/// A verifier over a secret [`verifier`] does not hold: what it signs, the
+/// verifier under test rejects.
+fn another_verifier() -> Verifier {
+    Verifier::new(Secret::new("another secret"))
+}
+
+/// Runs `verify` over [`BODY`] under a fresh recording subscriber and returns
+/// the `octoevents.verify` span it opened alongside what it returned.
+#[track_caller]
+fn traced_verify(verifier: &Verifier, signature: &str) -> (SpanRecord, Result<(), VerifyError>) {
+    let (recording, returned) = common::traced(async { verifier.verify(signature, BODY) });
+    (recording.span("octoevents.verify").clone(), returned)
+}
+
+#[test]
+fn the_verify_span_records_the_secret_count_the_body_length_and_one_of_three_outcomes() {
+    // The three outcomes are the three ways `verify` can end, each read as a
+    // label from what the span closed with. `secret_count` and `body_len` are
+    // read from what it opened with, as integers: both are known before any
+    // comparison runs, and a rotated verifier counts every secret it holds,
+    // whichever of them verified the signature.
+    let rotated = Verifier::new(Secret::new("previous secret")).also(Secret::new(SECRET));
+    let cases = [
+        (
+            "a signature under the verifier's secret",
+            verifier(),
+            verifier().sign(BODY),
+            1,
+            "verified",
+            Ok(()),
+        ),
+        (
+            "a signature under another secret",
+            verifier(),
+            another_verifier().sign(BODY),
+            1,
+            "mismatch",
+            Err(VerifyError::Mismatch),
+        ),
+        (
+            "a malformed signature",
+            verifier(),
+            MALFORMED_SIGNATURE.to_owned(),
+            1,
+            "malformed",
+            Err(VerifyError::MalformedSignature),
+        ),
+        (
+            "a rotated verifier, the signature under the secret it was rotated to",
+            rotated,
+            verifier().sign(BODY),
+            2,
+            "verified",
+            Ok(()),
+        ),
+    ];
+
+    for (case, verifier, signature, secret_count, outcome, returned) in cases {
+        let (span, result) = traced_verify(&verifier, &signature);
+        assert_eq!(result, returned, "{case}");
+        assert_eq!(
+            span.at_open.get("secret_count"),
+            Some(&Value::U64(secret_count)),
+            "{case}: {}",
+            span.at_open
+        );
+        assert_eq!(
+            span.at_open.get("body_len"),
+            Some(&Value::U64(44)),
+            "{case}: {}",
+            span.at_open
+        );
+        assert_eq!(
+            span.at_close.get("outcome"),
+            Some(&Value::Str(outcome.into())),
+            "{case}: {}",
+            span.at_close
+        );
+    }
+}
+
+/// The receiver under test on the `http` paths: a dispatcher behind
+/// [`verifier`], and the `pull_request` request for [`BODY`] it accepts or
+/// refuses, depending on the signature the request carries.
 #[cfg(feature = "http")]
 mod receiving {
     use bytes::Bytes;
-    use octoevents::{Dispatcher, Secret, Verifier, WebhookReceiver, WebhookReceiverBuilder};
+    use http::Request;
+    use http_body_util::Full;
+    use octoevents::{DispatchError, Dispatcher, WebhookReceiver, WebhookReceiverBuilder};
 
-    use super::AppError;
+    use super::{AppError, BODY, verifier};
 
-    const BODY: &[u8] = br#"{"action":"opened","installation":{"id":42}}"#;
-
-    /// The verifier the receiver is built with; it signs the request it
-    /// accepts.
-    fn verifier() -> Verifier {
-        Verifier::new(Secret::new("It's a Secret to Everybody"))
+    /// The receiver's builder, for a test that changes a setting before it
+    /// builds.
+    pub(super) fn builder() -> WebhookReceiverBuilder<DispatchError<AppError>> {
+        WebhookReceiverBuilder::new(verifier())
     }
 
     pub(super) fn receiver(
         dispatcher: Dispatcher<AppError>,
     ) -> WebhookReceiver<Dispatcher<AppError>> {
-        WebhookReceiverBuilder::new(verifier()).build(dispatcher)
+        builder().build(dispatcher)
     }
 
-    pub(super) fn signed_request() -> http::Request<http_body_util::Full<Bytes>> {
-        http::Request::builder()
+    /// The request the receiver accepts: [`BODY`] signed by the verifier it
+    /// was built with.
+    pub(super) fn signed_request() -> Request<Full<Bytes>> {
+        request_with_signature(&verifier().sign(BODY))
+    }
+
+    /// The same request carrying `signature` as its `X-Hub-Signature-256`:
+    /// what [`signed_request`] carries authenticates, anything else does not.
+    pub(super) fn request_with_signature(signature: &str) -> Request<Full<Bytes>> {
+        Request::builder()
             .header("content-type", "application/json")
             .header("x-github-delivery", "delivery")
             .header("x-github-event", "pull_request")
-            .header("x-hub-signature-256", verifier().sign(BODY))
-            .body(http_body_util::Full::new(Bytes::from_static(BODY)))
+            .header("x-hub-signature-256", signature)
+            .body(Full::new(Bytes::from_static(BODY)))
             .unwrap()
+    }
+}
+
+/// The receive span closes with `outcome`, a label, and `status`, the HTTP
+/// code answered, however the delivery ended: one of five labels, each beside
+/// its code. A dashboard filters on the label and a subscriber renders the
+/// code as a number, so the one is asserted a string and the other an
+/// integer.
+#[cfg(feature = "http")]
+#[test]
+fn the_receive_span_records_one_of_five_outcomes_beside_the_status_answered() {
+    // One case per label, in the front page's order. The refusals are a
+    // malformed signature (400), one under another secret (401) and a body
+    // one byte over the limit (413), each on a request the receiver would
+    // otherwise accept; the handler failure is an always tier that fails
+    // every delivery.
+    let cases = [
+        (
+            "a delivery its handler accepts",
+            receiving::receiver(dispatcher()),
+            receiving::signed_request(),
+            "ok",
+            204,
+        ),
+        (
+            "a malformed signature",
+            receiving::receiver(dispatcher()),
+            receiving::request_with_signature(MALFORMED_SIGNATURE),
+            "bad_request",
+            400,
+        ),
+        (
+            "a signature under another secret",
+            receiving::receiver(dispatcher()),
+            receiving::request_with_signature(&another_verifier().sign(BODY)),
+            "unauthorized",
+            401,
+        ),
+        (
+            "a body over the limit",
+            receiving::builder()
+                .body_limit(BODY.len() - 1)
+                .build(dispatcher()),
+            receiving::signed_request(),
+            "payload_too_large",
+            413,
+        ),
+        (
+            "a delivery its handler fails",
+            receiving::receiver(Dispatcher::<AppError>::builder().always(fail_audit).build()),
+            receiving::signed_request(),
+            "handler_error",
+            500,
+        ),
+    ];
+
+    for (case, receiver, request, outcome, status) in cases {
+        let (recording, response) = common::traced(receiver.receive(request));
+        assert_eq!(response.status().as_u16(), status, "{case}");
+
+        let fields = &recording.span("octoevents.receive").at_close;
+        assert_eq!(
+            fields.get("outcome"),
+            Some(&Value::Str(outcome.into())),
+            "{case}: {fields}"
+        );
+        assert_eq!(
+            fields.get("status"),
+            Some(&Value::U64(u64::from(status))),
+            "{case}: {fields}"
+        );
     }
 }
 
