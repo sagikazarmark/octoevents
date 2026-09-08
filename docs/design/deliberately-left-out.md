@@ -371,6 +371,23 @@ metrics-only observer would have made failed deliveries invisible at ERROR,
 the silence #18 set out to end. Recorded on `on_error` and in the `Tracing`
 section of the crate front page.
 
+## The transport's error text stays off the receive span
+
+A request refused before any handler ran records the `ReceiveError` that
+selected its status on the receive span, as `error`, so `bad_request` can be
+told apart from `bad_request` (#70). Its `source()` is not recorded. Every
+`ReceiveError` message is the crate's own fixed wording, so `error` can go on
+the span unconditionally; the one source, `BodyError` beneath `BodyRead`, is
+the transport's error rendered as text, which is the transport's to write and
+could quote the request, signature included. Recording it would put text the
+crate does not control on a span with no opt-in, where a handler's error text
+waits for `trace_errors`. A setting for it (`trace_body_errors`, say) was not
+added: the fixed text already says which refusal it was, and a transport's own
+logging says why its stream broke. The text stays on the error value, where a
+transport built on `Envelope::from_signed` that holds it decides. Recorded on
+`record_refusal` in `service` and in the `Tracing` section of the crate front
+page.
+
 ## The derive is suggested for `EventMeta`: a note cannot be filtered on `Self`
 
 The single-trait redesign, #38, asked that `Payload`'s message, for an input

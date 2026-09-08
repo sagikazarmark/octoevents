@@ -15,11 +15,16 @@
 
 mod common;
 
-use std::sync::{Arc, Mutex};
+use std::{
+    pin::Pin,
+    sync::{Arc, Mutex},
+    task::{Context, Poll},
+};
 
 use bytes::Bytes;
 use common::{Recording, Value};
 use http::Request;
+use http_body::Frame;
 use http_body_util::Full;
 use octoevents::{EventMeta, Secret, Verifier, WebhookReceiverBuilder};
 use tracing::Level;
@@ -141,6 +146,45 @@ fn a_refusal_records_its_error_on_the_receive_span_but_nothing_secret_derived() 
     assert_no_field_secret_derived(&recording, malformed);
 }
 
+#[test]
+fn a_body_the_transport_cannot_read_records_the_refusal_but_not_the_transports_text() {
+    // The transport's error text is the transport's to write, and a body
+    // implementation could put the request into it, signature included. The
+    // refusal goes on the span as the crate's own fixed wording; what the
+    // transport said stays on the `ReceiveError` value and reaches no span.
+    let (signature, _) = signed_request();
+    let receiver = WebhookReceiverBuilder::new(verifier()).build(|_| async { Ok::<_, ()>(()) });
+    let body = FailingBody(format!(
+        "stream reset while reading a request signed {signature}"
+    ));
+
+    let (recording, response) = common::traced(receiver.receive(request_over(body, &signature)));
+
+    assert_eq!(response.status(), 400);
+    let receive = &recording.span("octoevents.receive").at_close;
+    assert_eq!(
+        receive.debug("error"),
+        Some("could not read the webhook body")
+    );
+    assert_eq!(receive.get("source"), None, "{receive}");
+    assert_no_field_secret_derived(&recording, &signature);
+}
+
+/// A body whose transport fails on the first poll with the given text.
+struct FailingBody(String);
+
+impl http_body::Body for FailingBody {
+    type Data = Bytes;
+    type Error = String;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+        Poll::Ready(Some(Err(self.0.clone())))
+    }
+}
+
 fn signed_request() -> (String, Request<Full<Bytes>>) {
     let signature = verifier().sign(BODY);
     (signature.clone(), request_signed_with(&signature))
@@ -148,12 +192,17 @@ fn signed_request() -> (String, Request<Full<Bytes>>) {
 
 /// The request for [`BODY`] carrying `signature` as its `X-Hub-Signature-256`.
 fn request_signed_with(signature: &str) -> Request<Full<Bytes>> {
+    request_over(Full::new(Bytes::from_static(BODY)), signature)
+}
+
+/// The same headers over a body the test shapes itself.
+fn request_over<B>(body: B, signature: &str) -> Request<B> {
     Request::builder()
         .header("content-type", "application/json")
         .header("x-github-delivery", "d34db33f-delivery")
         .header("x-github-event", "pull_request")
         .header("x-hub-signature-256", signature)
-        .body(Full::new(Bytes::from_static(BODY)))
+        .body(body)
         .unwrap()
 }
 

@@ -534,9 +534,9 @@ impl Envelope {
     ///     // The body limit: 413 past GitHub's 25 MiB cap. The receiver stops
     ///     // reading at the limit; a transport that streams does the same,
     ///     // and one handed the body already read checks its length. A read
-    ///     // that fails partway is `ReceiveError::BodyRead`, 400, with the
-    ///     // transport's error as its text; a transport handed the bytes
-    ///     // never sees one.
+    ///     // that fails partway is `ReceiveError::BodyRead`, 400, its text the
+    ///     // crate's and the transport's error one `source()` beneath, as a
+    ///     // `BodyError`; a transport handed the bytes never sees one.
     ///     if body.len() > DEFAULT_BODY_LIMIT {
     ///         let error = ReceiveError::BodyTooLarge { limit: DEFAULT_BODY_LIMIT };
     ///         return ResponseStatus::for_receive_error(&error);

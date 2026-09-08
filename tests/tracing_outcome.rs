@@ -12,8 +12,8 @@
 //! - `octoevents.receive` records how the receiver answered: `ok`,
 //!   `bad_request`, `unauthorized`, `payload_too_large` or `handler_error`,
 //!   beside `status`, the HTTP code, and for a request refused before any
-//!   handler ran, the `ReceiveError` that selected the status as `error` and
-//!   its cause, when it has one, as `source`.
+//!   handler ran, the text of the `ReceiveError` that selected the status as
+//!   `error`.
 //! - `octoevents.verify` records how verification ended: `verified`,
 //!   `mismatch` or `malformed`, beside `secret_count` and `body_len`.
 //!
@@ -29,7 +29,7 @@
 
 mod common;
 
-use common::{ErrorValue, Fields, SpanRecord, Value};
+use common::{Fields, SpanRecord, Value};
 use octoevents::{
     Action, AnyAction, DecodeError, DispatchError, Dispatcher, Envelope, EventKind, Handler as _,
     Match, Outcome, Secret, Verifier, VerifyError,
@@ -596,19 +596,17 @@ fn the_receive_span_records_one_of_five_outcomes_beside_the_status_answered() {
 }
 
 /// A request refused before any handler ran has an error value, the
-/// `ReceiveError` that selected its status, and the receive span carries it:
-/// `error`, the refusal's text, and `source`, its cause when it has one, in
-/// the forms the failed-delivery event records the same two fields. `outcome`
-/// says the class of the answer; `error` says which refusal it was, and for a
-/// body the transport could not read, `source` says what the transport
-/// reported.
+/// `ReceiveError` that selected its status, and the receive span carries its
+/// text as `error`, in the form the failed-delivery event records the same
+/// field. `outcome` says the class of the answer; `error` says which refusal
+/// it was. The error's source is not on the span: beneath `BodyRead` it is
+/// the transport's own text, which `tests/tracing_hygiene.rs` holds off it.
 #[cfg(feature = "http")]
 #[test]
-fn a_refusal_before_any_handler_ran_records_its_error_and_cause_on_the_receive_span() {
-    // Two 400s the outcome alone cannot tell apart: a malformed signature,
-    // a refusal with nothing beneath it, and a body whose first frame is the
-    // transport's error, whose cause is the transport's text. Then an
-    // accepted delivery, which refuses nothing and records neither field.
+fn a_refusal_before_any_handler_ran_records_its_error_on_the_receive_span() {
+    // Two 400s the outcome alone cannot tell apart: a malformed signature and
+    // a body whose first frame is the transport's error. Then an accepted
+    // delivery, which refuses nothing and records no `error`.
     let receiver = receiving::receiver(dispatcher());
 
     let malformed = receiving::request_with_signature(MALFORMED_SIGNATURE);
@@ -624,7 +622,6 @@ fn a_refusal_before_any_handler_ran_records_its_error_and_cause_on_the_receive_s
         Some("malformed X-Hub-Signature-256 header"),
         "{fields}"
     );
-    assert_eq!(fields.get("source"), None, "{fields}");
 
     let unreadable = receiving::request_over(
         receiving::FailingBody("connection reset by peer"),
@@ -642,20 +639,12 @@ fn a_refusal_before_any_handler_ran_records_its_error_and_cause_on_the_receive_s
         Some("could not read the webhook body"),
         "{fields}"
     );
-    assert_eq!(
-        fields.error("source"),
-        Some(&ErrorValue {
-            text: "connection reset by peer".into(),
-            sources: Vec::new(),
-        }),
-        "{fields}"
-    );
+    assert_eq!(fields.get("source"), None, "{fields}");
 
     let (recording, response) = common::traced(receiver.receive(receiving::signed_request()));
     assert_eq!(response.status(), 204);
     let fields = &recording.span("octoevents.receive").at_close;
     assert_eq!(fields.get("error"), None, "{fields}");
-    assert_eq!(fields.get("source"), None, "{fields}");
 }
 
 /// A field recorded on more than one span is the same field to a dashboard

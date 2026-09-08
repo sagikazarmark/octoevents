@@ -112,11 +112,12 @@
 //!   read, before verification, and on the way out `outcome` and `status`,
 //!   the HTTP code answered. `outcome` is one of `ok`, `bad_request`,
 //!   `unauthorized`, `payload_too_large` and `handler_error`. A request
-//!   refused before any handler ran also records the [`ReceiveError`] that
-//!   selected its status: its text as `error`, and, when it has one, its
-//!   cause as `source`, the transport's own error for a body that could not
-//!   be read. `outcome` says the class of the answer; `error` says which
-//!   refusal it was.
+//!   refused before any handler ran also records the text of the
+//!   [`ReceiveError`] that selected its status as `error`: `outcome` says the
+//!   class of the answer, `error` which refusal it was. The text alone, the
+//!   crate's own fixed wording for each refusal; the error's source, for a
+//!   body that could not be read the transport's own error text, stays off
+//!   the span, since a transport may quote the request in it.
 //! - `octoevents.verify`, at DEBUG, around [`Verifier::verify`], inside the
 //!   receive span. It records `secret_count` and `body_len` on open and
 //!   `outcome` on the way out: `verified`, `malformed` or `mismatch`. It is
@@ -133,15 +134,14 @@
 //! A field recorded in more than one place is recorded in one form
 //! everywhere: `delivery_id`, `event` and `action` as strings,
 //! `installation_id` and `status` as integers, `outcome` as a string label
-//! with its own vocabulary per span, and `error` and `source`, on the receive
-//! span for a refusal and on the failed-delivery event for a handler failure,
-//! as the error's text and an error value the subscriber walks. The one value
-//! two vocabularies share, `handler_error`, partitions differently: on the
-//! receive span it is every delivery a handler failed, since any handler
-//! error is a 500; on the dispatch span it is a matched delivery a handler
-//! failed, and an unmatched delivery failed by its `always` or `fallback`
-//! tier is `unmatched_error`. A receive `handler_error` is a dispatch
-//! `handler_error` or `unmatched_error`.
+//! with its own vocabulary per span, and `error`, on the receive span for a
+//! refusal and on the failed-delivery event for a handler failure, as the
+//! error's text. The one value two vocabularies share, `handler_error`,
+//! partitions differently: on the receive span it is every delivery a handler
+//! failed, since any handler error is a 500; on the dispatch span it is a
+//! matched delivery a handler failed, and an unmatched delivery failed by its
+//! `always` or `fallback` tier is `unmatched_error`. A receive
+//! `handler_error` is a dispatch `handler_error` or `unmatched_error`.
 //!
 //! A failed delivery also emits one event at ERROR, `handler failed`, with
 //! `delivery_id`, `event`, `status`, and `action` and `installation_id` when

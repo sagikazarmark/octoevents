@@ -434,9 +434,8 @@ where
     /// it, so this is a requirement the receiver adds, and one the transports
     /// the crate is used with meet: hyper's, axum's and a Worker's error types,
     /// and `Infallible`. It is what lets a frame the transport cannot produce
-    /// be answered 400 as [`ReceiveError::BodyRead`], with the transport's
-    /// text where the receive span's `source` field shows it, and nothing
-    /// else of the transport's type.
+    /// be answered 400 as [`ReceiveError::BodyRead`], carrying the transport's
+    /// text as its source and nothing else of the transport's type.
     ///
     /// This path never boxes and never crosses a Tower or native executor
     /// boundary, so on `wasm32` a Cloudflare Worker can hand an
@@ -486,7 +485,6 @@ where
                 outcome = tracing::field::Empty,
                 status = tracing::field::Empty,
                 error = tracing::field::Empty,
-                source = tracing::field::Empty,
             )
         )
     )]
@@ -688,31 +686,29 @@ fn record_outcome(status: ResponseStatus) -> ResponseStatus {
 }
 
 /// Answers a request refused before any handler ran: the status the contract
-/// maps `error` to, recorded as the span's outcome, and the error itself as
-/// the span's `error` and `source`, so the span says which refusal it was
-/// where `outcome` says only its class. Every pre-handler failure is an error
-/// value and goes through here, so none selects a status on its own.
+/// maps `error` to, recorded as the span's outcome, and the error's text as
+/// the span's `error`, so the span says which refusal it was where `outcome`
+/// says only its class. Every pre-handler failure is an error value and goes
+/// through here, so none selects a status on its own.
 fn refuse(error: &ReceiveError) -> ResponseStatus {
     let status = record_outcome(ResponseStatus::for_receive_error(error));
     record_refusal(error);
     status
 }
 
-/// Records the refusal on the receive span as the failed-delivery event
-/// records a handler's error: its text as `error`, through
-/// `tracing::field::display`, and its source, when it has one, as `source`,
-/// an error value the subscriber walks itself.
+/// Records the refusal's text on the receive span as `error`, through
+/// `tracing::field::display`, the form the failed-delivery event fixed for
+/// that name, so `error` is one field to a subscriber wherever it appears.
 ///
-/// The event fixed those two fields' forms first, so the span records them
-/// the same way and `error` is one field to a subscriber wherever it appears.
-/// A refusal with no source leaves `source` `Empty`, which a subscriber does
-/// not render.
+/// The text alone, and unconditionally: every `ReceiveError` message is the
+/// crate's own fixed wording, so it can carry nothing from the request. Its
+/// source is not recorded. Beneath `BodyRead` that is the transport's text,
+/// which is the transport's to write and could quote the request, signature
+/// included; it stays on the error value, as a handler's error text stays
+/// off the failed-delivery event until `trace_errors` asks for it.
 #[cfg(feature = "tracing")]
 fn record_refusal(error: &ReceiveError) {
     trace::record("error", tracing::field::display(error));
-    if let Some(source) = std::error::Error::source(error) {
-        trace::record("source", source);
-    }
 }
 
 /// Records nothing: the `tracing` feature is disabled.
