@@ -806,16 +806,16 @@ mod tests {
     const WRONG_SIGNATURE: &str =
         "sha256=0000000000000000000000000000000000000000000000000000000000000000";
 
-    /// A verifier over the secret the receivers here are built with, so what
-    /// it signs they accept.
+    /// The verifier the receivers here are built with; it signs the requests
+    /// they accept.
     fn verifier() -> Verifier {
         Verifier::new(Secret::new("secret"))
     }
 
     #[tokio::test]
     async fn returns_no_content_after_successful_dispatch() {
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
-            .build(|_: Envelope| async { Ok::<_, ()>(()) });
+        let receiver =
+            WebhookReceiverBuilder::new(verifier()).build(|_: Envelope| async { Ok::<_, ()>(()) });
 
         let response = receiver.receive(request(b"{}", "push")).await;
 
@@ -825,10 +825,9 @@ mod tests {
     #[tokio::test]
     async fn accepts_a_struct_handler_that_is_not_clone() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let receiver =
-            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(Recorder {
-                calls: Arc::clone(&calls),
-            });
+        let receiver = WebhookReceiverBuilder::new(verifier()).build(Recorder {
+            calls: Arc::clone(&calls),
+        });
 
         let response = receiver.receive(request(b"{}", "push")).await;
 
@@ -844,8 +843,7 @@ mod tests {
         }
         static COUNTED_BYTES: AtomicUsize = AtomicUsize::new(0);
 
-        let receiver =
-            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(count);
+        let receiver = WebhookReceiverBuilder::new(verifier()).build(count);
 
         let response = receiver.receive(request(b"{}", "push")).await;
 
@@ -858,8 +856,7 @@ mod tests {
         let recorder = Arc::new(Recorder {
             calls: Arc::new(AtomicUsize::new(0)),
         });
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
-            .build(Arc::clone(&recorder));
+        let receiver = WebhookReceiverBuilder::new(verifier()).build(Arc::clone(&recorder));
 
         let response = receiver.receive(request(b"{}", "push")).await;
 
@@ -870,8 +867,8 @@ mod tests {
     #[cfg(feature = "tower")]
     #[tokio::test]
     async fn the_tower_service_impl_applies_the_same_policy() {
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
-            .build(|_: Envelope| async { Ok::<_, ()>(()) });
+        let receiver =
+            WebhookReceiverBuilder::new(verifier()).build(|_: Envelope| async { Ok::<_, ()>(()) });
 
         let response = receiver.oneshot(request(b"{}", "push")).await.unwrap();
 
@@ -882,10 +879,9 @@ mod tests {
     #[tokio::test]
     async fn the_tower_service_impl_accepts_a_struct_handler() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let receiver =
-            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(Recorder {
-                calls: Arc::clone(&calls),
-            });
+        let receiver = WebhookReceiverBuilder::new(verifier()).build(Recorder {
+            calls: Arc::clone(&calls),
+        });
 
         let response = receiver.oneshot(request(b"{}", "push")).await.unwrap();
 
@@ -896,11 +892,9 @@ mod tests {
     #[tokio::test]
     async fn a_single_kind_handler_receives_its_decoded_view_with_the_metadata() {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
-            IssueRecorder {
-                seen: Arc::clone(&seen),
-            },
-        );
+        let receiver = WebhookReceiverBuilder::new(verifier()).build(IssueRecorder {
+            seen: Arc::clone(&seen),
+        });
 
         let response = receiver
             .receive(request(
@@ -935,8 +929,7 @@ mod tests {
                 }
             })
             .build();
-        let receiver =
-            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(dispatcher);
+        let receiver = WebhookReceiverBuilder::new(verifier()).build(dispatcher);
 
         let response = receiver.receive(request(BODY, "pull_request")).await;
 
@@ -951,19 +944,17 @@ mod tests {
     async fn short_circuits_ping_unless_enabled() {
         let calls = Arc::new(AtomicUsize::new(0));
         let handler_calls = Arc::clone(&calls);
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret"))).build(
-            move |_: Envelope| {
-                handler_calls.fetch_add(1, Ordering::Relaxed);
-                async { Ok::<_, ()>(()) }
-            },
-        );
+        let receiver = WebhookReceiverBuilder::new(verifier()).build(move |_: Envelope| {
+            handler_calls.fetch_add(1, Ordering::Relaxed);
+            async { Ok::<_, ()>(()) }
+        });
 
         let response = receiver.receive(request(b"{}", "ping")).await;
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert_eq!(calls.load(Ordering::Relaxed), 0);
 
         let handler_calls = Arc::clone(&calls);
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(verifier())
             .handle_ping(true)
             .build(move |_: Envelope| {
                 handler_calls.fetch_add(1, Ordering::Relaxed);
@@ -981,8 +972,8 @@ mod tests {
         // so one failure through HTTP shows the receiver answers with the
         // mapped status; the refusal before the body is read has its own
         // test below.
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
-            .build(|_: Envelope| async { Ok::<_, ()>(()) });
+        let receiver =
+            WebhookReceiverBuilder::new(verifier()).build(|_: Envelope| async { Ok::<_, ()>(()) });
 
         let mismatch = with_header(b"{}", "push", "x-hub-signature-256", WRONG_SIGNATURE);
         let response = receiver.receive(mismatch).await;
@@ -1010,8 +1001,7 @@ mod tests {
         }
 
         let receiver = || {
-            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
-                .build(|_: Envelope| async { Ok::<_, ()>(()) })
+            WebhookReceiverBuilder::new(verifier()).build(|_: Envelope| async { Ok::<_, ()>(()) })
         };
         let request = |signature: Option<&str>| {
             let builder = Request::builder()
@@ -1043,7 +1033,7 @@ mod tests {
     async fn refuses_an_unsigned_oversized_request_on_its_headers() {
         // The body's exact size hint is over the limit, so 413 would say the
         // limit was checked first; 401 says the signature headers were.
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(verifier())
             .body_limit(64)
             .build(|_: Envelope| async { Ok::<_, ()>(()) });
 
@@ -1062,7 +1052,7 @@ mod tests {
         // answers from inside the read loop.
         const OVERSIZED: &[u8] = &[b' '; 65];
         let receiver = || {
-            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+            WebhookReceiverBuilder::new(verifier())
                 .body_limit(64)
                 .build(|_: Envelope| async { Ok::<_, ()>(()) })
         };
@@ -1098,7 +1088,7 @@ mod tests {
         const PAYLOAD: &[u8] = br#"{"a":1,"b":2}"#;
         let signed = verifier().sign(PAYLOAD);
         let receiver = |limit: usize| {
-            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+            WebhookReceiverBuilder::new(verifier())
                 .body_limit(limit)
                 .build(|_: Envelope| async { Ok::<_, ()>(()) })
         };
@@ -1139,7 +1129,7 @@ mod tests {
         let mut trailers = HeaderMap::new();
         trailers.insert("x-checksum", "crc32c=00000000".parse().unwrap());
         let body = Frames::new([Frame::trailers(trailers)]);
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(verifier())
             .body_limit(0)
             .build(|_: Envelope| async { Ok::<_, ()>(()) });
 
@@ -1152,7 +1142,7 @@ mod tests {
 
     #[tokio::test]
     async fn handler_errors_return_bare_internal_server_errors() {
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(verifier())
             .build(|_: Envelope| async { Err::<(), _>("private error") });
 
         let response = receiver.receive(request(b"{}", "push")).await;
@@ -1177,7 +1167,7 @@ mod tests {
             .always(|_: Envelope| async { Err::<(), _>("audit") })
             .build();
         let observer_seen = Arc::clone(&seen);
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(verifier())
             .on_error(move |meta: &EventMeta, error: &DispatchError<AppError>| {
                 observer_seen
                     .lock()
@@ -1225,7 +1215,7 @@ mod tests {
 
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let observer_seen = Arc::clone(&seen);
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(verifier())
             .on_error(move |meta: &EventMeta, error: &Boxed| {
                 let mut lines = vec![format!("{} {}: {error}", meta.delivery_id, meta.kind)];
                 let mut cause = error.source();
@@ -1254,7 +1244,7 @@ mod tests {
 
         let calls = Arc::new(AtomicUsize::new(0));
         let observer_calls = Arc::clone(&calls);
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(verifier())
             .on_error(move |_: &EventMeta, _: &Opaque| {
                 observer_calls.fetch_add(1, Ordering::Relaxed);
             })
@@ -1274,7 +1264,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let receiver = |handler_fails: bool| {
             let observer_calls = Arc::clone(&calls);
-            WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+            WebhookReceiverBuilder::new(verifier())
                 .body_limit(64)
                 .on_error(move |_: &EventMeta, _: &&str| {
                     observer_calls.fetch_add(1, Ordering::Relaxed);
@@ -1367,13 +1357,13 @@ mod tests {
     #[cfg(feature = "tracing")]
     #[test]
     fn debug_says_whether_the_failed_delivery_event_carries_the_error() {
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(verifier())
             .trace_errors()
             .build(|_: Envelope| async { Err::<(), _>(std::fmt::Error) });
         let debug = format!("{receiver:?}");
         assert!(debug.contains("trace_errors: true"), "{debug}");
 
-        let receiver = WebhookReceiverBuilder::new(Verifier::new(Secret::new("secret")))
+        let receiver = WebhookReceiverBuilder::new(verifier())
             .trace_boxed_errors()
             .build(|_: Envelope| async {
                 Err::<(), Box<dyn std::error::Error + Send + Sync>>("boxed".into())

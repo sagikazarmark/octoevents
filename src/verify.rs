@@ -254,8 +254,13 @@ mod tests {
     use super::{Verifier, VerifyError};
     use crate::Secret;
 
+    /// GitHub's documented test vector: `Hello, World!` under `It's a
+    /// Secret to Everybody`.
     const DOCUMENTED_SIGNATURE: &str =
         "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17";
+    /// The empty body under `secret`.
+    const EMPTY_BODY_SIGNATURE: &str =
+        "sha256=f9e66e179b6747ae54108f82f8ade8b3c25d76fd30afde6c395822c530196169";
 
     #[test]
     fn accepts_githubs_documented_test_vector() {
@@ -353,9 +358,8 @@ mod tests {
     #[test]
     fn empty_body_is_still_authenticated() {
         let verifier = Verifier::new(Secret::new("secret"));
-        let signature = "sha256=f9e66e179b6747ae54108f82f8ade8b3c25d76fd30afde6c395822c530196169";
 
-        assert_eq!(verifier.verify(signature, b""), Ok(()));
+        assert_eq!(verifier.verify(EMPTY_BODY_SIGNATURE, b""), Ok(()));
     }
 
     #[test]
@@ -369,10 +373,7 @@ mod tests {
     fn signs_the_empty_body() {
         let verifier = Verifier::new(Secret::new("secret"));
 
-        assert_eq!(
-            verifier.sign(b""),
-            "sha256=f9e66e179b6747ae54108f82f8ade8b3c25d76fd30afde6c395822c530196169"
-        );
+        assert_eq!(verifier.sign(b""), EMPTY_BODY_SIGNATURE);
     }
 
     #[test]

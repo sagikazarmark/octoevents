@@ -84,59 +84,54 @@ async fn accepts_a_signed_delivery() {
     assert_eq!(response.status(), 204);
 }
 
-/// The sentence after the second test: the receiver built over another
-/// secret answers the same request 401.
-#[tokio::test]
-async fn refuses_the_same_delivery_under_another_secret() {
-    let webhook = WebhookReceiverBuilder::new(Verifier::new(Secret::new("other-secret")))
-        .build(thanks_opened_issues());
-
+/// The README's second test's request, signed by `verifier`: the same
+/// `issues.opened` body under the same four headers, for the two sentences
+/// after that test to put through receivers built over other secrets.
+fn the_readme_request(verifier: &Verifier) -> http::Request<String> {
     let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
-    let request = http::Request::builder()
+    http::Request::builder()
         .method("POST")
         .uri("/webhook")
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::DELIVERY_ID, "delivery-1")
         .header(header::EVENT_NAME, "issues")
-        .header(
-            header::SIGNATURE,
-            Verifier::new(Secret::new("test-secret")).sign(body.as_bytes()),
-        )
+        .header(header::SIGNATURE, verifier.sign(body.as_bytes()))
         .body(body.to_string())
-        .unwrap();
+        .unwrap()
+}
+
+/// The first sentence after the second test: the receiver built over
+/// another secret answers the same request 401.
+#[tokio::test]
+async fn refuses_the_same_delivery_under_another_secret() {
+    let webhook = WebhookReceiverBuilder::new(Verifier::new(Secret::new("other-secret")))
+        .build(thanks_opened_issues());
+    let request = the_readme_request(&Verifier::new(Secret::new("test-secret")));
 
     let response = webhook.receive(request).await;
 
     assert_eq!(response.status(), 401);
 }
 
-/// The sentence's other half: a verifier that also accepts a previous secret
-/// signs under its first, so a receiver over the previous secret alone
-/// refuses what it signs, and one over the first accepts it.
+/// The second sentence after it: a verifier that also accepts a previous
+/// secret signs under its first, so a receiver over the first accepts what
+/// it signs and one over the previous secret alone refuses it.
 #[tokio::test]
 async fn a_verifier_with_a_previous_secret_signs_under_its_first() {
     let rotated = Verifier::new(Secret::new("test-secret")).also(Secret::new("previous-secret"));
-    let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
-    let request = || {
-        http::Request::builder()
-            .method("POST")
-            .uri("/webhook")
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::DELIVERY_ID, "delivery-1")
-            .header(header::EVENT_NAME, "issues")
-            .header(header::SIGNATURE, rotated.sign(body.as_bytes()))
-            .body(body.to_string())
-            .unwrap()
-    };
-
     let over_the_first = WebhookReceiverBuilder::new(Verifier::new(Secret::new("test-secret")))
         .build(thanks_opened_issues());
     let over_the_previous =
         WebhookReceiverBuilder::new(Verifier::new(Secret::new("previous-secret")))
             .build(thanks_opened_issues());
 
-    assert_eq!(over_the_first.receive(request()).await.status(), 204);
-    assert_eq!(over_the_previous.receive(request()).await.status(), 401);
+    let accepted = over_the_first.receive(the_readme_request(&rotated)).await;
+    let refused = over_the_previous
+        .receive(the_readme_request(&rotated))
+        .await;
+
+    assert_eq!(accepted.status(), 204);
+    assert_eq!(refused.status(), 401);
 }
 
 /// The prose's claim: `Envelope::new` reads the action and the sender out of
