@@ -650,7 +650,7 @@ mod meta {
     use crate::{AccountMeta, Envelope, EventKind, EventMeta, RepositoryMeta};
 
     #[test]
-    fn a_repository_ref_is_built_from_its_constructor() {
+    fn a_repository_meta_is_built_from_its_constructor() {
         let repository = RepositoryMeta::new(1, "repo", "octo/repo", "octo");
 
         assert_eq!(repository.id, 1);
@@ -660,7 +660,7 @@ mod meta {
     }
 
     #[test]
-    fn an_account_ref_is_built_from_its_constructor_and_displays_as_its_login() {
+    fn an_account_meta_is_built_from_its_constructor_and_displays_as_its_login() {
         let account = AccountMeta::new(583_231, "octocat");
 
         assert_eq!(account.id, 583_231);

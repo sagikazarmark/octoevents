@@ -351,7 +351,6 @@ impl fmt::Debug for Signature {
     }
 }
 
-/// Constant-time comparison of the MAC bytes.
 /// The configured secrets, and the HMAC comparison they authenticate with.
 ///
 /// A verifier is required to receive a webhook: it is constructed from one
