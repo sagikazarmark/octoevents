@@ -95,10 +95,12 @@ where
 /// handler over a [`Payload`](crate::Payload) may give actions alone and take
 /// the kind from its type. The `fallback` chain runs only if neither
 /// routed chain matched, and receives the envelope as `always` does.
-/// Every chain is sequential, in registration order, and stops at the first
-/// error. `always` and `fallback` never count as a match, and an empty
-/// fallback chain succeeds, so unmatched kinds are green in GitHub until you
-/// decide otherwise.
+/// Handlers run one at a time, in registration order across the tiers, and
+/// the first error ends the dispatch: a failing `always` handler keeps every
+/// route from running, and a failing action-specific handler keeps the
+/// kind-wide chain from running. `always` and `fallback` never count as a
+/// match, and an empty fallback chain succeeds, so unmatched kinds are green
+/// in GitHub until you decide otherwise.
 ///
 /// There are no priorities and no propagation control: a handler cannot be
 /// moved ahead of one registered earlier, and cannot stop the chain or
@@ -119,8 +121,8 @@ where
 /// kind, or its kind and action; matching is decided by the route table,
 /// never by a handler, and the `always` tier does not match. As a
 /// [`Handler<Envelope>`] the dispatcher keeps only the result, so the receiver
-/// sees an unmatched delivery as a success unless a fallback failed it; the
-/// outcome is for the policy seam to read.
+/// sees an unmatched delivery as a success unless an `always` or `fallback`
+/// handler failed it; the outcome is for the policy seam to read.
 ///
 /// A failure is reported as a [`DispatchError`]: the handler's error, boxed
 /// as a [`BoxError`], wrapped with the [`Tier`] the failing handler ran in,
@@ -130,28 +132,23 @@ where
 /// so an operator reading "delivery X failed" knows which handler and can go
 /// to the line of code that registered it.
 ///
-/// The decode rule: `always` and `fallback` receive the bytes as they were
-/// verified and nothing is decoded on their behalf; each routed handler
-/// decodes its own input, through [`FromEnvelope`], when its route runs. So a
-/// payload octocrab cannot represent still reaches `always`, every handler
-/// over a consumer view or the [`EventMeta`] alone, and a strict `fallback`,
-/// which answers it with its own error rather than a decode error; the
-/// delivery fails only at the first handler over octocrab's `WebhookEvent`,
-/// and the [`DispatchError`] names that registration. A routed handler
-/// decodes only when its route matches: a handler registered for some actions
-/// decodes nothing for a delivery carrying another. Routing itself decodes
-/// nothing either: the kind and action a route is looked up by were read into
-/// the [`EventMeta`] when the envelope was built, the kind from the header and
-/// the action from the payload's top level.
+/// Nothing is decoded until a handler needs it. Routing reads the kind and
+/// action off the [`EventMeta`], where they were put when the envelope was
+/// built, the kind from the header and the action from the payload's top
+/// level. `always` and `fallback` receive the bytes as they were verified,
+/// and nothing is decoded on their behalf. A routed handler decodes its own
+/// input, through [`FromEnvelope`], when its route runs, and only then: a
+/// handler registered for some actions decodes nothing for a delivery
+/// carrying another. So a payload one handler's input cannot represent
+/// (octocrab's `WebhookEvent`, say, on a payload its model has drifted from)
+/// still reaches `always`, every handler over a consumer view or the
+/// `EventMeta` alone, and a strict `fallback`, which answers it with its own
+/// error rather than a decode error; the delivery fails only at that
+/// handler, and the [`DispatchError`] names its registration.
 ///
 #[cfg_attr(feature = "derive", doc = "```")]
 #[cfg_attr(not(feature = "derive"), doc = "```ignore")]
 /// use octoevents::{Action, AnyAction, BoxError, Dispatcher, Envelope, Event, EventKind};
-///
-/// /// A fallback's own reason for failing a delivery.
-/// #[derive(Debug, thiserror::Error)]
-/// #[error("no handler for {0} events")]
-/// struct Unhandled(EventKind);
 ///
 /// // A consumer view over the pull-request payload; the kind it declares is
 /// // the kind its handler is routed by.
@@ -174,15 +171,16 @@ where
 ///     Ok(())
 /// }
 ///
-/// async fn reject(envelope: Envelope) -> Result<(), Unhandled> {
-///     Err(Unhandled(envelope.meta.kind))
+/// async fn log_unrouted(envelope: Envelope) -> Result<(), BoxError> {
+///     println!("unrouted {} {} {:?}", envelope.meta.delivery_id, envelope.meta.kind, envelope.meta.action);
+///     Ok(())
 /// }
 ///
 /// let dispatcher = Dispatcher::builder()
-///     .always(forward)
-///     .on(AnyAction, notify)
-///     .on([Action::Opened, Action::Reopened], label)
-///     .fallback(reject)
+///     .always(forward)                                // every delivery, bytes included
+///     .on(AnyAction, notify)                          // every `pull_request` action
+///     .on([Action::Opened, Action::Reopened], label)  // these two, `pull_request` from the type
+///     .fallback(log_unrouted)                         // whatever no route matched
 ///     .build();
 /// # let _ = dispatcher;
 /// ```
@@ -287,7 +285,7 @@ where
 /// tolerating an added action. What the wrapper answers before `dispatch`
 /// reaches no tier, `always` included. The dispatcher only routes.
 /// [`Outcome`]'s docs show a wrapper that dead-letters an unknown kind; the
-/// `dispatcher` example shows one that also persists and deduplicates. The
+/// `policy_seam` example shows one that also persists and deduplicates. The
 /// [design notes](crate#design) record the short-circuit tier this replaces.
 #[derive(Clone)]
 pub struct Dispatcher {
@@ -316,33 +314,51 @@ impl Dispatcher {
     /// of the first handler whose input could not be decoded, each wrapped in
     /// a [`DispatchError`] naming the tier it came from, the delivery, the
     /// handler, and where it was registered. The two are independent: a
-    /// matched delivery can fail, and an unmatched one succeeds unless a
-    /// fallback fails it. [`Handler::handle`] on the dispatcher keeps only
-    /// the result.
+    /// matched delivery can fail, and an unmatched one succeeds unless an
+    /// `always` or `fallback` handler fails it. [`Handler::handle`] on the
+    /// dispatcher keeps only the result.
     ///
     /// A plain `async fn` with no runtime of its own: a transport awaits it
-    /// on whatever executor it has, and a synchronous entry with none polls
-    /// it once. When no handler suspends, a single poll with a no-op waker
-    /// completes it; a poll that comes back `Pending` means a handler did
-    /// suspend and needs an executor after all.
+    /// on whatever executor it has, and a test awaits it on the test's. The
+    /// envelope comes from [`Envelope::new`], so nothing is signed:
     ///
     /// ```
-    /// use std::pin::pin;
-    /// use std::task::{Context, Poll, Waker};
-    ///
-    /// use octoevents::{BoxError, Dispatcher, Envelope, EventKind};
+    /// use octoevents::{BoxError, Dispatcher, Envelope, EventKind, Match};
     ///
     /// async fn log(envelope: Envelope) -> Result<(), BoxError> {
     ///     println!("{} bytes of {}", envelope.raw_payload.len(), envelope.meta.kind);
     ///     Ok(())
     /// }
     ///
+    /// # tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
     /// let dispatcher = Dispatcher::builder().on(EventKind::Push, log).build();
     /// let envelope = Envelope::new(
     ///     "72d3162e-cc78-11e3-81ab-4c9367dc0958",
     ///     EventKind::Push,
     ///     br#"{"ref":"refs/heads/main"}"#,
     /// );
+    ///
+    /// let outcome = dispatcher.dispatch(envelope).await;
+    ///
+    /// assert_eq!(outcome.matched, Match::Matched);
+    /// outcome.result.unwrap();
+    /// # });
+    /// ```
+    ///
+    /// A synchronous entry with no executor polls it once. When no handler
+    /// suspends, a single poll with a no-op waker completes it; a poll that
+    /// comes back `Pending` means a handler did suspend and needs an executor
+    /// after all:
+    ///
+    /// ```
+    /// use std::pin::pin;
+    /// use std::task::{Context, Poll, Waker};
+    ///
+    /// use octoevents::{BoxError, Dispatcher, Envelope, EventKind};
+    /// # async fn log(_: Envelope) -> Result<(), BoxError> { Ok(()) }
+    ///
+    /// let dispatcher = Dispatcher::builder().on(EventKind::Push, log).build();
+    /// let envelope = Envelope::new("delivery-1", EventKind::Push, br#"{"ref":"refs/heads/main"}"#);
     ///
     /// let mut future = pin!(dispatcher.dispatch(envelope));
     /// let Poll::Ready(outcome) = future.as_mut().poll(&mut Context::from_waker(Waker::noop())) else {
@@ -438,8 +454,8 @@ impl Handler<Envelope> for Dispatcher {
     type Error = DispatchError;
 
     /// Dispatches the envelope and keeps only the result: an unmatched
-    /// delivery succeeds unless a fallback fails it. The `octoevents.dispatch`
-    /// span records the outcome on this path too.
+    /// delivery succeeds unless an `always` or `fallback` handler fails it.
+    /// The `octoevents.dispatch` span records the outcome on this path too.
     ///
     /// This is what lets a dispatcher be the receiver's handler, and what a
     /// wrapper at [the policy seam](Dispatcher#the-policy-seam) calls around
@@ -476,7 +492,8 @@ impl Handler<Envelope> for Dispatcher {
 /// succeeded, and otherwise the first error, whichever tier it came from,
 /// wrapped in a [`DispatchError`] that names the tier, the delivery, the
 /// failing handler and where it was registered. A matched delivery can fail;
-/// an unmatched one succeeds unless a fallback fails it.
+/// an unmatched one succeeds unless an `always` or `fallback` handler fails
+/// it.
 ///
 /// A handler wrapping a [`Dispatcher`] reads both to set the policy the
 /// tiers cannot, as [The policy seam](Dispatcher#the-policy-seam) describes;
@@ -619,12 +636,12 @@ impl fmt::Display for Match {
 /// with what it knew and the handler did not: the [`Tier`] the handler ran
 /// in, the delivery's ID, kind and action, the handler's name, and the
 /// source location of the registration (`always`, `on` or `fallback`) that
-/// put the handler there. Every
-/// registration method records its caller's location and its handler's name
-/// at compile time, so each costs one static reference per registration, on
-/// `wasm32` as anywhere. A decode failure is reported at the handler that
-/// needed the decode: its tier, its name, its registration site, and the
-/// [`DecodeError`](crate::DecodeError) as the source.
+/// put the handler there. Every registration method records its caller's
+/// location and its handler's name at compile time, so each costs two static
+/// references per registration, on `wasm32` as anywhere. A decode failure is
+/// reported at the handler that needed the decode: its tier, its name, its
+/// registration site, and the [`DecodeError`](crate::DecodeError) as the
+/// source.
 ///
 /// The handler name is [`type_name`]'s output for the type the registration
 /// method received: the function's path for an `async fn` item
@@ -648,6 +665,34 @@ impl fmt::Display for Match {
 /// nests as a route of another and the receiver puts the error on the
 /// failed-delivery event with no bound left to ask.
 ///
+/// ```
+/// use std::error::Error as _;
+///
+/// use octoevents::{DecodeError, Dispatcher, Envelope, EventKind, Tier};
+///
+/// #[derive(Debug, thiserror::Error)]
+/// #[error("database is down")]
+/// struct Database;
+///
+/// async fn persist(_: Envelope) -> Result<(), Database> {
+///     Err(Database)
+/// }
+///
+/// # tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
+/// let dispatcher = Dispatcher::builder().always(persist).build();
+/// let envelope = Envelope::new("delivery-1", EventKind::Push, b"{}");
+///
+/// let error = dispatcher.dispatch(envelope).await.result.unwrap_err();
+///
+/// // Where: the wrapping. Why: the source, downcast to the type the handler returned.
+/// assert_eq!(error.tier, Tier::Always);
+/// assert_eq!(error.delivery_id, "delivery-1");
+/// assert!(error.source.downcast_ref::<Database>().is_some());
+/// assert!(!error.source.is::<DecodeError>());
+/// assert_eq!(error.source().unwrap().to_string(), "database is down");
+/// # });
+/// ```
+///
 /// A wrapping handler that passes the dispatcher's result through keeps the
 /// tier, handler name and registration site by making this its error type;
 /// the receiver accepts it as it does any error, and hands it to the
@@ -657,7 +702,11 @@ impl fmt::Display for Match {
 /// The dispatcher produces this and consumers only read it, so it is
 /// `#[non_exhaustive]`: another field can be added without that becoming a
 /// breaking change here. A test that needs one dispatches to a handler that
-/// fails.
+/// fails, as above.
+///
+/// `Display` is the first line below; the second is what a reporter walking
+/// [`source`](Error::source) prints beneath it, as the README's `report`
+/// does:
 ///
 /// ```text
 /// delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (pull_request.opened) failed in the route tier at the handler `app::label` registered at src/main.rs:42:10
@@ -793,9 +842,9 @@ impl DispatcherBuilder {
     /// routed at all wraps the dispatcher instead, as
     /// [The policy seam](Dispatcher#the-policy-seam) describes.
     ///
-    /// Every delivery means every one the dispatcher is handed; two things
-    /// upstream of it keep some from arriving. The receiver answers a `ping`
-    /// itself, before the dispatcher, unless built with
+    /// "Every delivery" is every delivery the dispatcher is handed; two
+    /// things upstream of it keep some from arriving. The receiver answers a
+    /// `ping` itself, before the dispatcher, unless built with
     /// `WebhookReceiverBuilder::handle_ping(true)`. A wrapper that answers a
     /// redelivery of a stored delivery ID with success before calling
     /// `dispatch` keeps that redelivery from this tier too, so a metric that
@@ -833,27 +882,32 @@ impl DispatcherBuilder {
     /// Registers a handler for the kinds and actions the matcher selects.
     ///
     /// The matcher is any [`IntoMatcher`] for the handler's input. One that
-    /// says its kinds works for any input: a kind, several kinds, a
-    /// `(kind, action)`, a `(kind, [actions])`, `[(kind, action)]` pairs, or an
-    /// [`EventMatcher`](crate::EventMatcher) built with
-    /// [`or`](crate::EventMatcher::or). For a handler over a
+    /// says its kinds works for any input: a kind, several kinds (an array or
+    /// a `Vec`), a `(kind, action)`, a `(kind, [actions])`, `[(kind, action)]`
+    /// pairs (an array or a `Vec`), or an [`EventMatcher`](crate::EventMatcher)
+    /// built with [`or`](crate::EventMatcher::or). For a handler over a
     /// [`Payload`](crate::Payload) `P`, or [`Event<P>`](crate::Event), the
     /// matcher may say actions alone, one [`Action`], an array of them, or
-    /// [`AnyAction`](crate::AnyAction) for
-    /// every action of the kind, and the kind is `P::KIND`: said once, on the
-    /// type, so the handler cannot be registered under another kind. A
-    /// pull-request handler under `Action::Opened` is `pull_request.opened`.
+    /// [`AnyAction`](crate::AnyAction) for every action of the kind, and the
+    /// kind is `P::KIND`: said once, on the type, so under those matchers the
+    /// handler cannot be registered under another kind. A pull-request
+    /// handler under `Action::Opened` is `pull_request.opened`.
     ///
     /// The handler's input is any [`FromEnvelope`], whose docs list the
-    /// shipped impls: the [`EventMeta`] alone, for a handler routed by kind
-    /// and action that decodes nothing; the [`Envelope`], bytes included, for
-    /// one kind's forwarder; a `Payload` or `Event<P>`, which decodes with its
-    /// kind check, so a matcher that says a kind the view disagrees with fails
-    /// the delivery with [`DecodeError::KindMismatch`](crate::DecodeError::KindMismatch), where a matcher of
-    /// actions alone cannot disagree; or a consumer type implementing
-    /// `FromEnvelope` itself, for a view over fields several kinds share. Each
-    /// route decodes its own input when it runs, and a decode failure fails
-    /// the delivery at that position: the [`DispatchError`] names this
+    /// shipped impls:
+    ///
+    /// - the [`EventMeta`] alone, for a handler routed by kind and action
+    ///   that decodes nothing;
+    /// - the [`Envelope`], bytes included, for one kind's forwarder;
+    /// - a `Payload` or `Event<P>`, which decodes with its kind check, so a
+    ///   matcher that says a kind the view disagrees with fails the delivery
+    ///   with [`DecodeError::KindMismatch`](crate::DecodeError::KindMismatch),
+    ///   where a matcher of actions alone cannot disagree;
+    /// - a consumer type implementing `FromEnvelope` itself, for a view over
+    ///   fields several kinds share.
+    ///
+    /// Each route decodes its own input when it runs, and a decode failure
+    /// fails the delivery at that position: the [`DispatchError`] names this
     /// registration.
     ///
     #[cfg_attr(feature = "derive", doc = "```")]
@@ -887,15 +941,16 @@ impl DispatcherBuilder {
     /// # let _ = dispatcher;
     /// ```
     ///
-    /// A route that does not match neither counts as a match nor decodes the
-    /// payload: a strict fallback rejects `pull_request.closed` when only
-    /// `Action::Opened` is registered, and a payload type that cannot
-    /// represent an action (octocrab's per-kind action enums have no
-    /// catch-all) fails only the deliveries it was registered for. Under one
-    /// kind, routes for an action run before routes for every action. A
-    /// handler that needs the action takes `Event<P>` and reads
-    /// `meta.action`, the crate's [`Action`], whose [`Unknown`](Action::Unknown)
-    /// carries a value this crate does not know.
+    /// A route the delivery does not match is not run, so it neither makes
+    /// the delivery a match nor decodes the payload: a strict fallback
+    /// rejects `pull_request.closed` when only `Action::Opened` is
+    /// registered, and a payload type that cannot represent an action
+    /// (octocrab's per-kind action enums have no catch-all) fails only the
+    /// deliveries it was registered for. Under one kind, routes for an action
+    /// run before routes for every action. A handler that needs the action
+    /// takes `Event<P>` and reads `meta.action`, the crate's [`Action`],
+    /// whose [`Unknown`](Action::Unknown) carries a value this crate does not
+    /// know.
     ///
     /// A view over fields several kinds share implements `FromEnvelope` itself
     /// and is registered under those kinds:
@@ -1003,7 +1058,7 @@ impl DispatcherBuilder {
     /// ```
     ///
     /// A type that is neither a `Payload` nor a `FromEnvelope` is reported
-    /// with both routes to becoming an input (abridged):
+    /// with both ways of becoming an input (abridged):
     ///
     /// ```text
     /// error[E0277]: `Sender` cannot be decoded from an `Envelope`
@@ -1123,7 +1178,11 @@ impl DispatcherBuilder {
     ///
     /// ```
     /// use octoevents::{BoxError, Dispatcher, Envelope, EventKind};
-    /// # async fn log_unrouted(_: Envelope) -> Result<(), BoxError> { Ok(()) }
+    ///
+    /// async fn log_unrouted(envelope: Envelope) -> Result<(), BoxError> {
+    ///     println!("unrouted {} {}", envelope.meta.delivery_id, envelope.meta.kind);
+    ///     Ok(())
+    /// }
     ///
     /// #[derive(Debug, thiserror::Error)]
     /// #[error("no handler for {0} events")]

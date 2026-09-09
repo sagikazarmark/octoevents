@@ -14,16 +14,25 @@ use syn::{DeriveInput, Error, Expr, Meta, Result, parse_macro_input, parse_quote
 /// Declares which `EventKind` a serde type is the payload of.
 ///
 /// The attribute takes the kind as an expression, `#[payload(EventKind::..)]`,
-/// and expands to `impl octoevents::Payload for Self { const KIND = .. }`
-/// with `Self: serde::de::DeserializeOwned` as its one bound, nothing more:
-/// the serde derive stays yours, and so does every field. The bound is what
+/// and expands to `impl octoevents::Payload for Self { const KIND = .. }`,
+/// carrying the type's own generics and bounds and adding one:
+/// `Self: serde::de::DeserializeOwned`. Nothing else is generated: the serde
+/// derive stays yours, and so does every field. The added bound is what
 /// makes a serde type a `FromEnvelope`, which `Payload` requires, so a
 /// generic view `View<T>` is a payload wherever `View<T>` deserializes, with
 /// nothing said about `T` beyond what the type itself declares. A misspelled
-/// variant is reported by rustc at the literal, as any expression would be.
+/// variant is reported by rustc at the path, as any expression would be.
 ///
-/// The bound names `::serde`, so the crate is expected under that name, as it
-/// is wherever `serde::Deserialize` is derived.
+/// The attribute is required, exactly once, and takes the kind
+/// positionally: `#[payload]` and `#[payload = ".."]` are refused with the
+/// parenthesized form, `#[payload()]` as empty, a second attribute as a
+/// duplicate, and a second argument as an unexpected token. The kind is any
+/// expression of type `EventKind`, a path (`EventKind::Issues`,
+/// `octoevents::EventKind::Issues`) or a constant of your own.
+///
+/// The expansion names `::serde` and `::octoevents`, so both crates are
+/// expected under those names, as they are wherever `serde::Deserialize` is
+/// derived and `octoevents` is depended on.
 ///
 /// ```
 /// use octoevents::{EventKind, Payload};

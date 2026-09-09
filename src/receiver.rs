@@ -106,21 +106,26 @@ impl<E> WebhookReceiverBuilder<E> {
     }
 
     /// Sets the maximum body size, in bytes, of a request the receiver
-    /// accepts.
+    /// accepts. A body over it is
+    /// [`ReceiveError::BodyTooLarge`](crate::ReceiveError::BodyTooLarge),
+    /// answered 413.
     ///
-    /// On `receive` it is the most the receiver accumulates from the
+    /// On `receive` the limit bounds what the receiver accumulates from the
     /// transport: a body whose size hint is already over is refused before
     /// the first frame, and the read stops at the frame that would carry the
-    /// total past the limit, so the receiver holds at most the limit plus
-    /// one frame. How large a frame the transport yields is the transport's
-    /// own bound (hyper's and axum's are small; a body that hands over its
-    /// whole payload as one frame hands it over whatever the limit). On
-    /// `receive_bytes` the body is the caller's already, and the limit is
-    /// checked against its length. Either way a body over it is
-    /// [`ReceiveError::BodyTooLarge`](crate::ReceiveError::BodyTooLarge),
-    /// 413. GitHub never sends payloads above [`DEFAULT_BODY_LIMIT`]. Lower
-    /// values reduce memory exposure when an application's real events are
-    /// smaller; raising the limit does not enable larger GitHub deliveries.
+    /// total past the limit, so the receiver holds at most the limit plus one
+    /// frame. The frame's size is the transport's own bound, not this one:
+    /// hyper's and axum's frames are small, but a body that hands over its
+    /// whole payload as one frame hands it over whatever the limit, and the
+    /// receiver refuses it only once it has arrived.
+    ///
+    /// On `receive_bytes` the body is the caller's already, and the limit is
+    /// checked against its length.
+    ///
+    /// GitHub never sends payloads above [`DEFAULT_BODY_LIMIT`], the default.
+    /// A lower value reduces memory exposure when an application's real
+    /// events are smaller; a higher one enables nothing, since GitHub sends
+    /// nothing larger.
     #[must_use]
     pub const fn body_limit(mut self, limit: usize) -> Self {
         self.config.body_limit = limit;
@@ -183,11 +188,12 @@ impl<E> WebhookReceiverBuilder<E> {
     ///     DispatchError, Dispatcher, Envelope, EventMeta, Verifier, WebhookReceiverBuilder,
     ///     WebhookSecret,
     /// };
-    /// # #[derive(Debug, thiserror::Error)]
-    /// # enum AppError {
-    /// #     #[error("database is down")]
-    /// #     Database,
-    /// # }
+    ///
+    /// #[derive(Debug, thiserror::Error)]
+    /// enum AppError {
+    ///     #[error("database is down")]
+    ///     Database,
+    /// }
     ///
     /// let dispatcher = Dispatcher::builder()
     ///     .always(|_: Envelope| async { Err::<(), _>(AppError::Database) })
@@ -213,14 +219,13 @@ impl<E> WebhookReceiverBuilder<E> {
     /// that wants its own type back downcasts the source:
     ///
     /// ```
-    /// use std::error::Error as _;
-    ///
     /// use octoevents::{DispatchError, Dispatcher, Envelope, EventMeta, Verifier, WebhookReceiverBuilder, WebhookSecret};
-    /// # #[derive(Debug, thiserror::Error)]
-    /// # enum AppError {
-    /// #     #[error("database is down")]
-    /// #     Database,
-    /// # }
+    ///
+    /// #[derive(Debug, thiserror::Error)]
+    /// enum AppError {
+    ///     #[error("database is down")]
+    ///     Database,
+    /// }
     ///
     /// let dispatcher = Dispatcher::builder()
     ///     .always(|_: Envelope| async { Err::<(), _>(AppError::Database) })
@@ -358,8 +363,8 @@ where
     /// the receiver with a signed synthetic request and no server.
     /// [`Verifier::sign`] gives the [`Signature`](crate::Signature) GitHub
     /// would send for the body, which goes on the request as its header
-    /// value, and a request needs the four headers [`header`](crate::header)
-    /// names:
+    /// value, and a request needs four headers, whose names the
+    /// [`header`](crate::header) module spells:
     ///
     /// ```
     /// use octoevents::{Dispatcher, Verifier, WebhookReceiverBuilder, WebhookSecret, header};
@@ -405,16 +410,13 @@ where
     /// body are, the bounds the `tower` `Service` impl places, so a plain
     /// axum handler calling `receive` accepts every handler `post_service`
     /// does.
-    ///
-    /// That is promised here rather than left to an `async fn`: an `async fn`
-    /// borrowing `&self` leaves its `Send` proof to auto-trait leakage over
-    /// the concrete handler, and for a [`Dispatcher`], whose boxed error type
-    /// the receiver's state names, that proof fails inside an `async move`
-    /// block with "implementation of `Send` is not general enough".
-    ///
-    /// [`Dispatcher`]: crate::Dispatcher
-    // Written as `fn -> impl Future` for the bound on the return type; the
-    // body is the `async` block an `async fn` would desugar to.
+    // Written as `fn -> impl Future` rather than `async fn` so the `Send`
+    // promise above is a bound on the return type: an `async fn` borrowing
+    // `&self` leaves its `Send` proof to auto-trait leakage over the concrete
+    // handler, and for a `Dispatcher`, whose boxed error type the receiver's
+    // state names, that proof fails inside an `async move` block with
+    // "implementation of `Send` is not general enough". The body is the
+    // `async` block an `async fn` would desugar to.
     #[cfg(feature = "http-body")]
     #[expect(clippy::manual_async_fn)]
     pub fn receive<B>(
@@ -432,20 +434,32 @@ where
     /// already in hand, answering with the status.
     ///
     /// The same contract as [`receive`], for a transport with no
-    /// `http_body::Body`: the request's `http::HeaderMap` and its body as
-    /// [`Bytes`], which is the shape every surveyed Rust runtime hands over
-    /// (`lambda_http`, `spin-sdk` and `wstd` give an `http::Request` with the
-    /// body read, `worker` and `fastly` convert to one, `aws_lambda_events`
-    /// carries a `HeaderMap` and a body string in its event structs), and
-    /// the `http::StatusCode` to answer with, since a response type is the
-    /// transport's. In order: a request whose signature header is absent
-    /// (401) or not a signature (400) is refused from the headers; a body
-    /// over the limit is 413; then [`Envelope::from_signed`] verifies and
-    /// builds the envelope, a verified `ping` is 204 unless the builder was
-    /// asked to `handle_ping`, and the handler runs, 204 when it succeeds
-    /// and 500 when it fails, after the `on_error` observer and the
-    /// failed-delivery event. Every span and field the `tracing` feature
-    /// records on `receive` is recorded here.
+    /// `http_body::Body`. It takes the request's `http::HeaderMap` and its
+    /// body as [`Bytes`], and answers with the `http::StatusCode`, since a
+    /// response type is the transport's. That is the shape every surveyed
+    /// Rust runtime hands over: `lambda_http`, `spin-sdk` and `wstd` give an
+    /// `http::Request` with the body read, `worker` and `fastly` convert to
+    /// one (`HeaderMap::from(&request.headers())` on a Worker), and
+    /// `aws_lambda_events` carries a `HeaderMap` and a body string in its
+    /// event structs. A consumer hand-parsing a raw invocation event collects
+    /// its `(name, value)` pairs into a `HeaderMap`; header-name case is
+    /// `HeaderName`'s to handle.
+    ///
+    /// In order:
+    ///
+    /// 1. A request whose signature header is absent (401) or not a signature
+    ///    (400) is refused from the headers, before the body is looked at.
+    /// 2. A body over the limit is 413.
+    /// 3. [`Envelope::from_signed`] verifies the body and builds the envelope;
+    ///    a mismatch is 401, and a wrong content type or a missing required
+    ///    header is 400.
+    /// 4. A verified `ping` is 204 unless the builder was asked to
+    ///    `handle_ping`.
+    /// 5. The handler runs: 204 when it succeeds, and 500 when it fails,
+    ///    after the `on_error` observer and the failed-delivery event.
+    ///
+    /// Every span and field the `tracing` feature records on `receive` is
+    /// recorded here.
     ///
     /// A transport that streams its body and wants to refuse unsigned
     /// traffic before buffering runs the header check itself, as the
@@ -775,8 +789,13 @@ const fn refusal_label(refusal: Refusal) -> &'static str {
 }
 
 /// Records the refusal's text on the receive span as `error`, through
-/// `tracing::field::display`, the form the failed-delivery event fixed for
-/// that name, so `error` is one field to a subscriber wherever it appears.
+/// `tracing::field::display`: a display value, not a string. The
+/// failed-delivery event records the same name as an error value, and the
+/// `fmt` subscriber renders both as `error=<text>`, unquoted; the `&str` that
+/// [`trace::record_display`] would record renders quoted, so this is the one
+/// `Display` value in the crate that does not go through it. `trace`'s
+/// module docs place the two forms of `error` beside the one-form rule for
+/// every other field.
 ///
 /// The text alone, and unconditionally: every `ReceiveError` message is the
 /// crate's own fixed wording, so it can carry nothing from the request. Its

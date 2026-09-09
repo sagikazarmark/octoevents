@@ -3,7 +3,7 @@
 //! [`Envelope::from_signed`] reads them off the `http::HeaderMap` it is
 //! handed; the constants are for the two places a consumer names a header
 //! itself. A transport that streams the body checks for the signature before
-//! buffering, with the two lines `from_signed`'s docs show:
+//! buffering, with the check `from_signed`'s docs show:
 //!
 //! ```
 //! use octoevents::{Signature, SignatureError, header};
@@ -17,9 +17,9 @@
 //! # assert_eq!(signature.unwrap_err(), SignatureError::Malformed);
 //! ```
 //!
-//! And a test forges a delivery with `http::Request::builder()`, the idiom
-//! every hyper test already uses; the signature [`Verifier::sign`] gives goes
-//! on as it is:
+//! A test builds a signed request with `http::Request::builder()`, the idiom
+//! every hyper test already uses. The signature [`Verifier::sign`] returns
+//! goes on the request as it is:
 //!
 //! ```
 //! use octoevents::{Verifier, WebhookSecret, header};
@@ -35,6 +35,11 @@
 //!     .unwrap();
 //! # let _ = request;
 //! ```
+//!
+//! Six headers are named here. Four are required of every request: the
+//! signature, the delivery ID, the event name and the content type. The two
+//! target headers GitHub does not always send, and their absence refuses
+//! nothing.
 //!
 //! [`Envelope::from_signed`]: crate::Envelope::from_signed
 //! [`Verifier::sign`]: crate::Verifier::sign
@@ -60,9 +65,10 @@ pub const EVENT_NAME: HeaderName = HeaderName::from_static("x-github-event");
 
 /// `Content-Type`: must be `application/json` for the body to be accepted.
 ///
-/// `http`'s own constant, re-exported rather than defined again, so the
-/// headers a request needs are named from one module and the two spellings
-/// are one `HeaderName`.
+/// `http`'s own constant, re-exported rather than defined again, so every
+/// header a request needs is named from this one module, and a consumer
+/// naming this one through `http::header::CONTENT_TYPE` instead holds the
+/// same `HeaderName`.
 #[doc(inline)]
 pub use http::header::CONTENT_TYPE;
 

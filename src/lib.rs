@@ -13,11 +13,11 @@
 //!     WebhookSecret,
 //! };
 //!
-//! /// Runs for `issues.opened`. The envelope is the verified unit of receipt:
-//! /// its meta (delivery ID, kind, action, repository, sender, ...) and the
-//! /// raw payload bytes. `BoxError` is the crate's erased error; any
-//! /// `Error + Send + Sync + 'static` converts into it with `?`, and a
-//! /// handler with an error type of its own keeps it.
+//! // Runs for `issues.opened`. The envelope is the verified unit of receipt:
+//! // its meta (delivery ID, kind, action, repository, sender, ...) and the
+//! // raw payload bytes. `BoxError` is the crate's erased error; any
+//! // `Error + Send + Sync + 'static` converts into it with `?`, and a
+//! // handler with an error type of its own keeps it.
 //! async fn thank(envelope: Envelope) -> Result<(), BoxError> {
 //!     let sender = envelope.meta.sender.map(|s| s.login).unwrap_or_default();
 //!     println!("Thank you for your contribution, @{sender}! :)");
@@ -59,19 +59,22 @@
 //!   a trusted transport forwarded is read back through serde, meta as
 //!   forwarded; only `from_signed` carries an authentication claim.
 //! - [`EventMeta`]: the delivery ID, [`EventKind`], [`Action`], installation
-//!   ID, repository, organization, sender and target, read from the headers
-//!   and a best-effort probe of the payload. The probe is the one read of the
-//!   payload before a handler's input decodes it: five top-level values kept,
-//!   the rest skipped, never a failure, for every envelope, since the
-//!   dispatcher routes by the action it read. Its cost is stated on
-//!   `EventMeta`.
+//!   ID, repository, organization, sender and target. The first two and the
+//!   target come from the headers; the rest come from the *probe*, a
+//!   best-effort read of the payload that runs when the envelope is built,
+//!   keeps five top-level values, skips the rest, and never fails. It runs
+//!   for every envelope, whatever the handler's input will be, because the
+//!   dispatcher routes by the action and the action is in the payload; it is
+//!   the one read of the payload before a handler's input decodes it. Its
+//!   cost is stated on `EventMeta`.
 //! - [`Handler<I>`](Handler): consumer code over one input `I`, any
 //!   [`FromEnvelope`]: the `Envelope`, the `EventMeta`, a [`Payload`] view
 //!   (a serde type declaring its kind with `#[derive(Payload)]`), or
 //!   [`Event<P>`](Event) for the meta beside the payload. An `async fn`, a
-//!   struct, or a closure, with any error that converts into [`BoxError`]:
-//!   an `Error + Send + Sync + 'static` type of its own (any `Error +
-//!   'static` on `wasm32`), `BoxError` itself, `anyhow::Error`, a `String`.
+//!   struct, a closure, or an `Arc` of any of them, with any error that
+//!   converts into [`BoxError`]: an `Error + Send + Sync + 'static` type of
+//!   its own (any `Error + 'static` on `wasm32`), `BoxError` itself,
+//!   `anyhow::Error`, a `String`.
 //! - [`Dispatcher`]: a handler over the envelope that routes to other
 //!   handlers by kind and action in three [tiers](Tier), always, route and
 //!   fallback, and reports an [`Outcome`]. Built with [`DispatcherBuilder`],
@@ -94,11 +97,12 @@
 //!   [`Verifier::sign`] signs a test's synthetic request. The header value
 //!   parsed is a [`Signature`], which is where a malformed one is refused; a
 //!   signature that does not authenticate is a [`SignatureError`].
-//! - [`Envelope::from_signed`] and [`ReceiveError::status`]: the one step
-//!   that produces the envelope, for a transport that wants the envelope and
-//!   not the receiver's answer, over the same `http::HeaderMap` and body
-//!   bytes, a failure answered with the `http::StatusCode` the receiver
-//!   would; the header names are in [`header`].
+//! - [`Envelope::from_signed`] and [`ReceiveError::status`]: the receiving
+//!   path for a transport that wants the envelope and not the receiver's
+//!   answer. `from_signed` takes the same `http::HeaderMap` and body bytes
+//!   the receiver does and produces the envelope; a failure is a
+//!   [`ReceiveError`], and `status` maps it to the `http::StatusCode` the
+//!   receiver would answer. The header names are in [`header`].
 //!
 //! Always pass the exact request bytes. Parsing, re-encoding, or normalizing
 //! the body before verification invalidates GitHub's signature.
@@ -161,12 +165,17 @@
 //! wherever it appears; the failed-delivery event records it as an error
 //! value, so a subscriber that walks sources renders the chain beneath it
 //! too, where the receive span records a refusal's text alone. The one value
-//! two vocabularies share, `handler_error`, partitions differently: on the
-//! receive span it is every delivery a handler failed, since any handler
-//! error is a 500; on the dispatch span it is a matched delivery a handler
-//! failed, and an unmatched delivery failed by its `always` or `fallback`
-//! tier is `unmatched_error`. A receive `handler_error` is a dispatch
-//! `handler_error` or `unmatched_error`.
+//! two vocabularies share, `handler_error`, partitions differently on the two
+//! spans:
+//!
+//! - on the receive span it is every delivery a handler failed, since any
+//!   handler error is a 500;
+//! - on the dispatch span it is a *matched* delivery a handler failed; an
+//!   unmatched delivery failed by its `always` or `fallback` tier is
+//!   `unmatched_error`.
+//!
+//! So a receive `handler_error` is a dispatch `handler_error` or
+//! `unmatched_error`.
 //!
 //! A failed delivery also emits one event at ERROR, `handler failed`, with
 //! `delivery_id`, `event`, and `action` and `installation_id` when the
@@ -209,11 +218,13 @@
 //! to any field it names (removed, renamed, retyped, or made null) fails the
 //! delivery with 500, where a view names the fields its handler reads and
 //! fails only on those; a field GitHub adds fails neither. A test fixture for
-//! a struct is a complete payload, since the structs decode no fragment. Some
-//! structs leave their main object untyped, as `serde_json::Value`
-//! (`check_suite`, `workflow_run`, `workflow_job`, `team`). Its per-kind
-//! payload structs omit the top-level `installation`, `sender`, `repository`
-//! and `organization` objects, which its `WebhookEvent` carries and
+//! a struct is a complete payload, since the structs decode no fragment.
+//! Many of the structs leave their main object untyped, as
+//! `serde_json::Value` (`check_run`, `check_suite`, `workflow_run`,
+//! `workflow_job`, `release`, `deployment`, `discussion`, `label`,
+//! `milestone` and `team` among them). The per-kind payload structs mostly
+//! omit the top-level `installation`, `sender`, `repository` and
+//! `organization` objects, which its `WebhookEvent` carries and
 //! [`EventMeta`] summarizes.
 //!
 // `WebhookReceiver::receive` exists only under `http-body`, and the front page
@@ -279,11 +290,13 @@ pub const DEFAULT_BODY_LIMIT: usize = 25 * 1024 * 1024;
 
 // The README's Rust blocks compile as doctests, so its programs cannot drift
 // from the API. Its quickstart mounts the receiver with `post_service`, which
-// the `tower` feature provides, and its views declare their kind with
-// `#[derive(Payload)]`, which the `derive` feature provides, so the blocks are
-// checked under both. Blocks that continue a program rather than stand alone
-// (the closure and observer fragments, and the tests) are marked `ignore` in
-// the README itself; `tests/readme_testing.rs` compiles the tests.
-#[cfg(all(doctest, feature = "tower", feature = "derive"))]
+// the `tower` feature provides, its views declare their kind with
+// `#[derive(Payload)]`, which the `derive` feature provides, and its octocrab
+// block names octocrab's types, which the `octocrab` feature provides, so the
+// blocks are checked under all three. Blocks that continue a program rather
+// than stand alone (the closure and observer fragments, and the tests) are
+// marked `ignore` in the README itself; `tests/readme_testing.rs` compiles
+// the tests.
+#[cfg(all(doctest, feature = "tower", feature = "derive", feature = "octocrab"))]
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;

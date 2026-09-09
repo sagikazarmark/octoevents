@@ -15,22 +15,19 @@ use crate::{DecodeError, Envelope, EventKind, FromEnvelope};
 //
 // A local macro so every impl carries the same rustdoc: the note below is what
 // a consumer reaching for `payload.sender` needs, and it renders on the
-// `Payload` trait page beside each impl. The derive is for a consumer's own
-// types; these are octocrab's, so the impls are written here.
+// `Payload` trait page beside each impl, so it is kept short. The derive is
+// for a consumer's own types; these are octocrab's, so the impls are written
+// here.
 macro_rules! octocrab_payloads {
     ($($payload:ty => $kind:expr),+ $(,)?) => {
         $(
             /// octocrab's payload for this kind: the fields specific to the
             /// kind. The top-level `installation`, `sender`, `repository`
-            /// and `organization` objects belong to octocrab's
-            /// [`WebhookEvent`], and its per-kind structs mostly do not
-            /// repeat them, so check this struct's fields before reading
-            /// `payload.sender`. [`EventMeta`](crate::EventMeta) carries the
-            /// installation ID, the sender and organization logins and a
-            /// repository meta beside every payload; for the full objects,
-            /// take [`WebhookEvent`] as the handler's input, or define a
-            /// view naming the objects you need and derive
-            /// [`Payload`](crate::Payload) on it.
+            /// and `organization` objects mostly belong to octocrab's
+            /// [`WebhookEvent`], not to this struct;
+            /// [`EventMeta`](crate::EventMeta) carries their IDs and logins
+            /// beside every payload, and a handler that needs the whole
+            /// objects takes `Event<WebhookEvent>` or a view naming them.
             impl crate::Payload for $payload {
                 const KIND: EventKind = $kind;
             }
@@ -108,10 +105,10 @@ octocrab_payloads! {
 }
 
 /// octocrab's decoded event for any kind, as a handler's input: registered
-/// with `Dispatcher::on` for logic that spans kinds, or decoded by hand from
-/// a handler over the [`Envelope`] with `WebhookEvent::from_envelope`.
-/// octocrab's `WebhookEvent` is not a [`Payload`](crate::Payload): it
-/// declares no single kind.
+/// with [`DispatcherBuilder::on`](crate::DispatcherBuilder::on) for logic
+/// that spans kinds, or decoded by hand from a handler over the [`Envelope`]
+/// with `WebhookEvent::from_envelope`. octocrab's `WebhookEvent` is not a
+/// [`Payload`](crate::Payload): it declares no single kind.
 ///
 /// Best-effort: octocrab's webhook models are hand-maintained and
 /// self-described as beta. An event kind octocrab does not know still
@@ -123,6 +120,21 @@ octocrab_payloads! {
 ///
 /// Decodes [`Envelope::raw_payload`] on every call. Bind the result rather
 /// than calling it repeatedly: a delivery can carry megabytes of JSON.
+///
+/// ```
+/// use octocrab::models::webhook_events::WebhookEvent;
+/// use octoevents::{Action, BoxError, Dispatcher, Event, EventKind};
+///
+/// async fn triage(Event { meta, payload: event }: Event<WebhookEvent>) -> Result<(), BoxError> {
+///     println!("triage {:?} for {:?}", meta.action, event.repository.map(|repository| repository.name));
+///     Ok(())
+/// }
+///
+/// let dispatcher = Dispatcher::builder()
+///     .on((EventKind::PullRequest, [Action::Opened, Action::Synchronize]), triage)
+///     .build();
+/// # let _ = dispatcher;
+/// ```
 ///
 /// [`WebhookEventPayload::Unknown`]: octocrab::models::webhook_events::WebhookEventPayload::Unknown
 impl FromEnvelope for WebhookEvent {

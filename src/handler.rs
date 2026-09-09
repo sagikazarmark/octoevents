@@ -98,9 +98,25 @@ use crate::{MaybeSend, MaybeSync};
 /// form does not need: name the parameter's type (`|envelope: Envelope|`)
 /// and state the error type (`Ok::<_, BoxError>(())`). Registration is bound
 /// on the handler trait rather than on `Fn`, so rustc reads neither off the
-/// call: a bare `Ok(())` is E0282 on the receiver path and E0283 on the
-/// dispatcher path, where every error type that converts into the box would
-/// fit.
+/// call: a bare `Ok(())` is E0283, "type annotations needed", on the receiver
+/// and dispatcher paths alike, since every error type that converts into the
+/// box would fit. The usual place for a closure is inline at the
+/// registration:
+///
+/// ```
+/// use octoevents::{BoxError, Dispatcher, Envelope, EventKind};
+///
+/// let dispatcher = Dispatcher::builder()
+///     .on(EventKind::Push, |envelope: Envelope| async move {
+///         println!("{} {}", envelope.meta.delivery_id, envelope.meta.kind);
+///         Ok::<_, BoxError>(())
+///     })
+///     .build();
+/// # let _ = dispatcher;
+/// ```
+///
+/// A closure returned from a function is a handler the same way, and the
+/// return type states what it is a handler over:
 ///
 /// ```
 /// use octoevents::{Envelope, Handler};
@@ -228,12 +244,13 @@ use crate::{MaybeSend, MaybeSync};
 ///
 /// The registration methods bound a handler `MaybeSend + MaybeSync +
 /// 'static`, repeating the `MaybeSync` the trait implies, for the
-/// diagnostic's sake. A closure capturing `!Sync` state its future never
-/// touches, a `Cell` read before the future is built, fails the closure
-/// blanket; the blanket is hidden from rustc's explanation so that the
-/// trait's message can name the input, and on the trait bound alone the
-/// closure is reported as not a handler. The repeated bound is what rustc
-/// reports instead (abridged):
+/// diagnostic's sake. Consider a closure capturing `!Sync` state its future
+/// never touches, a `Cell` read before the future is built. It fails the
+/// closure blanket's `MaybeSync` bound. That blanket is hidden from rustc's
+/// explanation, so that the trait's message can name the input; on the trait
+/// bound alone, then, the closure would be reported as "not a handler", which
+/// says nothing about the `Cell`. The repeated bound on the registration
+/// method is what rustc reports (abridged), and it names the type:
 ///
 /// ```text
 /// error[E0277]: `Cell<u32>` cannot be shared between threads safely
