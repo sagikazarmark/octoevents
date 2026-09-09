@@ -2,7 +2,7 @@ use std::{borrow::Cow, fmt};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bytes::Bytes;
-use http::{HeaderMap, HeaderName};
+use http::{HeaderMap, HeaderName, StatusCode};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::value::RawValue;
 use thiserror::Error;
@@ -149,10 +149,10 @@ impl RepositoryRef {
 /// unsigned or malformed request before reading the body, and `from_signed`
 /// uses it so both paths agree on which failure a header earns.
 pub(crate) fn require_signature(headers: &HeaderMap) -> Result<Signature, SignatureError> {
-    let value = headers
+    headers
         .get(&header::SIGNATURE)
-        .ok_or(SignatureError::Missing)?;
-    Signature::try_from(value.as_bytes())
+        .ok_or(SignatureError::Missing)
+        .and_then(Signature::try_from)
 }
 
 /// A GitHub webhook and its routing metadata.
@@ -301,10 +301,9 @@ impl Envelope {
     /// in its event structs. A consumer hand-parsing a raw invocation event
     /// collects its `(name, value)` pairs into a `HeaderMap`, and header-name
     /// case is `HeaderName`'s to handle, not theirs. Answer with the
-    /// receiver's contract, as [`ResponseStatus`](crate::ResponseStatus):
-    /// [`for_receive_error`](crate::ResponseStatus::for_receive_error) for a
-    /// failure here, `NoContent` once the handler has succeeded, and
-    /// `InternalServerError` when it has failed.
+    /// receiver's contract, as an `http::StatusCode`: [`ReceiveError::status`]
+    /// for a failure here, `NO_CONTENT` once the handler has succeeded, and
+    /// `INTERNAL_SERVER_ERROR` when it has failed.
     ///
     /// The headers are read by the names in [`header`](crate::header), by
     /// which `HeaderMap` matches case-insensitively, and a repeated header
@@ -337,10 +336,10 @@ impl Envelope {
     /// have passed:
     ///
     /// ```
-    /// use http::HeaderMap;
+    /// use http::{HeaderMap, StatusCode};
     /// use octoevents::{
-    ///     Bytes, DEFAULT_BODY_LIMIT, Envelope, EventKind, Handler, ReceiveError, ResponseStatus,
-    ///     Signature, SignatureError, Verifier, header,
+    ///     Bytes, DEFAULT_BODY_LIMIT, Envelope, EventKind, Handler, ReceiveError, Signature,
+    ///     SignatureError, Verifier, header,
     /// };
     ///
     /// async fn receive<H: Handler<Envelope>>(
@@ -348,7 +347,7 @@ impl Envelope {
     ///     headers: &HeaderMap,
     ///     body: Bytes,
     ///     handler: &H,
-    /// ) -> ResponseStatus {
+    /// ) -> StatusCode {
     ///     // Header-only rejection: a request whose signature header is
     ///     // absent (401) or not a signature (400) is refused before the body
     ///     // is read, so it never occupies memory. Decidable from the headers,
@@ -357,9 +356,9 @@ impl Envelope {
     ///     let signature = headers
     ///         .get(&header::SIGNATURE)
     ///         .ok_or(SignatureError::Missing)
-    ///         .and_then(|value| Signature::try_from(value.as_bytes()));
+    ///         .and_then(Signature::try_from);
     ///     if let Err(error) = signature {
-    ///         return ResponseStatus::for_receive_error(&ReceiveError::from(error));
+    ///         return ReceiveError::from(error).status();
     ///     }
     ///
     ///     // The body limit: 413 past GitHub's 25 MiB cap. The receiver stops
@@ -369,25 +368,24 @@ impl Envelope {
     ///     // crate's and the transport's error one `source()` beneath, as a
     ///     // `BodyError`; a transport handed the bytes never sees one.
     ///     if body.len() > DEFAULT_BODY_LIMIT {
-    ///         let error = ReceiveError::BodyTooLarge { limit: DEFAULT_BODY_LIMIT };
-    ///         return ResponseStatus::for_receive_error(&error);
+    ///         return ReceiveError::BodyTooLarge { limit: DEFAULT_BODY_LIMIT }.status();
     ///     }
     ///
     ///     let envelope = match Envelope::from_signed(verifier, headers, body) {
     ///         Ok(envelope) => envelope,
-    ///         Err(error) => return ResponseStatus::for_receive_error(&error),
+    ///         Err(error) => return error.status(),
     ///     };
     ///
     ///     // The ping short-circuit: a verified `ping` is 204 and reaches no
     ///     // handler, unless the receiver was built with `handle_ping(true)`.
     ///     // After `from_signed`, so an unsigned ping is still 401.
     ///     if matches!(envelope.meta.kind, EventKind::Ping) {
-    ///         return ResponseStatus::NoContent;
+    ///         return StatusCode::NO_CONTENT;
     ///     }
     ///
     ///     match handler.handle(envelope).await {
-    ///         Ok(()) => ResponseStatus::NoContent,
-    ///         Err(_) => ResponseStatus::InternalServerError,
+    ///         Ok(()) => StatusCode::NO_CONTENT,
+    ///         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     ///     }
     /// }
     /// ```
@@ -534,12 +532,10 @@ impl Envelope {
 /// when the webhook is not configured as JSON; [`BodyRead`](Self::BodyRead),
 /// when the transport failed while the body was being read; and
 /// [`BodyTooLarge`](Self::BodyTooLarge), when the body ran past the
-/// configured limit.
-/// [`ResponseStatus::for_receive_error`](crate::ResponseStatus::for_receive_error)
-/// maps each to the status the receiver answers with, so every failure
-/// before a handler has an error value and the same value selects the
-/// status. The enum is `#[non_exhaustive]`, so a `match` over it keeps a
-/// wildcard arm.
+/// configured limit. [`status`](Self::status) is the `http::StatusCode` the
+/// receiver answers each with, so every failure before a handler has an
+/// error value and the same value selects the status. The enum is
+/// `#[non_exhaustive]`, so a `match` over it keeps a wildcard arm.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Error)]
 #[non_exhaustive]
 pub enum ReceiveError {
@@ -577,6 +573,33 @@ pub enum ReceiveError {
         /// The configured maximum body size.
         limit: usize,
     },
+}
+
+impl ReceiveError {
+    /// The status the receiver answers this failure with: the crate's
+    /// response contract.
+    ///
+    /// An absent or mismatched signature is the client failing to
+    /// authenticate, `401 Unauthorized`; a signature that is not `sha256=`
+    /// and 64 hex digits, a missing required header, a body that is not JSON
+    /// and a body the transport could not read are malformed requests,
+    /// `400 Bad Request`; a body over the limit is `413 Payload Too Large`.
+    /// `WebhookReceiver` applies this itself; it is public so a transport
+    /// built directly on [`Envelope::from_signed`] answers GitHub the same
+    /// way, as its docs show.
+    #[must_use]
+    pub const fn status(&self) -> StatusCode {
+        match self {
+            Self::Signature(SignatureError::Missing | SignatureError::Mismatch) => {
+                StatusCode::UNAUTHORIZED
+            }
+            Self::Signature(SignatureError::Malformed)
+            | Self::MissingHeader { .. }
+            | Self::UnsupportedContentType
+            | Self::BodyRead(_) => StatusCode::BAD_REQUEST,
+            Self::BodyTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+        }
+    }
 }
 
 /// The transport's reason a webhook body could not be read, as text.

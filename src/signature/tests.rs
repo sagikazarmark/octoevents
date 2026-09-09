@@ -61,6 +61,7 @@ mod secret {
 }
 
 mod signature {
+    use http::HeaderValue;
     use subtle::ConstantTimeEq as _;
 
     use super::{DOCUMENTED_SIGNATURE, EMPTY_BODY_SIGNATURE, Signature, SignatureError};
@@ -118,6 +119,42 @@ mod signature {
         assert_eq!(
             Signature::try_from(b"sha256=\xff\xfe".as_slice()).unwrap_err(),
             SignatureError::Malformed
+        );
+    }
+
+    #[test]
+    fn parses_a_header_value_from_its_bytes() {
+        // The shape a `HeaderMap` holds the header in. A value that is not
+        // visible ASCII, which `HeaderValue` admits, is malformed like any
+        // other, so it is never mistaken for an absent header.
+        let header = HeaderValue::from_static(DOCUMENTED_SIGNATURE);
+        assert_eq!(
+            Signature::try_from(&header).unwrap().to_string(),
+            DOCUMENTED_SIGNATURE
+        );
+
+        let opaque = HeaderValue::from_bytes(b"sha256=\xff\xfe").unwrap();
+        assert_eq!(
+            Signature::try_from(&opaque).unwrap_err(),
+            SignatureError::Malformed
+        );
+    }
+
+    #[test]
+    fn converts_into_the_header_value_it_renders_and_marks_it_sensitive() {
+        // The inverse of parsing, as `Display` is, in the type a request
+        // takes; sensitive so `http`'s `Debug` of a request redacts it as
+        // this type's `Debug` does, and an HTTP/2 hop does not index it.
+        let signature: Signature = DOCUMENTED_SIGNATURE.parse().unwrap();
+
+        let header = HeaderValue::from(signature);
+
+        assert_eq!(header, DOCUMENTED_SIGNATURE);
+        assert!(header.is_sensitive());
+        assert_eq!(format!("{header:?}"), "Sensitive");
+        assert_eq!(
+            Signature::try_from(&header).unwrap().to_string(),
+            DOCUMENTED_SIGNATURE
         );
     }
 

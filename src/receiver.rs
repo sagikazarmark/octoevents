@@ -6,7 +6,7 @@ use std::{
 use std::{fmt, future::Future, marker::PhantomData, pin::pin, sync::Arc};
 
 use bytes::{Bytes, BytesMut};
-use http::{HeaderMap, Request, Response};
+use http::{HeaderMap, Request, Response, StatusCode};
 use http_body::Body;
 use http_body_util::{BodyExt as _, Empty};
 #[cfg(feature = "tower")]
@@ -18,7 +18,7 @@ use crate::runtime::BoxFuture;
 use crate::{Action, BoxedError, TracedError};
 use crate::{
     BodyError, DEFAULT_BODY_LIMIT, Envelope, EventKind, EventMeta, Handler, MaybeSend, MaybeSync,
-    ReceiveError, ResponseStatus, Verifier,
+    ReceiveError, SignatureError, Verifier,
     envelope::{header_str, require_signature},
     header, trace,
 };
@@ -415,8 +415,9 @@ where
     /// axum's, a Cloudflare Worker's, or a `String` in a test, which drives
     /// the receiver with a signed synthetic request and no server.
     /// [`Verifier::sign`] gives the [`Signature`](crate::Signature) GitHub
-    /// would send for the body, whose `to_string()` is the header value, and
-    /// a request needs the four headers [`header`](crate::header) names:
+    /// would send for the body, which goes on the request as its header
+    /// value, and a request needs the four headers [`header`](crate::header)
+    /// names:
     ///
     /// ```
     /// use octoevents::{Dispatcher, Verifier, WebhookReceiverBuilder, WebhookSecret, header};
@@ -429,14 +430,13 @@ where
     /// let webhook = WebhookReceiverBuilder::new(verifier.clone()).build(dispatcher);
     ///
     /// let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
-    /// let signature = verifier.sign(body.as_bytes());
     /// let request = http::Request::builder()
     ///     .method("POST")
     ///     .uri("/webhook")
     ///     .header(header::CONTENT_TYPE, "application/json")
     ///     .header(header::DELIVERY_ID, "delivery-1")
     ///     .header(header::EVENT_NAME, "issues")
-    ///     .header(header::SIGNATURE, signature.to_string())
+    ///     .header(header::SIGNATURE, verifier.sign(body.as_bytes()))
     ///     .body(body.to_string())
     ///     .unwrap();
     ///
@@ -507,7 +507,7 @@ where
             )
         )
     )]
-    async fn process<B>(&self, request: Request<B>) -> ResponseStatus
+    async fn process<B>(&self, request: Request<B>) -> StatusCode
     where
         B: Body<Data = Bytes>,
         B::Error: fmt::Display,
@@ -545,7 +545,7 @@ where
         };
 
         if !handle_ping && matches!(envelope.meta.kind, EventKind::Ping) {
-            return record_outcome(ResponseStatus::NoContent);
+            return record_outcome("ok", StatusCode::NO_CONTENT);
         }
 
         // The handler takes the envelope by value, so the meta a failure is
@@ -555,14 +555,14 @@ where
         let reporting = observer.is_some() || cfg!(feature = "tracing");
         let meta = reporting.then(|| envelope.meta.clone());
         match self.handler.handle(envelope).await {
-            Ok(()) => record_outcome(ResponseStatus::NoContent),
+            Ok(()) => record_outcome("ok", StatusCode::NO_CONTENT),
             Err(error) => {
                 // The outcome goes on the span first, so the event and the
                 // observer run inside a span that already says how the
                 // delivery ended.
-                let status = record_outcome(ResponseStatus::InternalServerError);
+                let status = record_outcome("handler_error", StatusCode::INTERNAL_SERVER_ERROR);
                 if let Some(meta) = &meta {
-                    error_fields.handler_failed(meta, &error, status.as_u16());
+                    error_fields.handler_failed(meta, &error);
                     if let Some(observer) = observer {
                         observer(meta, &error);
                     }
@@ -626,9 +626,9 @@ where
     }
 }
 
-fn empty_response(status: ResponseStatus) -> ReceiveResponse {
+fn empty_response(status: StatusCode) -> ReceiveResponse {
     Response::builder()
-        .status(http::StatusCode::from(status))
+        .status(status)
         .body(Empty::new())
         .expect("an empty response with a fixed status always builds")
 }
@@ -689,8 +689,13 @@ fn record_headers(headers: &HeaderMap) {
     }
 }
 
-fn record_outcome(status: ResponseStatus) -> ResponseStatus {
-    trace::record("outcome", outcome_label(status));
+/// Records how the delivery ended on the receive span: `outcome`, the label
+/// the front page's vocabulary gives that ending, and `status`, the HTTP code
+/// it is answered with. The two are chosen together at the site that knows
+/// why the delivery ended, and neither is derived from the other: the label
+/// says the reason, the code what the reason is answered with.
+fn record_outcome(outcome: &'static str, status: StatusCode) -> StatusCode {
+    trace::record("outcome", outcome);
     trace::record("status", status.as_u16());
     status
 }
@@ -700,8 +705,8 @@ fn record_outcome(status: ResponseStatus) -> ResponseStatus {
 /// the span's `error`, so the span says which refusal it was where `outcome`
 /// says only its class. Every pre-handler failure is an error value and goes
 /// through here, so none selects a status on its own.
-fn refuse(error: &ReceiveError) -> ResponseStatus {
-    let status = record_outcome(ResponseStatus::for_receive_error(error));
+fn refuse(error: &ReceiveError) -> StatusCode {
+    let status = record_outcome(refusal_label(error), error.status());
     record_refusal(error);
     status
 }
@@ -725,28 +730,37 @@ fn record_refusal(error: &ReceiveError) {
 #[cfg(not(feature = "tracing"))]
 fn record_refusal(_error: &ReceiveError) {}
 
-/// The value the `octoevents.receive` span records as `outcome`.
+/// The `outcome` the receive span records for a request refused with `error`:
+/// the front page's vocabulary for the refusals.
 ///
-/// A label rather than the code, so `outcome` is a string on every span the
+/// Read off the refusal, not off the status it is answered with, so the
+/// label comes from the reason and a `ReceiveError` variant this crate adds
+/// fails to compile here until it has one, as it does in
+/// [`ReceiveError::status`] until it has a code; the two matches partition
+/// the variants alike because the vocabulary names one label per code. A
+/// label rather than the code, so `outcome` is a string on every span the
 /// crate opens; the code is the span's `status` field. The vocabulary is the
 /// receive span's own, which is why it lives with the receiver and not on
-/// [`ResponseStatus`].
-const fn outcome_label(status: ResponseStatus) -> &'static str {
-    match status {
-        ResponseStatus::NoContent => "ok",
-        ResponseStatus::BadRequest => "bad_request",
-        ResponseStatus::Unauthorized => "unauthorized",
-        ResponseStatus::PayloadTooLarge => "payload_too_large",
-        ResponseStatus::InternalServerError => "handler_error",
+/// `ReceiveError`.
+const fn refusal_label(error: &ReceiveError) -> &'static str {
+    match error {
+        ReceiveError::Signature(SignatureError::Missing | SignatureError::Mismatch) => {
+            "unauthorized"
+        }
+        ReceiveError::Signature(SignatureError::Malformed)
+        | ReceiveError::MissingHeader { .. }
+        | ReceiveError::UnsupportedContentType
+        | ReceiveError::BodyRead(_) => "bad_request",
+        ReceiveError::BodyTooLarge { .. } => "payload_too_large",
     }
 }
 
 /// Which fields of the handler's error the failed-delivery event carries:
 /// the receiver's setting, made on the builder.
 ///
-/// The event always carries the event meta's identifying fields and the
-/// status. Recording the error's text and source as well needs a bound on
-/// the handler's error type, which the receiver itself does not place, so
+/// The event always carries the event meta's identifying fields. Recording
+/// the error's text and source as well needs a bound on the handler's error
+/// type, which the receiver itself does not place, so
 /// the default, [`none`](Self::none), records neither, and `trace_errors` or
 /// `trace_boxed_errors` swaps in a function that reads the error through the
 /// bound it asked for. A function pointer rather than a trait object: the
@@ -760,7 +774,7 @@ const fn outcome_label(status: ResponseStatus) -> &'static str {
 /// methods are no-ops, so the receiver calls them without a `cfg`.
 struct ErrorFields<E> {
     #[cfg(feature = "tracing")]
-    emit: Option<fn(&EventMeta, &E, u16)>,
+    emit: Option<fn(&EventMeta, &E)>,
     // `fn(&E)` rather than `E`: the receiver's `Send` and `Sync` must not
     // depend on the error type, and neither must this type's.
     error: PhantomData<fn(&E)>,
@@ -777,8 +791,7 @@ impl<E> Clone for ErrorFields<E> {
 impl<E> Copy for ErrorFields<E> {}
 
 impl<E> ErrorFields<E> {
-    /// The default: the identifying fields and the status, nothing of the
-    /// error.
+    /// The default: the identifying fields, nothing of the error.
     const fn none() -> Self {
         Self {
             #[cfg(feature = "tracing")]
@@ -792,10 +805,10 @@ impl<E> ErrorFields<E> {
 impl<E> ErrorFields<E> {
     /// Emits the event for a failed delivery, with the fields this setting
     /// asks for.
-    fn handler_failed(self, meta: &EventMeta, error: &E, status: u16) {
+    fn handler_failed(self, meta: &EventMeta, error: &E) {
         match self.emit {
-            Some(emit) => emit(meta, error, status),
-            None => handler_failed(meta, status, None, None),
+            Some(emit) => emit(meta, error),
+            None => handler_failed(meta, None, None),
         }
     }
 
@@ -813,8 +826,8 @@ impl<E> ErrorFields<E> {
         E: TracedError,
     {
         Self {
-            emit: Some(|meta, error, status| {
-                handler_failed(meta, status, Some(error), error.source());
+            emit: Some(|meta, error| {
+                handler_failed(meta, Some(error), error.source());
             }),
             error: PhantomData,
         }
@@ -828,8 +841,8 @@ impl<E> ErrorFields<E> {
         E: BoxedError,
     {
         Self {
-            emit: Some(|meta, error, status| {
-                handler_failed(meta, status, Some(error.text()), error.source());
+            emit: Some(|meta, error| {
+                handler_failed(meta, Some(error.text()), error.source());
             }),
             error: PhantomData,
         }
@@ -842,7 +855,7 @@ impl<E> ErrorFields<E> {
 #[expect(clippy::unused_self)]
 impl<E> ErrorFields<E> {
     /// Emits nothing: the `tracing` feature is disabled.
-    fn handler_failed(self, _meta: &EventMeta, _error: &E, _status: u16) {}
+    fn handler_failed(self, _meta: &EventMeta, _error: &E) {}
 
     /// Never: the `tracing` feature is disabled.
     fn is_some(self) -> bool {
@@ -860,12 +873,15 @@ impl<E> ErrorFields<E> {
 /// [`DispatchError`](crate::DispatchError) over a boxed error, is no `Error`:
 /// its text and its source are all it can offer, so every shape offers the
 /// same two. The fields it shares with the spans (`delivery_id`, `event`,
-/// `action`, `installation_id`, `status`) are recorded in the forms `trace`
-/// fixes for them.
+/// `action`, `installation_id`) are recorded in the forms `trace` fixes for
+/// them.
+///
+/// No `status`: a handler failure is always answered 500, so the field
+/// would say what the event's name already does, and the code is on the
+/// receive span the event is emitted inside, beside `outcome`.
 #[cfg(feature = "tracing")]
 fn handler_failed(
     meta: &EventMeta,
-    status: u16,
     error: Option<&dyn std::fmt::Display>,
     source: Option<&(dyn std::error::Error + 'static)>,
 ) {
@@ -874,7 +890,6 @@ fn handler_failed(
         event = meta.kind.as_str(),
         action = meta.action.as_ref().map(Action::as_str),
         installation_id = meta.installation_id,
-        status,
         error = error.map(tracing::field::display),
         source,
         "handler failed"

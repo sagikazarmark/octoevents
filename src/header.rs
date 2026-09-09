@@ -13,12 +13,13 @@
 //! let signature = headers
 //!     .get(&header::SIGNATURE)
 //!     .ok_or(SignatureError::Missing)
-//!     .and_then(|value| Signature::try_from(value.as_bytes()));
+//!     .and_then(Signature::try_from);
 //! # assert_eq!(signature.unwrap_err(), SignatureError::Malformed);
 //! ```
 //!
 //! And a test forges a delivery with `http::Request::builder()`, the idiom
-//! every hyper test already uses:
+//! every hyper test already uses; the signature [`Verifier::sign`] gives goes
+//! on as it is:
 //!
 //! ```
 //! use octoevents::{Verifier, WebhookSecret, header};
@@ -29,13 +30,14 @@
 //!     .header(header::CONTENT_TYPE, "application/json")
 //!     .header(header::DELIVERY_ID, "72d3162e-cc78-11e3-81ab-4c9367dc0958")
 //!     .header(header::EVENT_NAME, "issues")
-//!     .header(header::SIGNATURE, verifier.sign(body.as_bytes()).to_string())
+//!     .header(header::SIGNATURE, verifier.sign(body.as_bytes()))
 //!     .body(body.to_string())
 //!     .unwrap();
 //! # let _ = request;
 //! ```
 //!
 //! [`Envelope::from_signed`]: crate::Envelope::from_signed
+//! [`Verifier::sign`]: crate::Verifier::sign
 
 use http::HeaderName;
 
@@ -55,7 +57,12 @@ pub const DELIVERY_ID: HeaderName = HeaderName::from_static("x-github-delivery")
 pub const EVENT_NAME: HeaderName = HeaderName::from_static("x-github-event");
 
 /// `Content-Type`: must be `application/json` for the body to be accepted.
-pub const CONTENT_TYPE: HeaderName = HeaderName::from_static("content-type");
+///
+/// `http`'s own constant, re-exported rather than defined again, so the
+/// headers a request needs are named from one module and the two spellings
+/// are one `HeaderName`.
+#[doc(inline)]
+pub use http::header::CONTENT_TYPE;
 
 /// `X-GitHub-Hook-Installation-Target-Type`: the resource the webhook is
 /// installed on, which parses into

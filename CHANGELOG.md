@@ -20,12 +20,13 @@ reads the "Changed" and "Removed" lists first.
   an empty secret, for a deployment that reads its secret per request and
   answers instead of panicking.
 - `Signature`: the `X-Hub-Signature-256` value parsed once, as the 32 MAC
-  bytes. `str::parse` and `TryFrom<&[u8]>` refuse anything that is not
-  `sha256=` and 64 hex digits as `SignatureError::Malformed`, `Display`
-  renders the header value back, `Debug` is redacted, and equality is
-  `subtle::ConstantTimeEq`.
-- `Verifier::sign`: the `Signature` GitHub would send for a body, whose
-  `to_string()` is the header value, so a test drives the receiver it built
+  bytes. `TryFrom<&http::HeaderValue>`, `TryFrom<&[u8]>` and `str::parse`
+  refuse anything that is not `sha256=` and 64 hex digits as
+  `SignatureError::Malformed`, `Display` renders the header value back and
+  `From<Signature> for http::HeaderValue` puts it on a request, marked
+  sensitive, `Debug` is redacted, and equality is `subtle::ConstantTimeEq`.
+- `Verifier::sign`: the `Signature` GitHub would send for a body, which goes
+  on a request's header as it is, so a test drives the receiver it built
   with no HMAC code of its own.
 - `Envelope::new`: an unverified envelope for a test, its meta read from the
   same bytes the receiver would read.
@@ -59,19 +60,27 @@ reads the "Changed" and "Removed" lists first.
   compile error that names `trace_boxed_errors`.
 - The `header` module: the names of the headers the crate reads, as
   `http::HeaderName` constants, for a transport's pre-body signature check
-  and a test's `http::Request::builder()`.
+  and a test's `http::Request::builder()`. `CONTENT_TYPE` is
+  `http::header::CONTENT_TYPE` re-exported, the others are GitHub's own.
 - `EventMeta::new` and `RepositoryRef::new` constructors.
 - `From<&str>` on `EventKind`, `Action` and `TargetType`; `Display` on
   `TargetType` and `Match`; `Hash` on `EventMeta` and `RepositoryRef`.
 - `Bytes` re-exported from the `bytes` crate.
 - `ReceiveError::BodyRead` and `BodyError`: a body frame the transport could
   not produce is a receive error like every other pre-handler failure,
-  answered 400 through `ResponseStatus::for_receive_error`, with the
-  transport's error text as its `source()` and nothing else of the
-  transport's type. Formerly the receiver returned the status directly.
+  answered 400 through `ReceiveError::status`, with the transport's error
+  text as its `source()` and nothing else of the transport's type. Formerly
+  the receiver returned the status directly.
+- `ReceiveError::status`: the `http::StatusCode` the receiver answers each
+  receive failure with, on the error itself, so a transport built on
+  `Envelope::from_signed` answers GitHub as the receiver does. It replaces
+  `ResponseStatus::for_receive_error`; see Removed.
 - `tracing` feature: the `octoevents.dispatch` span records the tier,
   handler and registration site of a failure; a failed delivery emits one
-  event at ERROR, `handler failed`.
+  event at ERROR, `handler failed`, with the delivery's identifying fields
+  (`delivery_id`, `event`, and `action` and `installation_id` when it has
+  them). The 500 it is answered with is the receive span's `status`, not a
+  field of the event: a handler failure is answered nothing else.
 - `tracing` feature: the `octoevents.receive` span records the text of the
   `ReceiveError` that refused a request as `error`, so a `bad_request` says
   which refusal it was. The error's source, for a body that could not be
@@ -135,10 +144,10 @@ reads the "Changed" and "Removed" lists first.
   `features = ["http"]` becomes `["http-body"]`; `tower` implies it, and the
   default features are `http-body` and `derive`. The `http` crate itself is
   no longer optional: `from_signed` reads its `HeaderMap`, the `header`
-  constants are its `HeaderName`s, and `From<ResponseStatus> for
-  http::StatusCode` is unconditional. Every surveyed Rust runtime already
-  depends on it non-optionally (`docs/research/header-abstractions.md`), and
-  it adds one entry to the no-default dependency tree.
+  constants are its `HeaderName`s, and `ReceiveError::status` is its
+  `StatusCode`. Every surveyed Rust runtime already depends on it
+  non-optionally (`docs/research/header-abstractions.md`), and it adds one
+  entry to the no-default dependency tree.
 - **Breaking:** `Secret` is `WebhookSecret`: GitHub's term in full, beside
   `WebhookReceiver`, and no longer a collision with `secrecy::Secret` in a
   consumer's imports. `VerifyError` is `SignatureError`, named for its
@@ -189,6 +198,15 @@ reads the "Changed" and "Removed" lists first.
   `HeaderName` parsing handles the case of the names.
 - **Breaking:** `Envelope::from_signed_parts`; use `Envelope::from_signed`
   with the request's `HeaderMap`.
+- **Breaking:** `ResponseStatus`, the five-variant status enum with
+  `as_u16`, `for_receive_error` and `From<ResponseStatus> for
+  http::StatusCode`; the receiver answers with `http::StatusCode` directly
+  and `ReceiveError::status` maps a receive failure to one. The enum
+  mirrored five `StatusCode` constants for a transport with a status type of
+  its own, and the survey behind `HeaderView`'s removal found none: every
+  runtime builds an `http::Response`. `ResponseStatus::for_receive_error(&e)`
+  becomes `e.status()`, `NoContent` becomes `StatusCode::NO_CONTENT`, and
+  `InternalServerError` becomes `StatusCode::INTERNAL_SERVER_ERROR`.
 - **Breaking:** `Default` on `RepositoryRef` and on the former `Common`; use
   the `new` constructors.
 

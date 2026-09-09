@@ -85,8 +85,8 @@ fn the_error_observer_and_the_spans_see_nothing_secret_derived_on_a_failed_deliv
     assert_eq!(receive.str("delivery_id"), Some("d34db33f-delivery"));
     assert_eq!(receive.get("status"), Some(&Value::U64(500)));
     assert_eq!(
-        recording.event_at(Level::ERROR).fields.get("status"),
-        Some(&Value::U64(500))
+        recording.event_at(Level::ERROR).fields.str("delivery_id"),
+        Some("d34db33f-delivery")
     );
     assert_no_field_secret_derived(&recording, &signature);
 

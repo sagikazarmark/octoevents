@@ -86,9 +86,10 @@
 //!   [`Verifier::sign`] signs a test's synthetic request. The header value
 //!   parsed is a [`Signature`], which is where a malformed one is refused; a
 //!   signature that does not authenticate is a [`SignatureError`].
-//! - [`Envelope::from_signed`] and [`ResponseStatus`]: the sans-I/O path for
-//!   a transport with no `http_body::Body`, over the `http::HeaderMap` and the
-//!   body bytes every runtime hands over; the header names are in
+//! - [`Envelope::from_signed`] and [`ReceiveError::status`]: the sans-I/O
+//!   path for a transport with no `http_body::Body`, over the
+//!   `http::HeaderMap` and the body bytes every runtime hands over, answered
+//!   with the `http::StatusCode` the receiver would; the header names are in
 //!   [`header`].
 //!
 //! Always pass the exact request bytes. Parsing, re-encoding, or normalizing
@@ -107,9 +108,9 @@
 //! The core (envelope, verification, the handler trait and its inputs, the
 //! dispatcher) depends on none of them and builds for `wasm32-unknown-unknown`.
 //! [`Envelope::from_signed`] over an `http::HeaderMap`, the [`header`]
-//! constants and [`ResponseStatus`] into `http::StatusCode` are part of it:
-//! the `http` crate is not optional, since every surveyed Rust runtime hands
-//! over its types, and it adds one entry to the dependency tree.
+//! constants and [`ReceiveError::status`] as an `http::StatusCode` are part
+//! of it: the `http` crate is not optional, since every surveyed Rust runtime
+//! hands over its types, and it adds one entry to the dependency tree.
 //!
 //! # Tracing
 //!
@@ -144,21 +145,23 @@
 //!
 //! A field recorded in more than one place is recorded in one form
 //! everywhere: `delivery_id`, `event` and `action` as strings,
-//! `installation_id` and `status` as integers, `outcome` as a string label
-//! with its own vocabulary per span, and `error`, on the receive span for a
-//! refusal and on the failed-delivery event for a handler failure, as the
-//! error's text. The one value two vocabularies share, `handler_error`,
-//! partitions differently: on the receive span it is every delivery a handler
-//! failed, since any handler error is a 500; on the dispatch span it is a
-//! matched delivery a handler failed, and an unmatched delivery failed by its
-//! `always` or `fallback` tier is `unmatched_error`. A receive
-//! `handler_error` is a dispatch `handler_error` or `unmatched_error`.
+//! `installation_id` as an integer, `outcome` as a string label with its own
+//! vocabulary per span, and `error`, on the receive span for a refusal and on
+//! the failed-delivery event for a handler failure, as the error's text. The
+//! one value two vocabularies share, `handler_error`, partitions differently:
+//! on the receive span it is every delivery a handler failed, since any
+//! handler error is a 500; on the dispatch span it is a matched delivery a
+//! handler failed, and an unmatched delivery failed by its `always` or
+//! `fallback` tier is `unmatched_error`. A receive `handler_error` is a
+//! dispatch `handler_error` or `unmatched_error`.
 //!
 //! A failed delivery also emits one event at ERROR, `handler failed`, with
-//! `delivery_id`, `event`, `status`, and `action` and `installation_id` when
-//! the delivery has them, so a subscriber filtering at ERROR sees every
-//! failed delivery without an observer. A successful delivery, a request
-//! refused before any handler ran and a short-circuited `ping` emit no event.
+//! `delivery_id`, `event`, and `action` and `installation_id` when the
+//! delivery has them, so a subscriber filtering at ERROR sees every failed
+//! delivery without an observer; the 500 it is answered with is the receive
+//! span's `status`, since a handler failure is answered nothing else. A
+//! successful delivery, a request refused before any handler ran and a
+//! short-circuited `ping` emit no event.
 //! By default the event carries no text of the error, since the receiver
 //! places no bound on the handler's error type. The text is a setting on the
 //! receiver builder, and it goes on the same event, never a second one:
@@ -244,7 +247,6 @@ mod octocrab;
 mod payload;
 #[cfg(feature = "http-body")]
 mod receiver;
-mod respond;
 mod runtime;
 mod signature;
 #[cfg(test)]
@@ -263,7 +265,6 @@ pub use octoevents_derive::Payload;
 pub use payload::{Event, FromEnvelope, Payload};
 #[cfg(feature = "http-body")]
 pub use receiver::{WebhookReceiver, WebhookReceiverBuilder};
-pub use respond::ResponseStatus;
 pub use runtime::{MaybeSend, MaybeSync};
 pub use signature::{Signature, SignatureError, Verifier, WebhookSecret, WebhookSecretError};
 #[cfg(all(feature = "http-body", feature = "tracing"))]

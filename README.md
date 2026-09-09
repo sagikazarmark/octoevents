@@ -512,8 +512,8 @@ cannot be paired with a payload that says something else. The target type and
 ID come from headers, so they stay `None` unless assigned.
 
 The receiver is tested with a signed synthetic request. `Verifier::sign`
-gives the `Signature` GitHub would send for a body, whose `to_string()` is
-the `X-Hub-Signature-256` value, so the test signs with the verifier the
+gives the `Signature` GitHub would send for a body, which goes on the request
+as the `X-Hub-Signature-256` value, so the test signs with the verifier the
 receiver is built with; a request needs four headers, whose names
 `octoevents::header` spells. `receive` takes any `http_body::Body` over
 `Bytes`, and `String` is one, so the test needs no axum. With `http = "1"` as
@@ -531,14 +531,13 @@ async fn accepts_a_signed_delivery() {
     let webhook = WebhookReceiverBuilder::new(verifier.clone()).build(dispatcher);
 
     let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
-    let signature = verifier.sign(body.as_bytes());
     let request = http::Request::builder()
         .method("POST")
         .uri("/webhook")
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::DELIVERY_ID, "delivery-1")
         .header(header::EVENT_NAME, "issues")
-        .header(header::SIGNATURE, signature.to_string())
+        .header(header::SIGNATURE, verifier.sign(body.as_bytes()))
         .body(body.to_string())
         .unwrap();
 
@@ -587,12 +586,13 @@ Worker), and `aws_lambda_events` carries a `HeaderMap` in its event structs; a
 consumer hand-parsing a raw invocation event collects its `(name, value)`
 pairs into a `HeaderMap` and header-name case is `HeaderName`'s to handle. A
 transport calls `from_signed` with the verifier, the map and the body, and
-answers with `ResponseStatus`. The docs of `from_signed` show, as code to
-copy, the three things the receiver does that this path does not: refusing an
-unsigned request before reading the body, bounding the body, and
-short-circuiting `ping`. `Dispatcher::dispatch` is a plain `async fn` with no
-runtime of its own. The `worker` example runs the receiver on Cloudflare
-Workers through `receive`.
+answers with an `http::StatusCode`: `ReceiveError::status` for a failure, 204
+once the handler has succeeded, 500 when it has failed. The docs of
+`from_signed` show, as code to copy, the three things the receiver does that
+this path does not: refusing an unsigned request before reading the body,
+bounding the body, and short-circuiting `ping`. `Dispatcher::dispatch` is a
+plain `async fn` with no runtime of its own. The `worker` example runs the
+receiver on Cloudflare Workers through `receive`.
 
 ## Tracing
 
@@ -678,9 +678,9 @@ matching handler and aggregates.
 The core (envelope, verification, the handler trait and its inputs, the
 dispatcher) depends on none of them and builds for `wasm32-unknown-unknown`.
 `Envelope::from_signed` over an `http::HeaderMap`, the `header` constants and
-`ResponseStatus` into `http::StatusCode` are part of it: the `http` crate is
-not optional, since every surveyed Rust runtime hands over its types, and it
-adds one entry to the dependency tree.
+`ReceiveError::status` as an `http::StatusCode` are part of it: the `http`
+crate is not optional, since every surveyed Rust runtime hands over its types,
+and it adds one entry to the dependency tree.
 
 ## License
 
