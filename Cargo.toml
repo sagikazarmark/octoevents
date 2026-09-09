@@ -42,11 +42,12 @@ include = [
 [features]
 default = ["http-body", "derive"]
 derive = ["dep:octoevents-derive"]
-# The receiver's body handling: `WebhookReceiver`, its builder and `receive`
-# over an `http_body::Body`. The `http` crate itself is not optional: every
-# surveyed Rust runtime hands over an `http::HeaderMap`, so `from_signed` reads
-# one; the survey and the feature's name are under "No header view" in
-# `docs/design/deliberately-left-out.md`.
+# The receiver's body handling: `WebhookReceiver::receive` over an
+# `http_body::Body`, answering an `http::Response`. The receiver itself, its
+# builder and `receive_bytes` over the headers and the body already read are in
+# the core, and the `http` crate is not optional: every surveyed Rust runtime
+# hands over an `http::HeaderMap`; the survey and the feature's name are under
+# "No header view" in `docs/design/deliberately-left-out.md`.
 http-body = ["dep:http-body", "dep:http-body-util"]
 octocrab = ["dep:octocrab"]
 tower = ["http-body", "dep:tower-service"]

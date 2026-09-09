@@ -73,9 +73,39 @@ would use them. The `header` constants stayed, as `HeaderName`s, for the two
 uses that exist: a streaming transport's pre-body signature check and a test's
 `http::Request::builder()`. Recorded on `from_signed` and on the `header`
 module. The feature that gated the crate and the receiver together is
-`http-body`, gating the receiver's body handling alone and named for what it
-turns on in dependency terms; `receiver`, named for what it provides, was the
-alternative and is deferred, not rejected.
+`http-body`, named for what it turns on in dependency terms; `receiver`,
+named for what it provides, was the alternative and is deferred, not
+rejected.
+
+## The receiver is in the core; `http-body` gates `receive` alone (reversed)
+
+For a while `http-body` gated the whole `receiver` module, so a build without
+it had `Envelope::from_signed` and `ReceiveError::status` and was told, in a
+45-line block on `from_signed`'s docs, to copy the rest: the header-only
+refusal, the body limit, the `ping` short-circuit, and the 204/500 mapping.
+Of the receiver's module only `read_body` and `receive<B: Body>` touch
+`http_body`; the header refusal, the limit, `from_signed`, `ping`, the handler
+call, the `on_error` observer, the failed-delivery event and the receive span
+are all over `&HeaderMap` and `Bytes`. So the copy block was the receiver's
+policy re-derived by hand, once per transport, each slightly differently, and
+silently without the observer and the event, which the block did not show;
+and it had to move in lockstep with `process`. The deletion test on the block
+came out the other way from the one on the module: delete the block and the
+same six steps reappear in every no-`http-body` transport, which is the
+argument for a function, not prose.
+
+Now `WebhookReceiver`, its builder and `receive_bytes(&HeaderMap, Bytes) ->
+StatusCode` are in the core under every feature set, `http-body` gates
+`receive<B: Body>` and the `Response` it answers with, which is exactly the
+body handling the feature's Cargo comment always said it gated, and the
+`tower` feature still implies it. The two paths share one `process` over a
+body future, so they differ only in how the bytes are produced: read from the
+transport within the limit, or checked against it by length. `from_signed`
+stays for a transport that wants the envelope and not the answer, to forward
+it over the wire format or persist it before any handler runs; its docs say
+what the receiver does around the call, in prose, with the one header check a
+streaming transport runs before buffering as code. Recorded on
+`WebhookReceiver` and `from_signed`.
 
 ## Kind from the header, not the payload's shape
 

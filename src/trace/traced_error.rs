@@ -1,9 +1,8 @@
 //! The bound `WebhookReceiverBuilder::trace_errors` places on the handler's
 //! error: any [`Error`], under a name the crate can attach a message to.
 //!
-//! Beside `boxed_error` under `trace`, gated as it is and for the same
-//! reason: the receiver is its only consumer, and the receiver exists with
-//! `http-body`.
+//! Beside `boxed_error` under `trace`, gated on `tracing` as it is: the
+//! receiver's `trace_errors` is its only consumer.
 
 use std::error::Error;
 

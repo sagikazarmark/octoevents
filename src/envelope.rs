@@ -147,18 +147,21 @@ pub struct Envelope {
 impl Envelope {
     /// Verifies the signature over the body, then builds the envelope.
     ///
-    /// This is the sans-I/O entry point: the receiver (`http-body` feature)
-    /// is built on it, and a transport with no `http_body::Body` calls it
-    /// directly with the request's `http::HeaderMap` and the body as
-    /// [`Bytes`], which is the shape every surveyed Rust runtime hands over:
-    /// `lambda_http` and `spin-sdk` give an `http::Request`, `worker` and
-    /// `fastly` convert to one, and `aws_lambda_events` carries a `HeaderMap`
-    /// in its event structs. A consumer hand-parsing a raw invocation event
-    /// collects its `(name, value)` pairs into a `HeaderMap`, and header-name
-    /// case is `HeaderName`'s to handle, not theirs. Answer with the
-    /// receiver's contract, as an `http::StatusCode`: [`ReceiveError::status`]
-    /// for a failure here, `NO_CONTENT` once the handler has succeeded, and
-    /// `INTERNAL_SERVER_ERROR` when it has failed.
+    /// This is the one step of receiving that produces the envelope, and the
+    /// receiver is built on it. A transport calls it directly when it wants
+    /// the envelope and not the receiver's answer: to forward the envelope
+    /// over the wire format, to persist it before any handler runs, or to
+    /// route it itself. It takes the request's `http::HeaderMap` and the body
+    /// as [`Bytes`], the shape every surveyed Rust runtime hands over: a
+    /// consumer hand-parsing a raw invocation event collects its `(name,
+    /// value)` pairs into a `HeaderMap`, and header-name case is
+    /// `HeaderName`'s to handle, not theirs. A failure is answered with
+    /// [`ReceiveError::status`], the receiver's contract. For the whole
+    /// contract over the same two arguments, the header-only refusal, the
+    /// body limit, the `ping` short-circuit, the handler, the observer and
+    /// the tracing, call
+    /// [`WebhookReceiver::receive_bytes`](crate::WebhookReceiver::receive_bytes)
+    /// instead, which is in the core beside this.
     ///
     /// The headers are read by the names in [`header`](crate::header), by
     /// which `HeaderMap` matches case-insensitively, and a repeated header
@@ -183,72 +186,39 @@ impl Envelope {
     ///
     /// # What the receiver adds
     ///
-    /// `WebhookReceiver` (`http-body` feature) does three things around this
-    /// call that a transport built directly on it must do for itself, or
-    /// decide to go without. This is the receiver's sequence for a transport
-    /// that is handed the headers and the body; each of the three returns the
-    /// status the receiver would, and the handler runs only once all three
-    /// have passed:
+    /// Around this call the receiver refuses a request whose signature header
+    /// is absent (401) or not a signature (400) from the headers alone, before
+    /// the body is read, so unsigned traffic never occupies memory; bounds the
+    /// body at the configured limit (413); and answers a verified `ping` 204
+    /// before any handler runs, unless asked to `handle_ping`. A transport
+    /// calling this function directly does those for itself, or decides to go
+    /// without: without the first, unsigned traffic is buffered before it is
+    /// refused; without the second, this function verifies whatever it is
+    /// given; without the third, a transport that forwards every envelope
+    /// forwards pings too. The header check is `Signature::try_from` on the
+    /// [`header::SIGNATURE`](crate::header::SIGNATURE) value, answered with
+    /// [`ReceiveError::status`]:
     ///
     /// ```
     /// use http::{HeaderMap, StatusCode};
-    /// use octoevents::{
-    ///     Bytes, DEFAULT_BODY_LIMIT, Envelope, EventKind, Handler, ReceiveError, Signature,
-    ///     SignatureError, Verifier, header,
-    /// };
+    /// use octoevents::{Bytes, Envelope, ReceiveError, Signature, SignatureError, Verifier, header};
     ///
-    /// async fn receive<H: Handler<Envelope>>(
+    /// fn envelope_or_status(
     ///     verifier: &Verifier,
     ///     headers: &HeaderMap,
     ///     body: Bytes,
-    ///     handler: &H,
-    /// ) -> StatusCode {
-    ///     // Header-only rejection: a request whose signature header is
-    ///     // absent (401) or not a signature (400) is refused before the body
-    ///     // is read, so it never occupies memory. Decidable from the headers,
-    ///     // so a transport that streams runs it before buffering;
-    ///     // `from_signed` reaches the same answer for one that does not.
-    ///     let signature = headers
+    /// ) -> Result<Envelope, StatusCode> {
+    ///     // Decidable from the headers, so a transport that streams runs it
+    ///     // before buffering; `from_signed` reaches the same answer after.
+    ///     headers
     ///         .get(&header::SIGNATURE)
     ///         .ok_or(SignatureError::Missing)
-    ///         .and_then(Signature::try_from);
-    ///     if let Err(error) = signature {
-    ///         return ReceiveError::from(error).status();
-    ///     }
+    ///         .and_then(Signature::try_from)
+    ///         .map_err(|error| ReceiveError::from(error).status())?;
     ///
-    ///     // The body limit: 413 past GitHub's 25 MiB cap. The receiver stops
-    ///     // reading at the limit; a transport that streams does the same,
-    ///     // and one handed the body already read checks its length. A read
-    ///     // that fails partway is `ReceiveError::BodyRead`, 400, its text the
-    ///     // crate's and the transport's error one `source()` beneath, as a
-    ///     // `BodyError`; a transport handed the bytes never sees one.
-    ///     if body.len() > DEFAULT_BODY_LIMIT {
-    ///         return ReceiveError::BodyTooLarge { limit: DEFAULT_BODY_LIMIT }.status();
-    ///     }
-    ///
-    ///     let envelope = match Envelope::from_signed(verifier, headers, body) {
-    ///         Ok(envelope) => envelope,
-    ///         Err(error) => return error.status(),
-    ///     };
-    ///
-    ///     // The ping short-circuit: a verified `ping` is 204 and reaches no
-    ///     // handler, unless the receiver was built with `handle_ping(true)`.
-    ///     // After `from_signed`, so an unsigned ping is still 401.
-    ///     if matches!(envelope.meta.kind, EventKind::Ping) {
-    ///         return StatusCode::NO_CONTENT;
-    ///     }
-    ///
-    ///     match handler.handle(envelope).await {
-    ///         Ok(()) => StatusCode::NO_CONTENT,
-    ///         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
-    ///     }
+    ///     Envelope::from_signed(verifier, headers, body).map_err(|error| error.status())
     /// }
     /// ```
-    ///
-    /// Without the first, unsigned traffic is buffered before it is refused;
-    /// without the second, this function verifies whatever it is given;
-    /// without the third, a transport that forwards every envelope forwards
-    /// pings too.
     ///
     /// # Errors
     ///
@@ -389,12 +359,14 @@ pub enum ReceiveError {
     UnsupportedContentType,
     /// The transport failed while the body was being read.
     ///
-    /// Produced by `WebhookReceiver` (`http-body` feature) when a body frame is an
-    /// error rather than data or trailers: the connection dropped, the client
-    /// stopped sending. Never by [`Envelope::from_signed`], which is handed
-    /// the bytes already read; a transport that streams the body itself
-    /// constructs it for the same failure. The [`source`](std::error::Error::source)
-    /// is the transport's own error as text, a [`BodyError`].
+    /// Produced by `WebhookReceiver::receive` (`http-body` feature) when a
+    /// body frame is an error rather than data or trailers: the connection
+    /// dropped, the client stopped sending. Never by
+    /// [`Envelope::from_signed`] or `WebhookReceiver::receive_bytes`, which
+    /// are handed the bytes already read; a transport that streams the body
+    /// itself constructs it for the same failure. The
+    /// [`source`](std::error::Error::source) is the transport's own error as
+    /// text, a [`BodyError`].
     #[error("could not read the webhook body")]
     BodyRead(#[source] BodyError),
     /// The transport stopped reading after the configured limit.

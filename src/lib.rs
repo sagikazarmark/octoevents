@@ -8,9 +8,9 @@
 //! A receiver that thanks the author of every opened issue:
 //!
 //! ```
-//! use octoevents::{Action, Dispatcher, Envelope, EventKind, Verifier, WebhookSecret};
-//! # #[cfg(feature = "http-body")]
-//! use octoevents::WebhookReceiverBuilder;
+//! use octoevents::{
+//!     Action, Dispatcher, Envelope, EventKind, Verifier, WebhookReceiverBuilder, WebhookSecret,
+//! };
 //!
 //! // The error every handler returns. Any error converts into it with `?`.
 //! type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -29,13 +29,11 @@
 //!     .on((EventKind::Issues, Action::Opened), thank)
 //!     .build();
 //!
-//! # #[cfg(feature = "http-body")] {
 //! // Verifies `X-Hub-Signature-256` against the body with the secret, refuses
 //! // what does not verify, and hands everything else to the dispatcher.
 //! let webhook = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("development-secret")))
 //!     .build(dispatcher);
 //! # let _ = webhook;
-//! # }
 //! ```
 //!
 //! `webhook` mounts on any router that hands over an `http` request: with the
@@ -81,20 +79,23 @@
 //!   naming the tier, the handler and its registration site. The policy the
 //!   tiers cannot express lives in a handler wrapping `dispatch`,
 //!   [the policy seam](Dispatcher#the-policy-seam).
-//! - [`WebhookReceiver`]: authenticates, bounds and dispatches one request.
-//!   Built with [`WebhookReceiverBuilder`], which takes the [`Verifier`], the
-//!   body limit, `ping` handling and the
+//! - [`WebhookReceiver`]: authenticates, bounds and dispatches one request,
+//!   through [`WebhookReceiver::receive`] over an `http::Request` (`http-body`
+//!   feature) or [`WebhookReceiver::receive_bytes`] over the `http::HeaderMap`
+//!   and the body already read, answered as the `http::StatusCode`. Built
+//!   with [`WebhookReceiverBuilder`], which takes the [`Verifier`], the body
+//!   limit, `ping` handling and the
 //!   [`on_error`][WebhookReceiverBuilder::on_error] observer.
 //! - [`Verifier`] and [`WebhookSecret`]: the configured secrets and the HMAC
 //!   comparison; [`Verifier::also`] opens a rotation window, and
 //!   [`Verifier::sign`] signs a test's synthetic request. The header value
 //!   parsed is a [`Signature`], which is where a malformed one is refused; a
 //!   signature that does not authenticate is a [`SignatureError`].
-//! - [`Envelope::from_signed`] and [`ReceiveError::status`]: the sans-I/O
-//!   path for a transport with no `http_body::Body`, over the
-//!   `http::HeaderMap` and the body bytes every runtime hands over, answered
-//!   with the `http::StatusCode` the receiver would; the header names are in
-//!   [`header`].
+//! - [`Envelope::from_signed`] and [`ReceiveError::status`]: the one step
+//!   that produces the envelope, for a transport that wants the envelope and
+//!   not the receiver's answer, over the same `http::HeaderMap` and body
+//!   bytes, a failure answered with the `http::StatusCode` the receiver
+//!   would; the header names are in [`header`].
 //!
 //! Always pass the exact request bytes. Parsing, re-encoding, or normalizing
 //! the body before verification invalidates GitHub's signature.
@@ -103,18 +104,20 @@
 //!
 //! | Feature | Default | Provides |
 //! | --- | --- | --- |
-//! | `http-body` | yes | [`WebhookReceiver`] and [`WebhookReceiverBuilder`], with [`WebhookReceiver::receive`] over an `http::Request` whose body is an `http_body::Body` |
+//! | `http-body` | yes | [`WebhookReceiver::receive`] over an `http::Request` whose body is an `http_body::Body`, answering an `http::Response`; the receiver itself, its builder and [`WebhookReceiver::receive_bytes`] are in the core |
 //! | `derive` | yes | `#[derive(Payload)]`, declaring a serde type's kind with `#[payload(EventKind::..)]`; without it, a payload is declared with a three-line `impl Payload` |
 //! | `tower` | no | `tower_service::Service` for [`WebhookReceiver`] |
 //! | `octocrab` | no | [`FromEnvelope`] for octocrab's `WebhookEvent` and [`Payload`] for its per-kind payload structs; see [Feature caveats](#feature-caveats) |
 //! | `tracing` | no | The spans and the failed-delivery event under [Tracing](#tracing), and `trace_errors` / `trace_boxed_errors` on [`WebhookReceiverBuilder`] |
 //!
 //! The core (envelope, verification, the handler trait and its inputs, the
-//! dispatcher) depends on none of them and builds for `wasm32-unknown-unknown`.
-//! [`Envelope::from_signed`] over an `http::HeaderMap`, the [`header`]
-//! constants and [`ReceiveError::status`] as an `http::StatusCode` are part
-//! of it: the `http` crate is not optional, since every surveyed Rust runtime
-//! hands over its types, and it adds one entry to the dependency tree.
+//! dispatcher, the receiver over headers and bytes) depends on none of them
+//! and builds for `wasm32-unknown-unknown`. [`Envelope::from_signed`] and
+//! [`WebhookReceiver::receive_bytes`] over an `http::HeaderMap`, the
+//! [`header`] constants and [`ReceiveError::status`] as an `http::StatusCode`
+//! are part of it: the `http` crate is not optional, since every surveyed
+//! Rust runtime hands over its types, and it adds one entry to the dependency
+//! tree.
 //!
 //! # Tracing
 //!
@@ -216,24 +219,18 @@
 //! and `organization` objects, which its `WebhookEvent` carries and
 //! [`EventMeta`] summarizes.
 //!
-// The receiver types exist only under `http-body`, and the front page names them
-// under every feature set, so their link definitions are chosen by cfg: an
-// intra-doc path when the item is compiled in, so a renamed or removed item
-// still fails `cargo doc`, and its docs.rs URL when it is not, so the links
-// resolve under `--no-default-features` rather than being dropped.
+// `WebhookReceiver::receive` exists only under `http-body`, and the front page
+// names it under every feature set, so its link definition is chosen by cfg:
+// an intra-doc path when the method is compiled in, so a renamed or removed
+// method still fails `cargo doc`, and its docs.rs URL when it is not, so the
+// link resolves under `--no-default-features` rather than being dropped.
 #![cfg_attr(
     feature = "http-body",
-    doc = "[`WebhookReceiver`]: WebhookReceiver",
-    doc = "[`WebhookReceiver::receive`]: WebhookReceiver::receive",
-    doc = "[`WebhookReceiverBuilder`]: WebhookReceiverBuilder",
-    doc = "[WebhookReceiverBuilder::on_error]: WebhookReceiverBuilder::on_error"
+    doc = "[`WebhookReceiver::receive`]: WebhookReceiver::receive"
 )]
 #![cfg_attr(
     not(feature = "http-body"),
-    doc = "[`WebhookReceiver`]: https://docs.rs/octoevents/latest/octoevents/struct.WebhookReceiver.html",
-    doc = "[`WebhookReceiver::receive`]: https://docs.rs/octoevents/latest/octoevents/struct.WebhookReceiver.html#method.receive",
-    doc = "[`WebhookReceiverBuilder`]: https://docs.rs/octoevents/latest/octoevents/struct.WebhookReceiverBuilder.html",
-    doc = "[WebhookReceiverBuilder::on_error]: https://docs.rs/octoevents/latest/octoevents/struct.WebhookReceiverBuilder.html#method.on_error"
+    doc = "[`WebhookReceiver::receive`]: https://docs.rs/octoevents/latest/octoevents/struct.WebhookReceiver.html#method.receive"
 )]
 // `doc_cfg` propagates each `#[cfg]` into the rendered docs on its own,
 // including from a gated module to the items inside it, so gated items carry
@@ -250,7 +247,6 @@ mod meta;
 #[cfg(feature = "octocrab")]
 mod octocrab;
 mod payload;
-#[cfg(feature = "http-body")]
 mod receiver;
 mod runtime;
 mod signature;
@@ -269,11 +265,10 @@ pub use meta::{AccountMeta, EventMeta, RepositoryMeta, TargetType};
 #[cfg(feature = "derive")]
 pub use octoevents_derive::Payload;
 pub use payload::{Event, FromEnvelope, Payload};
-#[cfg(feature = "http-body")]
 pub use receiver::{WebhookReceiver, WebhookReceiverBuilder};
 pub use runtime::{MaybeSend, MaybeSync};
 pub use signature::{Signature, SignatureError, Verifier, WebhookSecret, WebhookSecretError};
-#[cfg(all(feature = "http-body", feature = "tracing"))]
+#[cfg(feature = "tracing")]
 pub use trace::{BoxedError, TracedError};
 
 /// The byte buffer type of [`Envelope::raw_payload`] and of the body

@@ -92,6 +92,16 @@ reads the "Changed" and "Removed" lists first.
   receive failure with, on the error itself, so a transport built on
   `Envelope::from_signed` answers GitHub as the receiver does. It replaces
   `ResponseStatus::for_receive_error`; see Removed.
+- `WebhookReceiver::receive_bytes`: the receiver over the request's
+  `http::HeaderMap` and its body as `Bytes` already read, answering with the
+  `http::StatusCode`, for a transport with no `http_body::Body`, which is what
+  every surveyed serverless runtime hands over. The whole contract `receive`
+  applies (the header-only refusal, the body limit, `ping`, the handler, the
+  `on_error` observer, the failed-delivery event and the receive span) over
+  the two arguments `Envelope::from_signed` takes, in the core under every
+  feature set. What `from_signed`'s docs showed as 45 lines of code to copy is
+  this one call; `from_signed` stays for a transport that wants the envelope
+  and not the answer.
 - `tracing` feature: the `octoevents.dispatch` span records the tier,
   handler and registration site of a failure; a failed delivery emits one
   event at ERROR, `handler failed`, with the delivery's identifying fields
@@ -181,14 +191,18 @@ reads the "Changed" and "Removed" lists first.
   `SignatureError::Malformed` (400), and any other header with such a value
   reads as absent.
 - **Breaking:** The `http` feature is `http-body`, named for what it turns
-  on: `WebhookReceiver`, its builder and `receive` over an `http_body::Body`.
-  `features = ["http"]` becomes `["http-body"]`; `tower` implies it, and the
-  default features are `http-body` and `derive`. The `http` crate itself is
-  no longer optional: `from_signed` reads its `HeaderMap`, the `header`
-  constants are its `HeaderName`s, and `ReceiveError::status` is its
-  `StatusCode`. Every surveyed Rust runtime already depends on it
-  non-optionally (`docs/research/header-abstractions.md`), and it adds one
-  entry to the no-default dependency tree.
+  on: `WebhookReceiver::receive` over an `http_body::Body`, answering an
+  `http::Response`. `features = ["http"]` becomes `["http-body"]`; `tower`
+  implies it, and the default features are `http-body` and `derive`. The
+  receiver itself, `WebhookReceiverBuilder` and `receive_bytes` are in the
+  core under every feature set, as are `TracedError` and `BoxedError` under
+  `tracing` alone, since only the body reading touches `http_body`. The
+  `http` crate itself is no longer optional: `from_signed` reads its
+  `HeaderMap`, the `header` constants are its `HeaderName`s, and
+  `ReceiveError::status` is its `StatusCode`. Every surveyed Rust runtime
+  already depends on it non-optionally
+  (`docs/research/header-abstractions.md`), and it adds one entry to the
+  no-default dependency tree.
 - **Breaking:** `Secret` is `WebhookSecret`: GitHub's term in full, beside
   `WebhookReceiver`, and no longer a collision with `secrecy::Secret` in a
   consumer's imports. `VerifyError` is `SignatureError`, named for its
