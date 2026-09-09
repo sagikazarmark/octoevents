@@ -182,7 +182,9 @@ take, `TryFrom<&[u8]>` for the bytes in another shape, or `str::parse`, for a
 consumer parsing a string in a test or their own early-out, and that parse is
 the one origin of `Malformed`; `Display` renders the header value back and
 `From<Signature> for HeaderValue` puts it on a request, `Debug` is redacted,
-equality is constant-time. What `Verifier::sign` produces and
+and the only comparison is `subtle::ConstantTimeEq`: there is no `PartialEq`,
+so two signatures cannot be compared with `==` by accident. What
+`Verifier::sign` produces and
 `Verifier::verify` takes, so the verifier is handed a settled format and can
 only mismatch. In prose, "signature" alone names the value once the header is
 in context; "signature header" names the wire string before parsing, as

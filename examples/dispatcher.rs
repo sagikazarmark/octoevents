@@ -175,7 +175,9 @@ impl Handler<Envelope> for Auditor {
             meta.delivery_id,
             meta.kind,
             meta.action,
-            meta.sender.as_deref().unwrap_or("unknown"),
+            meta.sender
+                .as_ref()
+                .map_or("unknown", |sender| sender.login.as_str()),
         );
         Ok(())
     }

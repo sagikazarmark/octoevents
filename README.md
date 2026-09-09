@@ -30,7 +30,7 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// Runs for `issues.opened`. The envelope is the verified delivery: its meta
 /// (delivery ID, kind, action, repository, sender, ...) and the raw payload.
 async fn thank(envelope: Envelope) -> Result<(), BoxError> {
-    let sender = envelope.meta.sender.unwrap_or_default();
+    let sender = envelope.meta.sender.map(|s| s.login).unwrap_or_default();
     println!("Thank you for your contribution, @{sender}! :)");
     Ok(())
 }
@@ -497,7 +497,7 @@ async fn thanks_for_an_opened_issue() {
     let envelope = Envelope::new(
         "delivery-1",
         EventKind::Issues,
-        br#"{"action":"opened","sender":{"login":"octocat"}}"#,
+        br#"{"action":"opened","sender":{"id":1,"login":"octocat"}}"#,
     );
 
     let outcome = dispatcher.dispatch(envelope).await;
@@ -530,7 +530,7 @@ async fn accepts_a_signed_delivery() {
     let verifier = Verifier::new(WebhookSecret::new("test-secret"));
     let webhook = WebhookReceiverBuilder::new(verifier.clone()).build(dispatcher);
 
-    let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
+    let body = r#"{"action":"opened","sender":{"id":1,"login":"octocat"}}"#;
     let request = http::Request::builder()
         .method("POST")
         .uri("/webhook")

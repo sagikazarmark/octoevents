@@ -1,7 +1,12 @@
-use std::{convert::Infallible, fmt, str::FromStr};
-
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
+/// An enum over one GitHub wire vocabulary: a variant per known string, an
+/// `Unknown(String)` for the rest, and the conversions every such enum
+/// needs: `as_str`, `From<&str>`, an infallible `FromStr`, `Display` as the
+/// wire string, and serde as a bare string. The three wire vocabularies the
+/// crate parses are generated with it: [`EventKind`] and [`Action`] here,
+/// and [`TargetType`](crate::TargetType) beside the meta that holds it.
+///
+/// Every path in the expansion is absolute, so the macro invokes from any
+/// module without that module importing what the expansion names.
 macro_rules! string_enum {
     (
         $(#[$meta:meta])*
@@ -18,7 +23,7 @@ macro_rules! string_enum {
                 $variant,
             )*
             /// A wire value unknown to this version of the crate.
-            Unknown(String),
+            Unknown(::std::string::String),
         }
 
         impl $name {
@@ -32,12 +37,12 @@ macro_rules! string_enum {
             }
 
             #[cfg(test)]
-            fn known_values() -> &'static [Self] {
+            pub(crate) fn known_values() -> &'static [Self] {
                 &[$(Self::$variant,)*]
             }
         }
 
-        impl From<&str> for $name {
+        impl ::std::convert::From<&str> for $name {
             /// The variant for a GitHub wire value, or [`Unknown`](Self::Unknown)
             /// carrying the value verbatim; never a failure.
             fn from(value: &str) -> Self {
@@ -48,39 +53,42 @@ macro_rules! string_enum {
             }
         }
 
-        impl FromStr for $name {
-            type Err = Infallible;
+        impl ::std::str::FromStr for $name {
+            type Err = ::std::convert::Infallible;
 
-            fn from_str(value: &str) -> Result<Self, Self::Err> {
+            fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
                 Ok(Self::from(value))
             }
         }
 
-        impl fmt::Display for $name {
-            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        impl ::std::fmt::Display for $name {
+            fn fmt(&self, formatter: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
                 formatter.write_str(self.as_str())
             }
         }
 
-        impl Serialize for $name {
-            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        impl ::serde::Serialize for $name {
+            fn serialize<S>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error>
             where
-                S: Serializer,
+                S: ::serde::Serializer,
             {
                 serializer.serialize_str(self.as_str())
             }
         }
 
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        impl<'de> ::serde::Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
             where
-                D: Deserializer<'de>,
+                D: ::serde::Deserializer<'de>,
             {
-                String::deserialize(deserializer).map(|value| Self::from(value.as_str()))
+                <::std::string::String as ::serde::Deserialize>::deserialize(deserializer)
+                    .map(|value| Self::from(value.as_str()))
             }
         }
     };
 }
+
+pub(crate) use string_enum;
 
 // Known GitHub webhook event names. Keep existing variants for API compatibility.
 string_enum! {
@@ -296,25 +304,14 @@ string_enum! {
     }
 }
 
-string_enum! {
-    /// The resource on which the webhook is installed, from
-    /// `X-GitHub-Hook-Installation-Target-Type`: `integration` for a GitHub
-    /// App, `repository` for a repository webhook and `organization` for an
-    /// organization webhook.
-    pub enum TargetType {
-        Integration => "integration",
-        Repository => "repository",
-        Organization => "organization",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::fmt;
 
     use serde::Serialize;
 
-    use super::{Action, EventKind, TargetType};
+    use super::{Action, EventKind};
+    use crate::TargetType;
 
     /// Every known value comes back from its own wire string, displays as it
     /// and serializes as it quoted.

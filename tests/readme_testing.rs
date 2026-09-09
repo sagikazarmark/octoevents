@@ -16,7 +16,7 @@
 #![cfg(all(feature = "http-body", not(target_arch = "wasm32")))]
 
 use octoevents::{
-    Action, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, Match, Verifier,
+    AccountRef, Action, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, Match, Verifier,
     WebhookReceiverBuilder, WebhookSecret, header,
 };
 
@@ -25,7 +25,7 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// The quickstart's handler, verbatim.
 async fn thank(envelope: Envelope) -> Result<(), BoxError> {
-    let sender = envelope.meta.sender.unwrap_or_default();
+    let sender = envelope.meta.sender.map(|s| s.login).unwrap_or_default();
     println!("Thank you for your contribution, @{sender}! :)");
     Ok(())
 }
@@ -48,7 +48,7 @@ async fn thanks_for_an_opened_issue() {
     let envelope = Envelope::new(
         "delivery-1",
         EventKind::Issues,
-        br#"{"action":"opened","sender":{"login":"octocat"}}"#,
+        br#"{"action":"opened","sender":{"id":1,"login":"octocat"}}"#,
     );
 
     let outcome = dispatcher.dispatch(envelope).await;
@@ -68,7 +68,7 @@ async fn accepts_a_signed_delivery() {
     let verifier = Verifier::new(WebhookSecret::new("test-secret"));
     let webhook = WebhookReceiverBuilder::new(verifier.clone()).build(dispatcher);
 
-    let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
+    let body = r#"{"action":"opened","sender":{"id":1,"login":"octocat"}}"#;
     let request = http::Request::builder()
         .method("POST")
         .uri("/webhook")
@@ -88,7 +88,7 @@ async fn accepts_a_signed_delivery() {
 /// `issues.opened` body under the same four headers, for the two sentences
 /// after that test to put through receivers built over other secrets.
 fn the_readme_request(verifier: &Verifier) -> http::Request<String> {
-    let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
+    let body = r#"{"action":"opened","sender":{"id":1,"login":"octocat"}}"#;
     http::Request::builder()
         .method("POST")
         .uri("/webhook")
@@ -141,7 +141,8 @@ async fn a_verifier_with_a_previous_secret_signs_under_its_first() {
 /// reads none.
 #[test]
 fn an_envelope_reads_its_meta_from_the_bytes() {
-    let payload = br#"{"action":"opened","installation":{"id":42},"sender":{"login":"octocat"}}"#;
+    let payload =
+        br#"{"action":"opened","installation":{"id":42},"sender":{"id":1,"login":"octocat"}}"#;
 
     let meta = EventMeta::new("delivery-1", EventKind::Issues);
     let probed = Envelope::new("delivery-1", EventKind::Issues, payload);
@@ -151,7 +152,7 @@ fn an_envelope_reads_its_meta_from_the_bytes() {
     assert_eq!(meta.sender, None);
     assert_eq!(probed.meta.action, Some(Action::Opened));
     assert_eq!(probed.meta.installation_id, Some(42));
-    assert_eq!(probed.meta.sender.as_deref(), Some("octocat"));
+    assert_eq!(probed.meta.sender, Some(AccountRef::new(1, "octocat")));
 }
 
 /// The Outcome table's first unmatched row: the kind is registered, the
@@ -161,7 +162,7 @@ async fn a_payload_without_an_action_is_unmatched_by_action() {
     let envelope = Envelope::new(
         "delivery-1",
         EventKind::Issues,
-        br#"{"sender":{"login":"octocat"}}"#,
+        br#"{"sender":{"id":1,"login":"octocat"}}"#,
     );
 
     let outcome = thanks_opened_issues().dispatch(envelope).await;

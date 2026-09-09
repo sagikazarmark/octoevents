@@ -24,7 +24,8 @@ reads the "Changed" and "Removed" lists first.
   refuse anything that is not `sha256=` and 64 hex digits as
   `SignatureError::Malformed`, `Display` renders the header value back and
   `From<Signature> for http::HeaderValue` puts it on a request, marked
-  sensitive, `Debug` is redacted, and equality is `subtle::ConstantTimeEq`.
+  sensitive, `Debug` is redacted, and the only comparison is
+  `subtle::ConstantTimeEq`: no `PartialEq`, so no `==`.
 - `Verifier::sign`: the `Signature` GitHub would send for a body, which goes
   on a request's header as it is, so a test drives the receiver it built
   with no HMAC code of its own.
@@ -62,7 +63,10 @@ reads the "Changed" and "Removed" lists first.
   `http::HeaderName` constants, for a transport's pre-body signature check
   and a test's `http::Request::builder()`. `CONTENT_TYPE` is
   `http::header::CONTENT_TYPE` re-exported, the others are GitHub's own.
-- `EventMeta::new` and `RepositoryRef::new` constructors.
+- `EventMeta::new`, `RepositoryRef::new` and `AccountRef::new` constructors.
+- `AccountRef`: the compact account reference `EventMeta::organization` and
+  `EventMeta::sender` hold, the numeric `id` beside the `login`, with
+  `Display` as the login.
 - `From<&str>` on `EventKind`, `Action` and `TargetType`; `Display` on
   `TargetType` and `Match`; `Hash` on `EventMeta` and `RepositoryRef`.
 - `Bytes` re-exported from the `bytes` crate.
@@ -99,6 +103,17 @@ reads the "Changed" and "Removed" lists first.
   `Envelope::new` or serde, never from a struct literal.
 - **Breaking:** `Common` is `EventMeta`, which also carries the delivery ID,
   kind, action and target.
+- **Breaking:** `EventMeta::organization` and `EventMeta::sender` are
+  `Option<AccountRef>`, the account's numeric `id` beside its `login`, where
+  they were the login alone. The ID is the identity a policy keys on (a
+  tenant table, a bot allow-list); the login can be renamed under it, and a
+  bare `String` could never grow a field, where `AccountRef` is
+  `#[non_exhaustive]` and can. `repository` already kept its `id`. On the
+  wire the two are objects with `id` and `login`, and an account object
+  without an `id` reads as absent, as a `repository` without `full_name`
+  does. `Display` on `AccountRef` is the login, so a `{sender}` in a format
+  string reads as before; `meta.sender.unwrap_or_default()` becomes
+  `meta.sender.map(|s| s.login).unwrap_or_default()`.
 - **Breaking:** `Envelope::parse` is `Envelope::decode` and returns
   `DecodeError`; `Envelope::parse_typed` (`octocrab` feature) is
   `Envelope::decode_event`.

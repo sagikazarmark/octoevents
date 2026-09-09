@@ -16,8 +16,8 @@ const BODY: &[u8] = br#"{
     "action":"opened",
     "installation":{"id":42},
     "repository":{"id":1,"name":"repo","full_name":"octo/repo","owner":{"login":"octo"}},
-    "organization":{"login":"github"},
-    "sender":{"login":"monalisa"}
+    "organization":{"id":9919,"login":"github"},
+    "sender":{"id":2,"login":"monalisa"}
 }"#;
 
 /// The verifier every signed envelope here is checked against; it also
@@ -59,7 +59,7 @@ mod receive {
 
     use super::{BODY, headers, headers_from, verifier};
     use crate::{
-        Action, BodyError, Envelope, EventKind, EventMeta, ReceiveError, RepositoryRef,
+        AccountRef, Action, BodyError, Envelope, EventKind, EventMeta, ReceiveError, RepositoryRef,
         SignatureError, TargetType,
     };
 
@@ -81,8 +81,8 @@ mod receive {
             meta.repository,
             Some(RepositoryRef::new(1, "repo", "octo/repo", "octo"))
         );
-        assert_eq!(meta.organization.as_deref(), Some("github"));
-        assert_eq!(meta.sender.as_deref(), Some("monalisa"));
+        assert_eq!(meta.organization, Some(AccountRef::new(9919, "github")));
+        assert_eq!(meta.sender, Some(AccountRef::new(2, "monalisa")));
         assert_eq!(meta.target_type, Some(TargetType::Repository));
         assert_eq!(meta.target_id, Some(7));
         assert_eq!(envelope.raw_payload, Bytes::from_static(BODY));
@@ -528,7 +528,7 @@ mod probe {
     use bytes::Bytes;
 
     use super::{BODY, headers, verifier};
-    use crate::{Action, Envelope, EventKind, EventMeta, RepositoryRef, test_support};
+    use crate::{AccountRef, Action, Envelope, EventKind, EventMeta, RepositoryRef, test_support};
 
     #[test]
     fn invalid_json_is_preserved_without_failing_the_envelope() {
@@ -566,48 +566,59 @@ mod probe {
             synthetic.meta.repository,
             Some(RepositoryRef::new(1, "repo", "octo/repo", "octo"))
         );
-        assert_eq!(synthetic.meta.organization.as_deref(), Some("github"));
-        assert_eq!(synthetic.meta.sender.as_deref(), Some("monalisa"));
+        assert_eq!(
+            synthetic.meta.organization,
+            Some(AccountRef::new(9919, "github"))
+        );
+        assert_eq!(synthetic.meta.sender, Some(AccountRef::new(2, "monalisa")));
     }
 
     #[test]
-    fn the_probe_reads_the_action_and_installation_of_every_corpus_fixture() {
+    fn the_probe_reads_the_action_installation_and_sender_of_every_corpus_fixture() {
         // Real payloads, not the synthetic `BODY`: what GitHub sends is what
-        // the probe must read. The ping carries neither field.
+        // the probe must read, the sender out of GitHub's full account object
+        // with the fields the meta does not keep ignored. The ping carries
+        // none of the three.
         let corpus = [
             (
                 test_support::pull_request_opened(),
                 Some(Action::Opened),
                 Some(7_777_777),
+                Some(AccountRef::new(10_496_163, "gagbo")),
             ),
             (
                 test_support::check_run_completed(),
                 Some(Action::Completed),
                 None,
+                Some(AccountRef::new(21_031_067, "Codertocat")),
             ),
             (
                 test_support::installation_created(),
                 Some(Action::Created),
                 Some(39_593_433),
+                Some(AccountRef::new(10_496_163, "gagbo")),
             ),
             (
                 test_support::installation_repositories_removed(),
                 Some(Action::Removed),
                 Some(7_777_777),
+                Some(AccountRef::new(10_496_163, "gagbo")),
             ),
-            (test_support::ping(), None, None),
+            (test_support::ping(), None, None, None),
         ];
 
-        for (envelope, action, installation_id) in corpus {
+        for (envelope, action, installation_id, sender) in corpus {
             let meta = &envelope.meta;
             assert_eq!(meta.action, action, "{}", meta.kind);
             assert_eq!(meta.installation_id, installation_id, "{}", meta.kind);
+            assert_eq!(meta.sender, sender, "{}", meta.kind);
         }
     }
 
     #[test]
     fn malformed_probe_fields_do_not_discard_valid_siblings() {
-        // `repository` lacks `full_name`, so it alone reads as absent.
+        // `repository` lacks `full_name` and `organization` lacks `id`, so
+        // each alone reads as absent.
         let envelope = Envelope::new(
             "delivery",
             EventKind::PullRequest,
@@ -615,24 +626,26 @@ mod probe {
                 "action":"opened",
                 "installation":{"id":42},
                 "repository":{"id":1,"name":"repo","owner":{"login":"octo"}},
-                "sender":{"login":"monalisa"}
+                "organization":{"login":"github"},
+                "sender":{"id":2,"login":"monalisa"}
             }"#,
         );
 
         assert_eq!(envelope.meta.action, Some(Action::Opened));
         assert_eq!(envelope.meta.installation_id, Some(42));
-        assert_eq!(envelope.meta.sender.as_deref(), Some("monalisa"));
+        assert_eq!(envelope.meta.sender, Some(AccountRef::new(2, "monalisa")));
         assert_eq!(envelope.meta.repository, None);
+        assert_eq!(envelope.meta.organization, None);
     }
 }
 
-/// The meta as a value: `RepositoryRef`'s constructor, and `EventMeta` as
-/// a set member by value.
+/// The meta as a value: the `RepositoryRef` and `AccountRef` constructors,
+/// and `EventMeta` as a set member by value.
 mod meta {
     use std::collections::HashSet;
 
     use super::BODY;
-    use crate::{Envelope, EventKind, EventMeta, RepositoryRef};
+    use crate::{AccountRef, Envelope, EventKind, EventMeta, RepositoryRef};
 
     #[test]
     fn a_repository_ref_is_built_from_its_constructor() {
@@ -642,6 +655,15 @@ mod meta {
         assert_eq!(repository.name, "repo");
         assert_eq!(repository.full_name, "octo/repo");
         assert_eq!(repository.owner, "octo");
+    }
+
+    #[test]
+    fn an_account_ref_is_built_from_its_constructor_and_displays_as_its_login() {
+        let account = AccountRef::new(583_231, "octocat");
+
+        assert_eq!(account.id, 583_231);
+        assert_eq!(account.login, "octocat");
+        assert_eq!(account.to_string(), "octocat");
     }
 
     #[test]
