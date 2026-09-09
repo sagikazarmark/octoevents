@@ -113,11 +113,16 @@ impl<E> WebhookReceiverBuilder<E> {
     /// Sets the maximum body size, in bytes, of a request the receiver
     /// accepts.
     ///
-    /// On `receive` it is the most the receiver reads from the transport:
-    /// the read stops at the limit, so an authenticated request never
-    /// occupies more. On `receive_bytes` the body is the caller's already,
-    /// and the limit is checked against its length. Either way a body over
-    /// it is [`ReceiveError::BodyTooLarge`](crate::ReceiveError::BodyTooLarge),
+    /// On `receive` it is the most the receiver accumulates from the
+    /// transport: a body whose size hint is already over is refused before
+    /// the first frame, and the read stops at the frame that would carry the
+    /// total past the limit, so the receiver holds at most the limit plus
+    /// one frame. How large a frame the transport yields is the transport's
+    /// own bound (hyper's and axum's are small; a body that hands over its
+    /// whole payload as one frame hands it over whatever the limit). On
+    /// `receive_bytes` the body is the caller's already, and the limit is
+    /// checked against its length. Either way a body over it is
+    /// [`ReceiveError::BodyTooLarge`](crate::ReceiveError::BodyTooLarge),
     /// 413. GitHub never sends payloads above [`DEFAULT_BODY_LIMIT`]. Lower
     /// values reduce memory exposure when an application's real events are
     /// smaller; raising the limit does not enable larger GitHub deliveries.
@@ -773,7 +778,10 @@ fn empty_response(status: StatusCode) -> ReceiveResponse {
 /// it mid-stream at the frame that crossed, both as
 /// [`ReceiveError::BodyTooLarge`]; a frame the transport could not produce is
 /// [`ReceiveError::BodyRead`], with the transport's error as text. Trailers
-/// are passed over and do not count toward the limit.
+/// are passed over and do not count toward the limit. The limit bounds the
+/// accumulator, not a frame: a frame is the transport's allocation and has
+/// arrived before its length can be read, so the crossing frame is held for
+/// the length of the check and dropped with the error.
 #[cfg(feature = "http-body")]
 async fn read_body<B>(body: B, limit: usize) -> Result<Bytes, ReceiveError>
 where

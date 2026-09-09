@@ -20,8 +20,10 @@ const SHA256_HEX_CHARS: usize = SHA256_BYTES * 2;
 
 /// Bytes that cannot be a [`WebhookSecret`].
 ///
-/// Reported by [`str::parse`] into a [`WebhookSecret`]; the panicking
-/// [`WebhookSecret::new`] panics with the same message instead. This is a
+/// Reported by the fallible constructors of a [`WebhookSecret`],
+/// [`str::parse`] for a string and `TryFrom<Vec<u8>>` or `TryFrom<&[u8]>`
+/// for bytes; the panicking [`WebhookSecret::new`] panics with the same
+/// message instead. This is a
 /// configuration failure, found before any delivery arrives, and so is kept
 /// apart from [`SignatureError`], which reports a body that did not
 /// authenticate.
