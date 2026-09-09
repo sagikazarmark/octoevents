@@ -25,7 +25,8 @@ reads the "Changed" and "Removed" lists first.
   `SignatureError::Malformed`, `Display` renders the header value back and
   `From<Signature> for http::HeaderValue` puts it on a request, marked
   sensitive, `Debug` is redacted, and the only comparison is
-  `subtle::ConstantTimeEq`: no `PartialEq`, so no `==`.
+  `subtle::ConstantTimeEq`: no `PartialEq`, so `Verifier::verify` is the one
+  verification path.
 - `Verifier::sign`: the `Signature` GitHub would send for a body, which goes
   on a request's header as it is, so a test drives the receiver it built
   with no HMAC code of its own.

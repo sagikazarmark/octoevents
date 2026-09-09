@@ -193,8 +193,13 @@ pub enum SignatureError {
 /// puts on its synthetic request; both are the inverse of parsing. `Debug`
 /// is redacted: the value is secret-derived, and the crate records nothing
 /// computed from the secret. The only comparison is [`subtle::ConstantTimeEq`],
-/// the one the verifier folds over its secrets; there is no `PartialEq`, so
-/// two signatures cannot be compared with `==` by accident.
+/// the one the verifier folds over its secrets; there is no `PartialEq`. Not
+/// for timing: a constant-time `==` is safe, and `digest::CtOutput`, the type
+/// the MAC is finalized as, has one. It is so that the one way to ask whether
+/// a body carries a valid signature is [`Verifier::verify`], over every
+/// configured secret with no early exit; `signature == verifier.sign(body)`
+/// would be a second verification path, checking one secret and skipping
+/// the verify span.
 ///
 /// ```
 /// use http::HeaderValue;

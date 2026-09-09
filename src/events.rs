@@ -92,7 +92,7 @@ pub(crate) use string_enum;
 
 // Known GitHub webhook event names. Keep existing variants for API compatibility.
 string_enum! {
-    /// The event name from `X-GitHub-Event`.
+    /// The event kind, parsed from the `X-GitHub-Event` event name.
     ///
     /// The kind is always taken from that header, never inferred from the
     /// payload's shape. Kinds share shapes (an `issues` and an `issue_comment`

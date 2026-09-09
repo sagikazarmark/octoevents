@@ -15,9 +15,9 @@
 //! // The error every handler returns. Any error converts into it with `?`.
 //! type BoxError = Box<dyn std::error::Error + Send + Sync>;
 //!
-//! /// Runs for `issues.opened`. The envelope is the verified delivery: its
-//! /// meta (delivery ID, kind, action, repository, sender, ...) and the raw
-//! /// payload bytes.
+//! /// Runs for `issues.opened`. The envelope is the verified unit of receipt:
+//! /// its meta (delivery ID, kind, action, repository, sender, ...) and the
+//! /// raw payload bytes.
 //! async fn thank(envelope: Envelope) -> Result<(), BoxError> {
 //!     let sender = envelope.meta.sender.map(|s| s.login).unwrap_or_default();
 //!     println!("Thank you for your contribution, @{sender}! :)");

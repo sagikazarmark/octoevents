@@ -146,7 +146,7 @@ impl EventMeta {
     }
 }
 
-/// A compact repository reference extracted without parsing a full payload model.
+/// A compact repository reference read without decoding a full payload model.
 ///
 /// `#[non_exhaustive]` for the same reason as [`EventMeta`]. Build one in tests
 /// with [`RepositoryRef::new`], which takes every field the crate probes.
@@ -191,8 +191,8 @@ impl RepositoryRef {
 }
 
 /// A compact reference to a GitHub account, a user, an organization or an
-/// app, extracted without parsing a full payload model: the numeric ID and
-/// the login.
+/// app, read without decoding a full payload model: the numeric ID and the
+/// login.
 ///
 /// What [`EventMeta::organization`] and [`EventMeta::sender`] hold. The ID
 /// is the stable identity, the login the name that can be changed under it,

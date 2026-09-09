@@ -2,8 +2,9 @@
 
 Receiving-side GitHub webhook handling: turning an untrusted HTTP request into
 a verified envelope and routing it to consumer handlers. The sending side
-(queueing, retries, redelivery) is a separate project (`octodelivery`) and its
-vocabulary is deliberately kept out of this one.
+(queueing, retries) is a separate project (`octodelivery`) and its vocabulary
+is deliberately kept out of this one; "redelivery" is the one sending-side
+word this side needs, since a receiver observes one and must answer it.
 
 ## Language
 
@@ -23,7 +24,7 @@ action, installation ID, repository, organization, sender, target. An input
 in its own right, for a handler routed by kind and action that reads no
 payload; the `meta` half of `Event<P>`; and what the error observer receives
 alongside the handler's error.
-_Avoid_: Common (the former nested group; its name carried no meaning), header (it also holds probed payload fields), delivery (reserved for `octodelivery`), receipt (reads as acknowledgement, and sits too close to Receiver), context (implies ambient services; this is plain data), routing (delivery ID and sender are not routing)
+_Avoid_: Common (the former nested group; its name carried no meaning), header (it also holds probed payload fields), delivery (reserved for `octodelivery`), receipt (reads as acknowledgement, and sits too close to Receiver), context (implies ambient services; this is plain data), `Routing` or `RoutingMeta` as the type (delivery ID and sender are not routing; "routing metadata" in prose is fine, since the meta is what routing reads)
 
 **Receiver**:
 The component that authenticates, bounds, and dispatches one HTTP request,
@@ -108,7 +109,7 @@ receiver's handler.
 _Avoid_: Handler error (the application error inside it), failure (prose for the event, not the type)
 
 **Error observer**:
-The callback registered with `on_error` on the receiver builder, called with
+The function registered with `on_error` on the receiver builder, called with
 the event meta and a reference to the handler's error after a handler fails
 and before the 500 is answered. Synchronous, with no bound on the error type,
 and never called for a receive failure or a short-circuited ping. Not how the
@@ -117,7 +118,8 @@ _Avoid_: Error handler (it handles nothing; the response is unchanged), hook, mi
 
 **Failed-delivery event**:
 The one `tracing` event at ERROR the receiver emits when a handler fails,
-`handler failed`: the event meta's identifying fields and the status, and,
+`handler failed`: the event meta's identifying fields (delivery ID, event
+name, and action and installation ID when the delivery has them), and,
 when the receiver builder was asked with `trace_errors` (an `Error`) or
 `trace_boxed_errors` (a `BoxedError`: an error behind a pointer, or a dispatch
 error over one), the error's text as `error` and its source as `source`, the
@@ -183,7 +185,10 @@ consumer parsing a string in a test or their own early-out, and that parse is
 the one origin of `Malformed`; `Display` renders the header value back and
 `From<Signature> for HeaderValue` puts it on a request, `Debug` is redacted,
 and the only comparison is `subtle::ConstantTimeEq`: there is no `PartialEq`,
-so two signatures cannot be compared with `==` by accident. What
+so the one way to ask whether a body carries a valid signature is
+`Verifier::verify`, over every configured secret; a constant-time `==` would
+be safe (`digest::CtOutput` has one) but would open a second verification
+path beside the verifier's. What
 `Verifier::sign` produces and
 `Verifier::verify` takes, so the verifier is handed a settled format and can
 only mismatch. In prose, "signature" alone names the value once the header is
@@ -198,7 +203,7 @@ cannot be expressed. It also signs (`Verifier::sign`): the `X-Hub-Signature-256`
 value GitHub would send for a body under its first secret, so a test of the
 receiving side can put a synthetic request through the receiver it built.
 That is a test aid, not a sending-side feature: the crate sends nothing, and
-the sending side's vocabulary (queueing, retries, redelivery) stays out.
+the sending side's vocabulary (queueing, retries) stays out.
 Lives with the secret and the signature error in the `signature` module, the
 one place the secret's bytes are read.
 _Avoid_: Validator, authenticator, signer (a role the verifier plays for a test, not a component), signature verifier (nothing else at the crate root is verified, so the qualifier adds length and no meaning)
@@ -213,7 +218,7 @@ mode, not a configuration, and both constructors refuse it, `new` by
 panicking and `str::parse` with a `WebhookSecretError`, so the verifier has
 nothing left to check. In prose, "secret" alone is fine once the webhook is
 in context.
-_Avoid_: Token, key, `Secret` as the type (the former name; generic at the root and a live collision), signing secret (Stripe's and Svix's term; the crate's is GitHub's)
+_Avoid_: Token, `Key` or `SigningKey` as the type (it is a secret to GitHub and to the crate; "HMAC key" in prose, for what the bytes are to the MAC, is fine), `Secret` as the type (the former name; generic at the root and a live collision), signing secret (Stripe's and Svix's term; the crate's is GitHub's)
 
 **SignatureError**:
 Why a body did not authenticate: the `X-Hub-Signature-256` header was

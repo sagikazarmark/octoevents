@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::{EventKind, EventMeta, SignatureError, TargetType, Verifier, header};
 
-/// A GitHub webhook and its routing metadata.
+/// The verified unit of receipt: the exact payload bytes and their metadata.
 ///
 /// An envelope is the composition of its routing metadata and the exact
 /// payload bytes: `meta` is everything a handler needs to route, deduplicate,
@@ -145,7 +145,7 @@ pub struct Envelope {
 }
 
 impl Envelope {
-    /// Authenticates the body before constructing an envelope and extracting fields.
+    /// Verifies the signature over the body, then builds the envelope.
     ///
     /// This is the sans-I/O entry point: the receiver (`http-body` feature)
     /// is built on it, and a transport with no `http_body::Body` calls it
@@ -252,7 +252,7 @@ impl Envelope {
     ///
     /// # Errors
     ///
-    /// Returns an authentication error first, [`ReceiveError::Signature`]:
+    /// Returns a signature error first, [`ReceiveError::Signature`]:
     /// [`SignatureError::Missing`] when the header is absent,
     /// [`SignatureError::Malformed`] when it does not parse as a
     /// [`Signature`](crate::Signature), [`SignatureError::Mismatch`] when no configured secret
