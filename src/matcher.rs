@@ -71,10 +71,7 @@ impl EventMatcher {
 ///
 #[cfg_attr(feature = "derive", doc = "```")]
 #[cfg_attr(not(feature = "derive"), doc = "```ignore")]
-/// use octoevents::{Action, AnyAction, Dispatcher, EventKind, EventMeta, Payload};
-/// # use octoevents::DecodeError;
-/// # struct AppError;
-/// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
+/// use octoevents::{Action, AnyAction, BoxError, Dispatcher, EventKind, EventMeta, Payload};
 ///
 /// #[derive(serde::Deserialize, Payload)]
 /// #[payload(EventKind::Issues)]
@@ -82,11 +79,11 @@ impl EventMatcher {
 /// #[derive(serde::Deserialize)]
 /// struct Issue { number: u64 }
 ///
-/// async fn label(issue: IssueOpened) -> Result<(), AppError> { Ok(()) }
-/// async fn notify(issue: IssueOpened) -> Result<(), AppError> { Ok(()) }
-/// async fn revoke(meta: EventMeta) -> Result<(), AppError> { Ok(()) }
+/// async fn label(issue: IssueOpened) -> Result<(), BoxError> { Ok(()) }
+/// async fn notify(issue: IssueOpened) -> Result<(), BoxError> { Ok(()) }
+/// async fn revoke(meta: EventMeta) -> Result<(), BoxError> { Ok(()) }
 ///
-/// let dispatcher = Dispatcher::<AppError>::builder()
+/// let dispatcher = Dispatcher::builder()
 ///     .on(Action::Opened, label)                              // `issues`, from `IssueOpened`
 ///     .on(AnyAction, notify)                                  // every `issues` action
 ///     .on((EventKind::Installation, Action::Deleted), revoke) // `EventMeta` declares no kind
@@ -99,14 +96,11 @@ impl EventMatcher {
 /// register such a handler with a matcher that says the kind:
 ///
 /// ```compile_fail,E0277
-/// use octoevents::{Action, Dispatcher, EventMeta};
-/// # use octoevents::DecodeError;
-/// # struct AppError;
-/// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
+/// use octoevents::{Action, BoxError, Dispatcher, EventMeta};
 ///
-/// async fn revoke(meta: EventMeta) -> Result<(), AppError> { Ok(()) }
+/// async fn revoke(meta: EventMeta) -> Result<(), BoxError> { Ok(()) }
 ///
-/// let dispatcher = Dispatcher::<AppError>::builder()
+/// let dispatcher = Dispatcher::builder()
 ///     .on(Action::Deleted, revoke)
 ///     .build();
 /// ```
@@ -116,14 +110,11 @@ impl EventMatcher {
 /// every action of one kind names the kind, `on(EventKind::Push, forward)`:
 ///
 /// ```compile_fail,E0277
-/// use octoevents::{AnyAction, Dispatcher, Envelope};
-/// # use octoevents::DecodeError;
-/// # struct AppError;
-/// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
+/// use octoevents::{AnyAction, BoxError, Dispatcher, Envelope};
 ///
-/// async fn forward(envelope: Envelope) -> Result<(), AppError> { Ok(()) }
+/// async fn forward(envelope: Envelope) -> Result<(), BoxError> { Ok(()) }
 ///
-/// let dispatcher = Dispatcher::<AppError>::builder()
+/// let dispatcher = Dispatcher::builder()
 ///     .on(AnyAction, forward)
 ///     .build();
 /// ```

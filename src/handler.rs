@@ -62,13 +62,13 @@ use crate::{MaybeSend, MaybeSync};
 /// A handler with dependencies is a struct implementing the trait, the
 /// dependencies its fields, with a plain `async fn handle`; the future
 /// borrows `&self`, so nothing is cloned per delivery. The struct keeps its
-/// own error type, and the dispatcher it registers on converts it into the
-/// application error through `From`; without `AppError: From<std::io::Error>`
-/// below, the registration is what fails to compile, not the impl:
+/// own error type, and the dispatcher it registers on boxes it as a
+/// [`BoxError`](crate::BoxError) at the registration, which asks only that
+/// the error convert into one, as every `Error` does:
 ///
 #[cfg_attr(feature = "derive", doc = "```")]
 #[cfg_attr(not(feature = "derive"), doc = "```ignore")]
-/// use octoevents::{AnyAction, DecodeError, Dispatcher, Event, EventKind, Handler};
+/// use octoevents::{AnyAction, Dispatcher, Event, EventKind, Handler};
 ///
 /// #[derive(serde::Deserialize, octoevents::Payload)]
 /// #[payload(EventKind::PullRequest)]
@@ -87,15 +87,7 @@ use crate::{MaybeSend, MaybeSync};
 ///     }
 /// }
 ///
-/// #[derive(Debug, thiserror::Error)]
-/// enum AppError {
-///     #[error(transparent)]
-///     Decode(#[from] DecodeError),
-///     #[error(transparent)]
-///     Io(#[from] std::io::Error),
-/// }
-///
-/// let dispatcher = Dispatcher::<AppError>::builder()
+/// let dispatcher = Dispatcher::builder()
 ///     .on(AnyAction, Labeler { label: "triage".into() })
 ///     .build();
 /// # let _ = dispatcher;
@@ -103,11 +95,11 @@ use crate::{MaybeSend, MaybeSync};
 ///
 /// Closures implement the trait too, with two annotations the `async fn`
 /// form does not need: name the parameter's type (`|envelope: Envelope|`)
-/// and state the error type (`Ok::<_, E>(())`). Registration is bound on the
-/// handler trait rather than on `Fn`, so rustc reads neither off the call: a
-/// bare `Ok(())` is E0282 on the receiver path, where nothing constrains it,
-/// and E0283 on the dispatcher path, where every error type the application
-/// error has a `From` for would fit.
+/// and state the error type (`Ok::<_, BoxError>(())`). Registration is bound
+/// on the handler trait rather than on `Fn`, so rustc reads neither off the
+/// call: a bare `Ok(())` is E0282 on the receiver path and E0283 on the
+/// dispatcher path, where every error type that converts into the box would
+/// fit.
 ///
 /// ```
 /// use octoevents::{Envelope, Handler};
@@ -250,7 +242,7 @@ use crate::{MaybeSend, MaybeSync};
 ///   |
 ///   = help: within `{closure}`, the trait `Sync` is not implemented for `Cell<u32>`
 ///   = note: required for `{closure}` to implement `MaybeSync`
-/// note: required by a bound in `DispatcherBuilder::<E>::always`
+/// note: required by a bound in `DispatcherBuilder::always`
 /// ```
 ///
 /// A struct holding such state never reaches registration: its `impl` is

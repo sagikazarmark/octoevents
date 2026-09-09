@@ -18,18 +18,20 @@
 // which is what a real `async fn handle` would do.
 #![expect(clippy::unused_async_trait_impl)]
 
+use std::convert::Infallible;
+
 use octoevents::{
-    AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind, Handler, Verifier,
-    WebhookReceiverBuilder, WebhookSecret, WebhookSecretError,
+    AnyAction, Dispatcher, Envelope, Event, EventKind, Handler, Verifier, WebhookReceiverBuilder,
+    WebhookSecret, WebhookSecretError,
 };
 use worker::{Context, Env, Fetch, HttpRequest, Method, Request, RequestInit, console_log, event};
 
-/// The application error every handler returns: the dispatcher's payload
-/// decodes, the forwarder's serialization, and its fetch.
+/// The forwarder's error: its serialization, and its fetch. A `worker::Error`
+/// holds a `JsValue` and is not `Send`, which the crate's `BoxError` admits on
+/// `wasm32`, where it is `Box<dyn Error>`; the dispatcher boxes this error
+/// where the forwarder is registered.
 #[derive(Debug, thiserror::Error)]
-enum AppError {
-    #[error(transparent)]
-    Decode(#[from] DecodeError),
+enum ForwardError {
     #[error(transparent)]
     Json(#[from] serde_json::Error),
     #[error(transparent)]
@@ -45,7 +47,7 @@ struct Forward {
 }
 
 impl Handler<Envelope> for Forward {
-    type Error = AppError;
+    type Error = ForwardError;
 
     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
         let installation_id = envelope
@@ -93,11 +95,13 @@ struct Account {
 }
 
 /// Logs installation lifecycle changes. Receives the meta and the decoded
-/// view and no payload bytes; other kinds never reach it.
+/// view and no payload bytes; other kinds never reach it. Logging cannot
+/// fail, and the error type says so; a decode failure is reported by the
+/// dispatcher at this handler's registration, not through its error type.
 struct InstallationLog;
 
 impl Handler<Event<InstallationView>> for InstallationLog {
-    type Error = AppError;
+    type Error = Infallible;
 
     async fn handle(
         &self,
@@ -131,7 +135,7 @@ async fn fetch(
         .map_err(|error: WebhookSecretError| worker::Error::RustError(error.to_string()))?;
     let verifier = Verifier::new(secret);
 
-    let dispatcher = Dispatcher::<AppError>::builder()
+    let dispatcher = Dispatcher::builder()
         .always(Forward { object_url })
         .on(AnyAction, InstallationLog)
         .build();

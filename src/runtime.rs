@@ -1,4 +1,4 @@
-//! Platform-conditional `Send`/`Sync` bounds.
+//! Platform-conditional `Send`/`Sync` bounds, and the erased error.
 //!
 //! On native targets these traits retain ordinary thread-safety guarantees.
 //! On `wasm32`, where Cloudflare Workers run on one JavaScript event loop,
@@ -10,7 +10,33 @@
 //! admits only one non-auto trait. Test modules that need tokio are gated on
 //! native separately.
 
-use std::{future::Future, pin::Pin};
+use std::{error::Error, future::Future, pin::Pin};
+
+/// The erased error: what every handler's error converts into at
+/// registration, and what a [`DispatchError`](crate::DispatchError) holds as
+/// its source.
+///
+/// `Box<dyn Error + Send + Sync>` on native targets, the shape tower, hyper
+/// and axum name `BoxError`; `Box<dyn Error>` on `wasm32`, where a Worker's
+/// error holds a `JsValue` and is neither `Send` nor `Sync`. A handler
+/// returning `Result<(), BoxError>` needs no error enum: `?` converts any
+/// `Error` into it through std's blanket `From`, as it does a `String`, a
+/// `&str` and an `anyhow::Error`. A handler with an error type of its own
+/// keeps it, and the dispatcher and the receiver ask `Into<BoxError>` of it
+/// where it is registered, which every `Error + Send + Sync + 'static` type
+/// is (every `Error + 'static` on `wasm32`).
+///
+/// One alias rather than the spelled-out box so a consumer's `Result<(),
+/// octoevents::BoxError>` compiles for a Worker and for a native server
+/// alike, as [`MaybeSend`] does for a handler's future.
+#[cfg(not(target_arch = "wasm32"))]
+pub type BoxError = Box<dyn Error + Send + Sync>;
+
+/// The erased error: what every handler's error converts into at
+/// registration, and what a [`DispatchError`](crate::DispatchError) holds as
+/// its source. `Box<dyn Error>` on `wasm32`.
+#[cfg(target_arch = "wasm32")]
+pub type BoxError = Box<dyn Error>;
 
 /// A boxed future that is `Send` on native targets and unconstrained on
 /// `wasm32`.

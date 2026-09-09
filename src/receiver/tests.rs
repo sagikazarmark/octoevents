@@ -10,15 +10,18 @@
 //! is built with, so a test that wants a refusal says which header it
 //! tampers with.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
 #[cfg(feature = "http-body")]
 use std::{
     collections::VecDeque,
     pin::Pin,
     task::{Context, Poll},
+};
+use std::{
+    convert::Infallible,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 #[cfg(feature = "http-body")]
@@ -41,7 +44,7 @@ struct Recorder {
 }
 
 impl Handler<Envelope> for Recorder {
-    type Error = std::convert::Infallible;
+    type Error = Infallible;
 
     // A real handler awaits its dependencies; this one only counts.
     #[expect(clippy::unused_async_trait_impl)]
@@ -133,7 +136,7 @@ impl Frames {
 #[cfg(feature = "http-body")]
 impl http_body::Body for Frames {
     type Data = Bytes;
-    type Error = std::convert::Infallible;
+    type Error = Infallible;
 
     fn poll_frame(
         mut self: Pin<&mut Self>,
@@ -170,7 +173,7 @@ impl Pinned {
 #[cfg(feature = "http-body")]
 impl http_body::Body for Pinned {
     type Data = Bytes;
-    type Error = std::convert::Infallible;
+    type Error = Infallible;
 
     fn poll_frame(
         self: Pin<&mut Self>,
@@ -261,9 +264,12 @@ fn verifier() -> Verifier {
 /// against authentication, and the bare status a failure answers with.
 #[cfg(feature = "http-body")]
 mod receive {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
+    use std::{
+        convert::Infallible,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
     };
 
     use bytes::Bytes;
@@ -277,13 +283,13 @@ mod receive {
     };
     use crate::{
         BodyError, Dispatcher, Envelope, EventKind, ReceiveError, WebhookReceiverBuilder,
-        receiver::read_body, test_support::AppError,
+        receiver::read_body,
     };
 
     #[tokio::test]
     async fn returns_no_content_after_successful_dispatch() {
-        let receiver =
-            WebhookReceiverBuilder::new(verifier()).build(|_: Envelope| async { Ok::<_, ()>(()) });
+        let receiver = WebhookReceiverBuilder::new(verifier())
+            .build(|_: Envelope| async { Ok::<_, Infallible>(()) });
 
         let response = receiver.receive(request(b"{}", "push")).await;
 
@@ -361,14 +367,14 @@ mod receive {
 
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let handler_seen = Arc::clone(&seen);
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .always(move |envelope: Envelope| {
                 let seen = Arc::clone(&handler_seen);
                 async move {
                     seen.lock()
                         .unwrap()
                         .push((envelope.meta.kind, envelope.raw_payload));
-                    Ok::<_, std::convert::Infallible>(())
+                    Ok::<_, Infallible>(())
                 }
             })
             .build();
@@ -389,7 +395,7 @@ mod receive {
         let handler_calls = Arc::clone(&calls);
         let receiver = WebhookReceiverBuilder::new(verifier()).build(move |_: Envelope| {
             handler_calls.fetch_add(1, Ordering::Relaxed);
-            async { Ok::<_, ()>(()) }
+            async { Ok::<_, Infallible>(()) }
         });
 
         let response = receiver.receive(request(b"{}", "ping")).await;
@@ -401,7 +407,7 @@ mod receive {
             .handle_ping(true)
             .build(move |_: Envelope| {
                 handler_calls.fetch_add(1, Ordering::Relaxed);
-                async { Ok::<_, ()>(()) }
+                async { Ok::<_, Infallible>(()) }
             });
         receiver.receive(request(b"{}", "ping")).await;
         assert_eq!(calls.load(Ordering::Relaxed), 1);
@@ -415,8 +421,8 @@ mod receive {
         // failure through HTTP shows the receiver answers with the mapped
         // status; the refusal before the body is read has its own test
         // below.
-        let receiver =
-            WebhookReceiverBuilder::new(verifier()).build(|_: Envelope| async { Ok::<_, ()>(()) });
+        let receiver = WebhookReceiverBuilder::new(verifier())
+            .build(|_: Envelope| async { Ok::<_, Infallible>(()) });
 
         let mismatch = with_header(b"{}", "push", "x-hub-signature-256", WRONG_SIGNATURE);
         let response = receiver.receive(mismatch).await;
@@ -430,7 +436,8 @@ mod receive {
         // A body that fails on first poll: reaching the read loop shows up as
         // 400, so a 401 proves the signature headers were decisive alone.
         let receiver = || {
-            WebhookReceiverBuilder::new(verifier()).build(|_: Envelope| async { Ok::<_, ()>(()) })
+            WebhookReceiverBuilder::new(verifier())
+                .build(|_: Envelope| async { Ok::<_, Infallible>(()) })
         };
         let request = |signature: Option<&str>| {
             let builder = Request::builder()
@@ -471,8 +478,8 @@ mod receive {
         // decisive alone. The header is parsed before the body is read, so
         // a value that is not `sha256=` and 64 hex digits never costs the
         // receiver `body_limit` bytes of memory.
-        let receiver =
-            WebhookReceiverBuilder::new(verifier()).build(|_: Envelope| async { Ok::<_, ()>(()) });
+        let receiver = WebhookReceiverBuilder::new(verifier())
+            .build(|_: Envelope| async { Ok::<_, Infallible>(()) });
         let body = Frames::data(&[b"{}"]);
         let polls = body.polls();
 
@@ -507,7 +514,7 @@ mod receive {
         // limit was checked first; 401 says the signature headers were.
         let receiver = WebhookReceiverBuilder::new(verifier())
             .body_limit(64)
-            .build(|_: Envelope| async { Ok::<_, ()>(()) });
+            .build(|_: Envelope| async { Ok::<_, Infallible>(()) });
 
         let unsigned = without_header(&[b' '; 65], "push", "x-hub-signature-256");
         let response = receiver.receive(unsigned).await;
@@ -526,7 +533,7 @@ mod receive {
         let receiver = || {
             WebhookReceiverBuilder::new(verifier())
                 .body_limit(64)
-                .build(|_: Envelope| async { Ok::<_, ()>(()) })
+                .build(|_: Envelope| async { Ok::<_, Infallible>(()) })
         };
 
         let hinted = Full::new(Bytes::from_static(OVERSIZED));
@@ -562,7 +569,7 @@ mod receive {
         let receiver = |limit: usize| {
             WebhookReceiverBuilder::new(verifier())
                 .body_limit(limit)
-                .build(|_: Envelope| async { Ok::<_, ()>(()) })
+                .build(|_: Envelope| async { Ok::<_, Infallible>(()) })
         };
 
         let body = Frames::data(CHUNKS);
@@ -598,8 +605,8 @@ mod receive {
         // A transport's body type is whatever it is; the receiver pins it
         // where it polls it and asks nothing of the caller. The test compiles
         // only while `receive` places no `Unpin` bound on `B`.
-        let receiver =
-            WebhookReceiverBuilder::new(verifier()).build(|_: Envelope| async { Ok::<_, ()>(()) });
+        let receiver = WebhookReceiverBuilder::new(verifier())
+            .build(|_: Envelope| async { Ok::<_, Infallible>(()) });
 
         let response = receiver
             .receive(request_over(
@@ -622,7 +629,7 @@ mod receive {
         let body = Frames::new([Frame::trailers(trailers)]);
         let receiver = WebhookReceiverBuilder::new(verifier())
             .body_limit(0)
-            .build(|_: Envelope| async { Ok::<_, ()>(()) });
+            .build(|_: Envelope| async { Ok::<_, Infallible>(()) });
 
         let response = receiver
             .receive(request_over(
@@ -664,7 +671,7 @@ mod receive_bytes {
     use super::{Recorder, WRONG_SIGNATURE, verifier};
     use crate::{
         DispatchError, Dispatcher, Envelope, EventMeta, WebhookReceiverBuilder, header,
-        test_support::AppError,
+        test_support::{AppError, source_as},
     };
 
     /// The headers a well-formed delivery of `event` carries, signing `body`
@@ -827,15 +834,15 @@ mod receive_bytes {
         // the request path's: a transport on this path loses neither.
         let seen: Arc<std::sync::Mutex<Vec<(String, AppError)>>> = Arc::default();
         let observer_seen = Arc::clone(&seen);
-        let dispatcher = Dispatcher::<AppError>::builder()
-            .always(|_: Envelope| async { Err::<(), _>("audit") })
+        let dispatcher = Dispatcher::builder()
+            .always(|_: Envelope| async { Err::<(), _>(AppError::Handler("audit")) })
             .build();
         let receiver = WebhookReceiverBuilder::new(verifier())
-            .on_error(move |meta: &EventMeta, error: &DispatchError<AppError>| {
-                observer_seen
-                    .lock()
-                    .unwrap()
-                    .push((meta.delivery_id.clone(), error.clone().into_source()));
+            .on_error(move |meta: &EventMeta, error: &DispatchError| {
+                observer_seen.lock().unwrap().push((
+                    meta.delivery_id.clone(),
+                    source_as::<AppError>(error).clone(),
+                ));
             })
             .build(dispatcher);
         let body = br#"{"action":"opened"}"#;
@@ -852,13 +859,13 @@ mod receive_bytes {
     }
 
     #[test]
-    fn the_future_is_send_for_a_dispatcher_over_a_boxed_error() {
+    fn the_future_is_send_for_a_dispatcher() {
         // The same proof `receive` makes: the future is `Send` whenever the
         // handler is, promised on the return type rather than left to
         // auto-trait leakage, which fails for this dispatcher.
         fn assert_send<T: Send>(_: T) {}
 
-        let dispatcher = Dispatcher::<Box<dyn std::error::Error + Send + Sync>>::builder().build();
+        let dispatcher = Dispatcher::builder().build();
         let receiver = WebhookReceiverBuilder::new(verifier()).build(dispatcher);
         let headers = HeaderMap::new();
 
@@ -879,29 +886,30 @@ mod observer {
     use super::{WRONG_SIGNATURE, request, verifier, with_header, without_header};
     use crate::{
         Action, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, WebhookReceiverBuilder,
-        test_support::AppError,
+        test_support::{AppError, source_as},
     };
 
     #[tokio::test]
     async fn the_error_observer_receives_the_event_meta_and_a_dispatchers_error_before_the_500() {
         // With a dispatcher as the receiver's handler, the observer's error is
-        // the dispatcher's, `DispatchError<E>`; what that error says about the
+        // the dispatcher's, `DispatchError`; what that error says about the
         // tier and the registration site is the dispatcher's own test to pin.
         // This one pins the observer's side: it runs once, with the meta the
-        // receiver built, probed fields included, and the error whose source
-        // is the handler's own failure; and the response stays GitHub's
-        // delivery record, a bare 500 that says nothing of either.
+        // receiver built, probed fields included, and the error whose boxed
+        // source downcasts to the handler's own failure; and the response
+        // stays GitHub's delivery record, a bare 500 that says nothing of
+        // either.
         let seen: Arc<std::sync::Mutex<Vec<(EventMeta, AppError)>>> = Arc::default();
-        let dispatcher = Dispatcher::<AppError>::builder()
-            .always(|_: Envelope| async { Err::<(), _>("audit") })
+        let dispatcher = Dispatcher::builder()
+            .always(|_: Envelope| async { Err::<(), _>(AppError::Handler("audit")) })
             .build();
         let observer_seen = Arc::clone(&seen);
         let receiver = WebhookReceiverBuilder::new(verifier())
-            .on_error(move |meta: &EventMeta, error: &DispatchError<AppError>| {
+            .on_error(move |meta: &EventMeta, error: &DispatchError| {
                 observer_seen
                     .lock()
                     .unwrap()
-                    .push((meta.clone(), error.clone().into_source()));
+                    .push((meta.clone(), source_as::<AppError>(error).clone()));
             })
             .build(dispatcher);
 
@@ -930,8 +938,8 @@ mod observer {
     async fn the_error_observer_accepts_a_boxed_error_and_walks_its_source_chain() {
         use std::error::Error;
 
-        // `Box<dyn Error + Send + Sync>` is not itself an `Error`, which is
-        // what broke the wrapper recipe this observer replaces.
+        // The observer sees the handler's error as returned, the box itself
+        // here, and walks its chain through it.
         type Boxed = Box<dyn Error + Send + Sync>;
 
         #[derive(Debug, thiserror::Error)]
@@ -966,23 +974,32 @@ mod observer {
     }
 
     #[tokio::test]
-    async fn the_error_observer_places_no_bound_on_the_error_type() {
-        // Neither `Error`, `Display` nor `Debug`: the observer still receives
-        // it, and a consumer decides what to do with an opaque error.
-        struct Opaque;
+    async fn the_error_observer_receives_the_handlers_own_error_type() {
+        // The observer's parameter is the handler's error as returned, before
+        // the receiver boxes it for the event: a plain enum here, matched on
+        // without a downcast. Anything `Into<BoxError>` qualifies, a
+        // `&'static str` included.
+        #[derive(Debug, PartialEq, thiserror::Error)]
+        enum Reason {
+            #[error("private error")]
+            Private,
+        }
 
-        let calls = Arc::new(AtomicUsize::new(0));
-        let observer_calls = Arc::clone(&calls);
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observer_seen = Arc::clone(&seen);
         let receiver = WebhookReceiverBuilder::new(verifier())
-            .on_error(move |_: &EventMeta, _: &Opaque| {
-                observer_calls.fetch_add(1, Ordering::Relaxed);
+            .on_error(move |_: &EventMeta, error: &Reason| {
+                observer_seen
+                    .lock()
+                    .unwrap()
+                    .push(matches!(error, Reason::Private));
             })
-            .build(|_: Envelope| async { Err::<(), _>(Opaque) });
+            .build(|_: Envelope| async { Err::<(), _>(Reason::Private) });
 
         let response = receiver.receive(request(b"{}", "push")).await;
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(seen.lock().unwrap().as_slice(), [true]);
     }
 
     #[tokio::test]
@@ -1055,9 +1072,12 @@ mod observer {
 /// handler forms.
 #[cfg(feature = "tower")]
 mod tower {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
+    use std::{
+        convert::Infallible,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
     };
 
     use ::tower::ServiceExt as _;
@@ -1068,8 +1088,8 @@ mod tower {
 
     #[tokio::test]
     async fn the_tower_service_impl_applies_the_same_policy() {
-        let receiver =
-            WebhookReceiverBuilder::new(verifier()).build(|_: Envelope| async { Ok::<_, ()>(()) });
+        let receiver = WebhookReceiverBuilder::new(verifier())
+            .build(|_: Envelope| async { Ok::<_, Infallible>(()) });
 
         let response = receiver.oneshot(request(b"{}", "push")).await.unwrap();
 
@@ -1094,8 +1114,8 @@ mod tower {
         // The `Service` impl states its own bound on `B`, apart from
         // `receive`'s, so it is held to the same test: this compiles only
         // while that bound asks no `Unpin` either.
-        let receiver =
-            WebhookReceiverBuilder::new(verifier()).build(|_: Envelope| async { Ok::<_, ()>(()) });
+        let receiver = WebhookReceiverBuilder::new(verifier())
+            .build(|_: Envelope| async { Ok::<_, Infallible>(()) });
 
         let response = receiver
             .oneshot(request_over(
@@ -1116,8 +1136,6 @@ mod debug {
     use std::sync::{Arc, atomic::AtomicUsize};
 
     use super::Recorder;
-    #[cfg(feature = "tracing")]
-    use super::verifier;
     use crate::{Envelope, EventMeta, Verifier, WebhookReceiverBuilder, WebhookSecret};
 
     #[test]
@@ -1126,19 +1144,20 @@ mod debug {
         // types are routinely not `Clone`, and the handler is not required
         // to be, either. The builder holds an observer over the error type
         // and is under the same rule.
-        struct NotCloneOrDebug;
+        #[derive(Debug, thiserror::Error)]
+        #[error("not clone")]
+        struct NotClone;
 
         let builder =
             WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("super-secret")))
                 .body_limit(64)
-                .on_error(|_: &EventMeta, _: &NotCloneOrDebug| {});
+                .on_error(|_: &EventMeta, _: &NotClone| {});
         let debug = format!("{:?}", builder.clone());
         assert!(debug.contains("body_limit: 64"), "{debug}");
         assert!(debug.contains("on_error: true"), "{debug}");
-        assert!(debug.contains("trace_errors: false"), "{debug}");
         assert!(!debug.contains("super-secret"), "{debug}");
 
-        let receiver = builder.build(|_: Envelope| async { Err::<(), _>(NotCloneOrDebug) });
+        let receiver = builder.build(|_: Envelope| async { Err::<(), _>(NotClone) });
 
         let debug = format!("{:?}", receiver.clone());
         assert!(debug.contains("body_limit: 64"), "{debug}");
@@ -1154,24 +1173,6 @@ mod debug {
         });
         let debug = format!("{:?}", receiver.clone());
         assert!(debug.contains("on_error: false"), "{debug}");
-    }
-
-    #[cfg(feature = "tracing")]
-    #[test]
-    fn debug_says_whether_the_failed_delivery_event_carries_the_error() {
-        let receiver = WebhookReceiverBuilder::new(verifier())
-            .trace_errors()
-            .build(|_: Envelope| async { Err::<(), _>(std::fmt::Error) });
-        let debug = format!("{receiver:?}");
-        assert!(debug.contains("trace_errors: true"), "{debug}");
-
-        let receiver = WebhookReceiverBuilder::new(verifier())
-            .trace_boxed_errors()
-            .build(|_: Envelope| async {
-                Err::<(), Box<dyn std::error::Error + Send + Sync>>("boxed".into())
-            });
-        let debug = format!("{receiver:?}");
-        assert!(debug.contains("trace_errors: true"), "{debug}");
     }
 }
 

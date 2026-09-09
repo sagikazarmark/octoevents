@@ -32,7 +32,7 @@ use crate::{DecodeError, Envelope, EventKind, EventMeta};
 /// is needed for cross-kind logic:
 ///
 /// ```
-/// use octoevents::{DecodeError, Dispatcher, Envelope, EventKind, FromEnvelope};
+/// use octoevents::{BoxError, DecodeError, Dispatcher, Envelope, EventKind, FromEnvelope};
 ///
 /// /// The sender's login, which every kind carries.
 /// #[derive(serde::Deserialize)]
@@ -46,13 +46,10 @@ use crate::{DecodeError, Envelope, EventKind, EventMeta};
 ///     }
 /// }
 ///
-/// # #[derive(Debug)]
-/// # struct AppError;
-/// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
-/// let dispatcher = Dispatcher::<AppError>::builder()
+/// let dispatcher = Dispatcher::builder()
 ///     .on([EventKind::Issues, EventKind::IssueComment], |sender: Sender| async move {
 ///         println!("by {}", sender.sender.login);
-///         Ok::<_, AppError>(())
+///         Ok::<_, BoxError>(())
 ///     })
 ///     .build();
 /// # let _ = dispatcher;

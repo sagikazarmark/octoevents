@@ -8,7 +8,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 use tokio::sync::Mutex;
 
-use crate::{DispatchError, EventKind, Match, Outcome, Payload};
+use crate::{DispatchError, EventKind, Match, Outcome, Payload, test_support::AppError};
 
 type Calls = Arc<Mutex<Vec<&'static str>>>;
 type Recorded<E> = Pin<Box<dyn Future<Output = Result<(), E>> + Send>>;
@@ -36,25 +36,27 @@ impl Payload for Number {
 }
 
 /// The handlers' result with the dispatch error unwrapped to its source,
-/// for tests that check which handler failed rather than where it was
-/// registered.
-fn unwrapped<E>(outcome: Outcome<E>) -> Result<(), E> {
-    outcome.result.map_err(DispatchError::into_source)
+/// read back as the test's [`AppError`], for tests that check which handler
+/// failed rather than where it was registered.
+fn unwrapped(outcome: Outcome) -> Result<(), AppError> {
+    outcome.result.map_err(app_error)
 }
 
 /// [`unwrapped`] keeping the match beside the result.
-fn unwrapped_outcome<E>(outcome: Outcome<E>) -> (Match, Result<(), E>) {
-    (
-        outcome.matched,
-        outcome.result.map_err(DispatchError::into_source),
-    )
+fn unwrapped_outcome(outcome: Outcome) -> (Match, Result<(), AppError>) {
+    (outcome.matched, outcome.result.map_err(app_error))
+}
+
+/// The [`AppError`] behind a dispatch error's boxed source.
+fn app_error(error: DispatchError) -> AppError {
+    AppError::from_boxed(error.into_source())
 }
 
 /// A handler over any input `I` that appends `value` to the shared log and
 /// then answers `result`: `Ok(())` lets the chain continue, an `Err` fails
-/// the delivery there and converts into the dispatcher's error as
-/// `AppError::Handler`. A test fails a handler with its own `value`, so the
-/// log entry and the error name the same handler.
+/// the delivery there with `AppError::Handler` of the name. A test fails a
+/// handler with its own `value`, so the log entry and the error name the
+/// same handler.
 ///
 /// The input is named at the registration, `recording::<EventMeta>(..)`,
 /// since the matcher alone does not fix it, and it says what is decoded on
@@ -64,13 +66,13 @@ fn recording<I: 'static>(
     calls: &Calls,
     value: &'static str,
     result: Result<(), &'static str>,
-) -> impl Fn(I) -> Recorded<&'static str> + Send + Sync + 'static {
+) -> impl Fn(I) -> Recorded<AppError> + Send + Sync + 'static {
     let calls = Arc::clone(calls);
     move |_| {
         let calls = Arc::clone(&calls);
         Box::pin(async move {
             calls.lock().await.push(value);
-            result
+            result.map_err(AppError::Handler)
         })
     }
 }
@@ -94,7 +96,7 @@ mod tiers {
     #[tokio::test]
     async fn tiers_run_always_then_action_then_kind_in_registration_order() {
         let calls = Calls::default();
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(
                 EventKind::PullRequest,
                 recording::<EventMeta>(&calls, "kind-1", Ok(())),
@@ -133,7 +135,7 @@ mod tiers {
     #[tokio::test]
     async fn payload_routes_run_the_action_chain_before_the_kind_chain_in_registration_order() {
         let calls = Calls::default();
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(
                 AnyAction,
                 recording::<AnyPullRequest>(&calls, "kind-1", Ok(())),
@@ -170,7 +172,7 @@ mod tiers {
         // decides when a handler runs, and only order within a tier follows
         // registration.
         let calls = Calls::default();
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(
                 AnyAction,
                 recording::<AnyPullRequest>(&calls, "route-1", Ok(())),
@@ -210,7 +212,7 @@ mod tiers {
     #[tokio::test]
     async fn always_runs_for_every_delivery_without_counting_as_a_match() {
         let calls = Calls::default();
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .always(recording::<Envelope>(&calls, "audit", Ok(())))
             .on(
                 AnyAction,
@@ -231,7 +233,7 @@ mod tiers {
     async fn always_runs_for_a_payload_octocrab_cannot_represent() {
         let calls = Calls::default();
         let handler_calls = Arc::clone(&calls);
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .always(move |envelope: Envelope| {
                 let calls = Arc::clone(&handler_calls);
                 async move {
@@ -244,7 +246,7 @@ mod tiers {
 
         // Nothing is decoded on the always tier's behalf, so the delivery
         // succeeds although octocrab cannot represent it.
-        assert_eq!(dispatcher.dispatch(unrepresentable()).await.result, Ok(()));
+        dispatcher.dispatch(unrepresentable()).await.result.unwrap();
         assert_eq!(calls.lock().await.as_slice(), ["audit"]);
     }
 
@@ -271,7 +273,7 @@ mod tiers {
         // A forwarder in either tier sees the exact bytes the envelope
         // carries, not a metadata-only view of it.
         let seen = Seen::default();
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .always(forward(&seen, "always"))
             .fallback(forward(&seen, "fallback"))
             .build();
@@ -297,7 +299,7 @@ mod tiers {
         }
 
         let calls = Calls::default();
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(AnyAction, |_: AnyCheckRun| async {
                 Ok::<_, std::convert::Infallible>(())
             })
@@ -316,7 +318,7 @@ mod tiers {
     #[tokio::test]
     async fn the_fallback_chain_runs_in_order_only_when_nothing_matched() {
         let calls = Calls::default();
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(
                 AnyAction,
                 recording::<AnyPullRequest>(&calls, "pull-request", Ok(())),
@@ -342,24 +344,25 @@ mod tiers {
 
     #[tokio::test]
     async fn unmatched_deliveries_succeed_when_the_fallback_chain_is_empty() {
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(AnyAction, |_: AnyPullRequest| async {
                 Ok::<_, AppError>(())
             })
             .build();
 
-        assert_eq!(dispatcher.dispatch(unknown()).await.result, Ok(()));
-        assert_eq!(dispatcher.dispatch(ping()).await.result, Ok(()));
-        assert_eq!(
-            dispatcher.dispatch(check_run_completed()).await.result,
-            Ok(())
-        );
+        dispatcher.dispatch(unknown()).await.result.unwrap();
+        dispatcher.dispatch(ping()).await.result.unwrap();
+        dispatcher
+            .dispatch(check_run_completed())
+            .await
+            .result
+            .unwrap();
     }
 
     #[tokio::test]
     async fn the_always_and_fallback_chains_fail_fast() {
         let calls = Calls::default();
-        let always = Dispatcher::<AppError>::builder()
+        let always = Dispatcher::builder()
             .always(recording::<Envelope>(&calls, "always", Err("always")))
             .always(recording::<Envelope>(&calls, "always-after", Ok(())))
             .on(
@@ -374,7 +377,7 @@ mod tiers {
         assert_eq!(calls.lock().await.as_slice(), ["always"]);
 
         calls.lock().await.clear();
-        let fallback = Dispatcher::<AppError>::builder()
+        let fallback = Dispatcher::builder()
             .fallback(recording::<Envelope>(&calls, "fallback", Err("fallback")))
             .fallback(recording::<Envelope>(&calls, "fallback-after", Ok(())))
             .build();
@@ -388,7 +391,7 @@ mod tiers {
     #[tokio::test]
     async fn the_routed_chains_fail_fast() {
         let calls = Calls::default();
-        let routed = Dispatcher::<AppError>::builder()
+        let routed = Dispatcher::builder()
             .on(
                 (EventKind::PullRequest, Action::Opened),
                 recording::<EventMeta>(&calls, "action", Err("action")),
@@ -409,7 +412,7 @@ mod tiers {
         assert_eq!(calls.lock().await.as_slice(), ["action"]);
 
         calls.lock().await.clear();
-        let kind_wide = Dispatcher::<AppError>::builder()
+        let kind_wide = Dispatcher::builder()
             .on(
                 EventKind::PullRequest,
                 recording::<EventMeta>(&calls, "kind", Err("kind")),
@@ -438,7 +441,7 @@ mod matching {
     use super::{AnyPullRequest, Calls, Number, recording, unwrapped, unwrapped_outcome};
     use crate::{
         Action, AnyAction, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, Handler,
-        Match, Outcome,
+        Match,
         test_support::{
             AppError, check_run_completed, envelope, pull_request, pull_request_opened, unknown,
             unrepresentable,
@@ -447,11 +450,11 @@ mod matching {
 
     #[tokio::test]
     async fn a_matched_failure_is_distinguishable_from_an_unmatched_fallback_failure() {
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(AnyAction, |_: AnyPullRequest| async {
-                Err::<(), _>("routed")
+                Err::<(), _>(AppError::Handler("routed"))
             })
-            .fallback(|_: Envelope| async { Err::<(), _>("unmatched") })
+            .fallback(|_: Envelope| async { Err::<(), _>(AppError::Handler("unmatched")) })
             .build();
 
         // Both deliveries fail. The result alone cannot say whether a routed
@@ -468,18 +471,15 @@ mod matching {
 
     #[tokio::test]
     async fn an_unmatched_outcome_says_whether_the_route_table_knows_the_kind() {
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on([Action::Opened], |_: AnyPullRequest| async {
                 Ok::<_, AppError>(())
             })
             .build();
 
         assert_eq!(
-            dispatcher.dispatch(pull_request_opened()).await,
-            Outcome {
-                matched: Match::Matched,
-                result: Ok(()),
-            }
+            unwrapped_outcome(dispatcher.dispatch(pull_request_opened()).await),
+            (Match::Matched, Ok(()))
         );
 
         // Routes exist for `pull_request`, none for `closed`: the kind is
@@ -487,34 +487,22 @@ mod matching {
         // register. The same holds for a delivery of the kind carrying no
         // action at all.
         assert_eq!(
-            dispatcher.dispatch(pull_request(Action::Closed)).await,
-            Outcome {
-                matched: Match::UnmatchedAction,
-                result: Ok(()),
-            }
+            unwrapped_outcome(dispatcher.dispatch(pull_request(Action::Closed)).await),
+            (Match::UnmatchedAction, Ok(()))
         );
         assert_eq!(
-            dispatcher.dispatch(unrepresentable()).await,
-            Outcome {
-                matched: Match::UnmatchedAction,
-                result: Ok(()),
-            }
+            unwrapped_outcome(dispatcher.dispatch(unrepresentable()).await),
+            (Match::UnmatchedAction, Ok(()))
         );
 
         // No route mentions `check_run`, nor a kind this crate does not know.
         assert_eq!(
-            dispatcher.dispatch(check_run_completed()).await,
-            Outcome {
-                matched: Match::UnmatchedKind,
-                result: Ok(()),
-            }
+            unwrapped_outcome(dispatcher.dispatch(check_run_completed()).await),
+            (Match::UnmatchedKind, Ok(()))
         );
         assert_eq!(
-            dispatcher.dispatch(unknown()).await,
-            Outcome {
-                matched: Match::UnmatchedKind,
-                result: Ok(()),
-            }
+            unwrapped_outcome(dispatcher.dispatch(unknown()).await),
+            (Match::UnmatchedKind, Ok(()))
         );
     }
 
@@ -531,7 +519,7 @@ mod matching {
     #[tokio::test]
     async fn the_match_is_decided_by_the_route_table_whichever_tier_fails() {
         let calls = Calls::default();
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .always(recording::<Envelope>(&calls, "audit", Err("audit")))
             .on(
                 AnyAction,
@@ -554,26 +542,20 @@ mod matching {
 
     #[tokio::test]
     async fn handle_keeps_the_result_and_drops_the_match() {
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(AnyAction, |_: AnyPullRequest| async {
-                Err::<(), _>("routed")
+                Err::<(), _>(AppError::Handler("routed"))
             })
             .build();
 
         // What the receiver sees: an unmatched delivery succeeds, a matched
         // one reports its handler's error, and neither says which it was.
-        assert_eq!(
-            dispatcher
-                .handle(check_run_completed())
-                .await
-                .map_err(DispatchError::into_source),
-            Ok(())
-        );
+        dispatcher.handle(check_run_completed()).await.unwrap();
         assert_eq!(
             dispatcher
                 .handle(pull_request_opened())
                 .await
-                .map_err(DispatchError::into_source),
+                .map_err(super::app_error),
             Err(AppError::Handler("routed"))
         );
     }
@@ -585,13 +567,13 @@ mod matching {
         /// never registered is dead-lettered, bytes included, instead of
         /// being turned into an error.
         struct DeadLetter {
-            dispatcher: Dispatcher<AppError>,
+            dispatcher: Dispatcher,
             letters: Arc<Mutex<Vec<Envelope>>>,
         }
 
         impl Handler<Envelope> for DeadLetter {
             // The dispatcher's error passes through, tier, handler and registration site included.
-            type Error = DispatchError<AppError>;
+            type Error = DispatchError;
 
             async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
                 // The dispatcher takes the envelope by value; the clone shares
@@ -611,7 +593,7 @@ mod matching {
         let calls = Calls::default();
         let letters = Arc::new(Mutex::new(Vec::new()));
         let wrapper = DeadLetter {
-            dispatcher: Dispatcher::<AppError>::builder()
+            dispatcher: Dispatcher::builder()
                 .always(recording::<Envelope>(&calls, "audit", Ok(())))
                 .on(
                     [Action::Opened],
@@ -641,7 +623,7 @@ mod matching {
     #[tokio::test]
     async fn a_registered_kind_with_no_matching_action_still_falls_back() {
         let calls = Calls::default();
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(
                 (EventKind::PullRequest, Action::Closed),
                 recording::<EventMeta>(&calls, "closed", Ok(())),
@@ -659,7 +641,7 @@ mod matching {
     #[tokio::test]
     async fn a_handler_registered_for_some_actions_matches_only_those() {
         let calls = Calls::default();
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(
                 [Action::Opened, Action::Reopened],
                 recording::<AnyPullRequest>(&calls, "triage", Ok(())),
@@ -698,7 +680,7 @@ mod matching {
         // Had the route decoded `Number`, the delivery would have failed with
         // a decode error.
         let calls = Calls::default();
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on([Action::Opened], |_: Number| async {
                 Ok::<_, std::convert::Infallible>(())
             })
@@ -726,8 +708,8 @@ mod errors {
 
     use super::{AnyPullRequest, Calls, Number, Recorded, recording};
     use crate::{
-        Action, AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind, EventMeta,
-        FromEnvelope, Handler, Match, Tier,
+        Action, AnyAction, BoxError, DecodeError, DispatchError, Dispatcher, Envelope, Event,
+        EventKind, EventMeta, FromEnvelope, Handler, Match, Tier,
         test_support::{AppError, envelope, installation_created, ping, pull_request_opened},
     };
 
@@ -736,7 +718,7 @@ mod errors {
         // The location is that of the registration method's name, so the
         // failing handler is registered on the line after `line!()`.
         let calls = Calls::default();
-        let builder = Dispatcher::<AppError>::builder();
+        let builder = Dispatcher::builder();
         let registration_site = line!() + 1;
         let builder = builder.on(
             AnyAction,
@@ -756,7 +738,10 @@ mod errors {
         assert_eq!(error.action, Some(Action::Opened));
         assert_eq!(error.registration_site.file(), file!());
         assert_eq!(error.registration_site.line(), registration_site);
-        assert_eq!(error.source, AppError::Handler("routed"));
+        assert_eq!(
+            AppError::from_boxed(error.source),
+            AppError::Handler("routed")
+        );
     }
 
     #[tokio::test]
@@ -768,7 +753,7 @@ mod errors {
         /// registration site however the call is formatted.
         macro_rules! registered {
             ($method:ident($($argument:expr),*)) => {
-                (Dispatcher::<AppError>::builder().$method($($argument),*), line!())
+                (Dispatcher::builder().$method($($argument),*), line!())
             };
         }
 
@@ -828,14 +813,14 @@ mod errors {
                 .unwrap_err();
             assert_eq!(error.tier, tier, "{value}");
             assert_eq!(error.registration_site.line(), line, "{value}");
-            assert_eq!(error.source, AppError::Handler(value));
+            assert_eq!(AppError::from_boxed(error.source), AppError::Handler(value));
         }
     }
 
     #[tokio::test]
     async fn the_fallback_tier_reports_a_delivery_without_an_action() {
         let calls = Calls::default();
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .fallback(recording::<Envelope>(&calls, "unmatched", Err("unmatched")))
             .build();
 
@@ -851,8 +836,8 @@ mod errors {
         use std::any::{type_name, type_name_of_val};
 
         /// An `async fn` item: its type is the function's path.
-        async fn revoke(_: EventMeta) -> Result<(), &'static str> {
-            Err("revoke")
+        async fn revoke(_: EventMeta) -> Result<(), AppError> {
+            Err(AppError::Handler("revoke"))
         }
 
         /// A struct handler: its type is the struct's path.
@@ -861,11 +846,11 @@ mod errors {
         }
 
         impl Handler<EventMeta> for Revoker {
-            type Error = &'static str;
+            type Error = AppError;
 
             async fn handle(&self, _: EventMeta) -> Result<(), Self::Error> {
                 self.calls.lock().await.push("revoker");
-                Err("revoker")
+                Err(AppError::Handler("revoker"))
             }
         }
 
@@ -874,7 +859,7 @@ mod errors {
         // without opening the registration site. The equality pins the exact
         // string; `ends_with` pins its shape, a path ending in the item's
         // name, independently of how `type_name` spells the prefix.
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(EventKind::Installation, revoke)
             .build();
         let error = dispatcher
@@ -884,10 +869,13 @@ mod errors {
             .unwrap_err();
         assert_eq!(error.handler, type_name_of_val(&revoke));
         assert!(error.handler.ends_with("::revoke"), "{}", error.handler);
-        assert_eq!(error.source, AppError::Handler("revoke"));
+        assert_eq!(
+            AppError::from_boxed(error.source),
+            AppError::Handler("revoke")
+        );
 
         let calls = Calls::default();
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(
                 EventKind::Installation,
                 Revoker {
@@ -902,7 +890,10 @@ mod errors {
             .unwrap_err();
         assert_eq!(error.handler, type_name::<Revoker>());
         assert!(error.handler.ends_with("::Revoker"), "{}", error.handler);
-        assert_eq!(error.source, AppError::Handler("revoker"));
+        assert_eq!(
+            AppError::from_boxed(error.source),
+            AppError::Handler("revoker")
+        );
         assert_eq!(calls.lock().await.as_slice(), ["revoker"]);
     }
 
@@ -916,11 +907,7 @@ mod errors {
         // the registration of the handler that needed the decode, not the
         // first one.
         let calls = Calls::default();
-        let builder = Dispatcher::<AppError>::builder().always(recording::<Envelope>(
-            &calls,
-            "always",
-            Ok(()),
-        ));
+        let builder = Dispatcher::builder().always(recording::<Envelope>(&calls, "always", Ok(())));
         let registration_site = line!() + 1;
         let dispatcher = builder.on(AnyAction, needs_number).build();
 
@@ -932,7 +919,7 @@ mod errors {
 
         assert_eq!(error.tier, Tier::Route);
         assert_eq!(error.registration_site.line(), registration_site);
-        assert_eq!(error.source, AppError::Decode);
+        assert_eq!(AppError::from_boxed(error.source), AppError::Decode);
         assert_eq!(calls.lock().await.as_slice(), ["always"]);
     }
 
@@ -946,7 +933,7 @@ mod errors {
         }
 
         let calls = Calls::default();
-        let builder = Dispatcher::<AppError>::builder()
+        let builder = Dispatcher::builder()
             .always(recording::<Envelope>(&calls, "always", Ok(())))
             .on(
                 AnyAction,
@@ -969,7 +956,7 @@ mod errors {
 
         assert_eq!(error.tier, Tier::Route);
         assert_eq!(error.registration_site.line(), registration_site);
-        assert_eq!(error.source, AppError::Decode);
+        assert_eq!(AppError::from_boxed(error.source), AppError::Decode);
         assert_eq!(calls.lock().await.as_slice(), ["always", "payload-before"]);
     }
 
@@ -991,22 +978,9 @@ mod errors {
             }
         }
 
-        /// Wraps the decode error with a message of its own, so the consumer's
-        /// reason is two `source()` hops below the dispatch error.
-        #[derive(Debug, thiserror::Error)]
-        enum ServiceError {
-            #[error("input could not be decoded")]
-            Decode(#[from] DecodeError),
-        }
-        impl From<std::convert::Infallible> for ServiceError {
-            fn from(never: std::convert::Infallible) -> Self {
-                match never {}
-            }
-        }
-
         let seen = Arc::new(Mutex::new(Vec::new()));
         let handler_seen = Arc::clone(&seen);
-        let builder = Dispatcher::<ServiceError>::builder();
+        let builder = Dispatcher::builder();
         let registration_site = line!() + 1;
         let dispatcher = builder.on(
             (EventKind::Installation, Action::Deleted),
@@ -1030,8 +1004,8 @@ mod errors {
         assert_eq!(seen.lock().await.as_slice(), [42]);
 
         // One without fails in the route tier at the handler's registration,
-        // and the chain ends at the consumer's own message, not at a decode of
-        // the payload.
+        // and the dispatch error's source is the decode error carrying the
+        // consumer's own message, not a decode of the payload.
         let error = dispatcher
             .dispatch(envelope(
                 EventKind::Installation,
@@ -1042,9 +1016,7 @@ mod errors {
             .unwrap_err();
         assert_eq!(error.tier, Tier::Route);
         assert_eq!(error.registration_site.line(), registration_site);
-        let application = error.source().expect("the application error");
-        assert_eq!(application.to_string(), "input could not be decoded");
-        let reason = application.source().expect("the decode error");
+        let reason = error.source().expect("the decode error is the source");
         assert_eq!(reason.to_string(), "payload has no installation");
         assert!(
             matches!(
@@ -1065,8 +1037,6 @@ mod errors {
 
         #[derive(Debug, thiserror::Error)]
         enum ServiceError {
-            #[error(transparent)]
-            Decode(#[from] DecodeError),
             #[error("database is down")]
             Database,
         }
@@ -1075,7 +1045,7 @@ mod errors {
             Box::pin(async { Err(ServiceError::Database) })
         }
 
-        let builder = Dispatcher::<ServiceError>::builder();
+        let builder = Dispatcher::builder();
         let registration_site = line!() + 1;
         let dispatcher = builder.on(AnyAction, database_down).build();
 
@@ -1105,7 +1075,7 @@ mod errors {
         ));
 
         // Without an action the parenthesised part is the kind alone.
-        let dispatcher = Dispatcher::<ServiceError>::builder()
+        let dispatcher = Dispatcher::builder()
             .fallback(|_: Envelope| async { Err::<(), _>(ServiceError::Database) })
             .build();
         let error = dispatcher.dispatch(ping()).await.result.unwrap_err();
@@ -1118,16 +1088,16 @@ mod errors {
     }
 
     #[tokio::test]
-    async fn a_boxed_dyn_error_application_error_still_works() {
-        // `DispatchError<Box<dyn Error + Send + Sync>>` is not itself an
-        // `Error`, as `Box<dyn Error + Send + Sync>` is not, but the
-        // dispatcher builds, the error displays, and `into_source` returns
-        // the boxed error, which is one.
-        type Boxed = Box<dyn std::error::Error + Send + Sync>;
+    async fn a_handler_returning_the_boxed_error_registers_and_its_error_is_the_source() {
+        use std::error::Error as _;
 
-        let dispatcher = Dispatcher::<Boxed>::builder()
+        // The front page's shape: no error enum, `?` converts anything. The
+        // dispatch error is an `Error` whose source is the box the handler
+        // returned, so a reporter walks one chain whatever the handler's
+        // error type was.
+        let dispatcher = Dispatcher::builder()
             .on(AnyAction, |_: AnyPullRequest| async {
-                Err::<(), Boxed>("boom".into())
+                Err::<(), BoxError>("boom".into())
             })
             .build();
 
@@ -1138,54 +1108,86 @@ mod errors {
             .unwrap_err();
 
         assert!(error.to_string().contains("route tier"), "{error}");
+        assert_eq!(error.source().expect("the boxed error").to_string(), "boom");
         assert_eq!(error.into_source().to_string(), "boom");
     }
 
     #[tokio::test]
-    async fn a_dispatcher_over_an_error_that_is_not_send_builds_and_dispatches() {
-        // `Box<dyn Error>` without `Send`. Nothing asks the error type to be
-        // `Send`: no `E` is live across an await inside the dispatcher, which
-        // is why `run_chain` keeps the decode and the await as two
-        // statements. A decode failure converts into it as into any
-        // `Box<dyn Error>`.
-        type Local = Box<dyn std::error::Error>;
-
-        let dispatcher = Dispatcher::<Local>::builder()
-            .always(|_: Envelope| async { Ok::<_, Local>(()) })
-            .on(AnyAction, |_: Number| async { Ok::<_, Local>(()) })
+    async fn handlers_with_different_error_types_share_one_dispatcher() {
+        // Every handler's error converts into the box at its registration, so
+        // the dispatcher has no one error type of its own: an `io::Error` in
+        // one tier and a `String` in another register side by side, and each
+        // is read back as itself.
+        let dispatcher = Dispatcher::builder()
+            .always(|_: Envelope| async { Ok::<_, std::io::Error>(()) })
+            .on(AnyAction, |_: AnyPullRequest| async {
+                Err::<(), _>(std::io::Error::other("routed"))
+            })
+            .fallback(|_: Envelope| async { Err::<(), _>(String::from("unmatched")) })
             .build();
 
-        let error = dispatcher
-            .dispatch(envelope(EventKind::PullRequest, br#"{"action":"opened"}"#))
-            .await
-            .result
-            .unwrap_err();
+        let routed = dispatcher.dispatch(pull_request_opened()).await;
+        assert_eq!(routed.matched, Match::Matched);
+        let source = routed.result.unwrap_err().into_source();
+        assert_eq!(
+            source
+                .downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::Other)
+        );
 
-        assert_eq!(error.tier, Tier::Route);
-        assert!(
-            error.into_source().downcast_ref::<DecodeError>().is_some(),
-            "the decode error converted into the boxed error"
+        let unmatched = dispatcher.dispatch(ping()).await;
+        assert_eq!(unmatched.matched, Match::UnmatchedKind);
+        assert_eq!(
+            unmatched.result.unwrap_err().into_source().to_string(),
+            "unmatched"
         );
     }
 
     #[tokio::test]
-    async fn a_dispatcher_of_always_and_fallback_handlers_alone_needs_no_decode_conversion() {
-        // `std::io::Error` is not `From<DecodeError>`. Only a routed handler
-        // has an input decoded on its behalf, so only `on` asks for the
-        // conversion: a dispatcher that forwards from its `always` tier and
-        // rejects the unmatched from its `fallback` builds over any error.
-        let dispatcher = Dispatcher::<std::io::Error>::builder()
-            .always(|_: Envelope| async { Ok::<_, std::io::Error>(()) })
-            .fallback(|_: Envelope| async { Err::<(), _>(std::io::Error::other("unmatched")) })
+    async fn a_dispatcher_is_a_route_of_another() {
+        // A dispatch error is an `Error`, so a dispatcher registers on another
+        // like any handler: it contributes a result and never a match, and
+        // the outer error's source is the inner dispatch error, its own
+        // source the application error.
+        use std::error::Error as _;
+
+        let calls = Calls::default();
+        let inner = Dispatcher::builder()
+            .on(
+                AnyAction,
+                recording::<AnyPullRequest>(&calls, "inner", Err("inner")),
+            )
+            .build();
+        let outer = Dispatcher::builder()
+            .on([EventKind::PullRequest, EventKind::Issues], inner)
             .build();
 
-        let outcome = dispatcher.dispatch(pull_request_opened()).await;
-
-        assert_eq!(outcome.matched, Match::UnmatchedKind);
+        let outcome = outer.dispatch(pull_request_opened()).await;
+        assert_eq!(outcome.matched, Match::Matched);
+        let error = outcome.result.unwrap_err();
+        assert_eq!(error.tier, Tier::Route);
+        let inner_error = error
+            .source()
+            .and_then(|source| source.downcast_ref::<DispatchError>())
+            .expect("the inner dispatch error is the source");
+        assert_eq!(inner_error.tier, Tier::Route);
         assert_eq!(
-            outcome.result.unwrap_err().into_source().to_string(),
-            "unmatched"
+            inner_error
+                .source()
+                .and_then(|source| source.downcast_ref::<AppError>()),
+            Some(&AppError::Handler("inner"))
         );
+
+        // The outer route table matched `issues`; the inner had no route for
+        // it, contributed `Ok`, and the outer outcome says nothing of that.
+        calls.lock().await.clear();
+        let outcome = outer
+            .dispatch(envelope(EventKind::Issues, br#"{"action":"opened"}"#))
+            .await;
+        assert_eq!(outcome.matched, Match::Matched);
+        outcome.result.unwrap();
+        assert!(calls.lock().await.is_empty());
     }
 }
 
@@ -1202,7 +1204,7 @@ mod inputs {
     use super::{AnyPullRequest, Calls, recording, unwrapped, unwrapped_outcome};
     use crate::{
         Action, AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind, EventMeta,
-        FromEnvelope, Handler, Match, Outcome, Payload, Tier,
+        FromEnvelope, Handler, Match, Payload, Tier,
         test_support::{
             AppError, check_run_completed, envelope, envelope_with_action, installation_created,
             pull_request, pull_request_opened, unrepresentable,
@@ -1213,7 +1215,7 @@ mod inputs {
     async fn on_routes_a_handler_over_the_meta_by_kind_and_action_with_nothing_decoded() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let handler_seen = Arc::clone(&seen);
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(
                 (EventKind::Installation, Action::Deleted),
                 move |meta: EventMeta| {
@@ -1226,7 +1228,7 @@ mod inputs {
                     }
                 },
             )
-            .fallback(|_: Envelope| async { Err::<(), _>("unmatched") })
+            .fallback(|_: Envelope| async { Err::<(), _>(AppError::Handler("unmatched")) })
             .build();
 
         // Nothing is decoded on the handler's behalf: a payload that is not
@@ -1240,11 +1242,8 @@ mod inputs {
         );
         envelope.meta.installation_id = Some(42);
         assert_eq!(
-            dispatcher.dispatch(envelope).await,
-            Outcome {
-                matched: Match::Matched,
-                result: Ok(()),
-            }
+            unwrapped_outcome(dispatcher.dispatch(envelope).await),
+            (Match::Matched, Ok(()))
         );
         assert_eq!(
             seen.lock().await.as_slice(),
@@ -1267,7 +1266,7 @@ mod inputs {
         // over the exact bytes as `always` does, and counts as a match.
         let seen = Seen::default();
         let handler_seen = Arc::clone(&seen);
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(EventKind::CheckRun, move |envelope: Envelope| {
                 let seen = Arc::clone(&handler_seen);
                 async move {
@@ -1277,16 +1276,13 @@ mod inputs {
                     Ok::<_, std::convert::Infallible>(())
                 }
             })
-            .fallback(|_: Envelope| async { Err::<(), _>("unmatched") })
+            .fallback(|_: Envelope| async { Err::<(), _>(AppError::Handler("unmatched")) })
             .build();
 
         let envelope = check_run_completed();
         assert_eq!(
-            dispatcher.dispatch(envelope.clone()).await,
-            Outcome {
-                matched: Match::Matched,
-                result: Ok(()),
-            }
+            unwrapped_outcome(dispatcher.dispatch(envelope.clone()).await),
+            (Match::Matched, Ok(()))
         );
         assert_eq!(
             seen.lock().await.as_slice(),
@@ -1296,7 +1292,7 @@ mod inputs {
         // Nothing is decoded for it either: a body that is not JSON reaches
         // it whole.
         let not_json = envelope_with_action(EventKind::CheckRun, Action::Completed, b"not json");
-        assert_eq!(dispatcher.dispatch(not_json).await.result, Ok(()));
+        dispatcher.dispatch(not_json).await.result.unwrap();
         assert_eq!(seen.lock().await.len(), 2);
 
         // Another kind is unmatched as for any routed handler.
@@ -1330,7 +1326,7 @@ mod inputs {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let alone_seen = Arc::clone(&seen);
         let event_seen = Arc::clone(&seen);
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(
                 [EventKind::PullRequest, EventKind::CheckRun],
                 move |sender: Sender| {
@@ -1353,7 +1349,7 @@ mod inputs {
                     }
                 },
             )
-            .fallback(|_: Envelope| async { Err::<(), _>("unmatched") })
+            .fallback(|_: Envelope| async { Err::<(), _>(AppError::Handler("unmatched")) })
             .build();
 
         dispatcher
@@ -1390,7 +1386,7 @@ mod inputs {
             .result
             .unwrap_err();
         assert_eq!(error.tier, Tier::Route);
-        assert_eq!(error.source, AppError::Decode);
+        assert_eq!(AppError::from_boxed(error.source), AppError::Decode);
     }
 
     #[tokio::test]
@@ -1413,7 +1409,7 @@ mod inputs {
         let auditor = Arc::new(Auditor {
             seen: Mutex::new(Vec::new()),
         });
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .always(Arc::clone(&auditor))
             .fallback(Arc::clone(&auditor))
             .build();
@@ -1461,7 +1457,7 @@ mod inputs {
         let labeler = Arc::new(Labeler {
             seen: Mutex::new(Vec::new()),
         });
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on::<Event<AnyPullRequest>, _, _>(AnyAction, Arc::clone(&labeler))
             .on::<EventMeta, _, _>(
                 (EventKind::PullRequest, Action::Closed),
@@ -1524,7 +1520,7 @@ mod inputs {
         // The struct alone no longer says which payload is meant, so each
         // registration names it. The dispatcher `Arc`s each registration;
         // the caller shares nothing by hand.
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on::<AnyPullRequest, _, _>(
                 AnyAction,
                 Labeler {
@@ -1578,7 +1574,7 @@ mod inputs {
 
         let seen = Arc::new(Mutex::new(Vec::new()));
         let handler_seen = Arc::clone(&seen);
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(AnyAction, move |SoleHandle(unique): SoleHandle| {
                 let seen = Arc::clone(&handler_seen);
                 async move {
@@ -1605,7 +1601,7 @@ mod inputs {
         // tiers see the envelope as verified, and a consumer view over the
         // bytes has nothing octocrab must represent.
         let calls = Calls::default();
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .always(recording::<Envelope>(&calls, "always", Ok(())))
             .on(
                 AnyAction,
@@ -1614,7 +1610,7 @@ mod inputs {
             .fallback(recording::<Envelope>(&calls, "unmatched", Err("unmatched")))
             .build();
 
-        assert_eq!(dispatcher.dispatch(unrepresentable()).await.result, Ok(()));
+        dispatcher.dispatch(unrepresentable()).await.result.unwrap();
         assert_eq!(calls.lock().await.as_slice(), ["always", "payload"]);
     }
 }
@@ -1640,7 +1636,7 @@ mod matchers {
     #[tokio::test]
     async fn every_matcher_form_expands_to_its_routes() {
         let calls = Calls::default();
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(
                 [EventKind::PullRequest, EventKind::CheckRun],
                 recording::<EventMeta>(&calls, "kinds", Ok(())),
@@ -1700,28 +1696,12 @@ mod matchers {
 
     #[tokio::test]
     async fn on_with_a_payload_under_a_matcher_of_another_kind_fails_at_the_kind() {
-        /// Keeps the decode error so the test can see which variant it was.
-        #[derive(Debug)]
-        enum ServiceError {
-            Decode(DecodeError),
-        }
-        impl From<DecodeError> for ServiceError {
-            fn from(error: DecodeError) -> Self {
-                Self::Decode(error)
-            }
-        }
-        impl From<std::convert::Infallible> for ServiceError {
-            fn from(never: std::convert::Infallible) -> Self {
-                match never {}
-            }
-        }
-
         // The bytes of a check run would fit this view over any object; the
         // kind the view declares is what disagrees with the matcher.
         let calls = Calls::default();
         let always_calls = Arc::clone(&calls);
         let handler_calls = Arc::clone(&calls);
-        let builder = Dispatcher::<ServiceError>::builder().always(move |_: Envelope| {
+        let builder = Dispatcher::builder().always(move |_: Envelope| {
             let calls = Arc::clone(&always_calls);
             async move {
                 calls.lock().await.push("always");
@@ -1748,8 +1728,8 @@ mod matchers {
         assert_eq!(error.registration_site.line(), registration_site);
         assert!(
             matches!(
-                error.source,
-                ServiceError::Decode(DecodeError::KindMismatch {
+                error.source.downcast_ref::<DecodeError>(),
+                Some(DecodeError::KindMismatch {
                     expected: EventKind::PullRequest,
                     actual: EventKind::CheckRun,
                 })
@@ -1763,7 +1743,7 @@ mod matchers {
     #[tokio::test]
     async fn on_with_a_payload_under_its_spelled_kind_decodes_it_as_any_action_does() {
         let calls = Calls::default();
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(
                 EventKind::PullRequest,
                 recording::<AnyPullRequest>(&calls, "on", Ok(())),
@@ -1808,7 +1788,7 @@ mod matchers {
 
         let seen = Arc::new(Mutex::new(Vec::new()));
         let handler_seen = Arc::clone(&seen);
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(
                 AnyAction,
                 move |Event { meta, payload }: Event<Conclusion>| {
@@ -1855,7 +1835,7 @@ mod matchers {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let kind_wide = Arc::clone(&seen);
         let by_action = Arc::clone(&seen);
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(
                 AnyAction,
                 move |Event { meta, payload }: Event<Conclusion>| {
@@ -1886,7 +1866,7 @@ mod matchers {
                     }
                 },
             )
-            .fallback(|_: Envelope| async { Err::<(), _>("unmatched") })
+            .fallback(|_: Envelope| async { Err::<(), _>(AppError::Handler("unmatched")) })
             .build();
 
         dispatcher
@@ -1937,10 +1917,10 @@ mod octocrab {
 
     use super::{AnyPullRequest, Calls, recording, unwrapped};
     use crate::{
-        Action, AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind, Handler, Tier,
+        Action, AnyAction, Dispatcher, Envelope, Event, EventKind, Handler, Tier,
         test_support::{
             AppError, check_run_completed, envelope, installation_created, pull_request_opened,
-            unrepresentable,
+            source_as, unrepresentable,
         },
     };
 
@@ -1949,7 +1929,7 @@ mod octocrab {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let alone_seen = Arc::clone(&seen);
         let event_seen = Arc::clone(&seen);
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(EventKind::PullRequest, move |event: WebhookEvent| {
                 let seen = Arc::clone(&alone_seen);
                 async move {
@@ -1971,10 +1951,11 @@ mod octocrab {
             )
             .build();
 
-        assert_eq!(
-            dispatcher.dispatch(pull_request_opened()).await.result,
-            Ok(())
-        );
+        dispatcher
+            .dispatch(pull_request_opened())
+            .await
+            .result
+            .unwrap();
         assert_eq!(
             seen.lock().await.as_slice(),
             [
@@ -2006,7 +1987,7 @@ mod octocrab {
         }
 
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(
                 AnyAction,
                 Labeler {
@@ -2045,7 +2026,7 @@ mod octocrab {
         // registered for the actions it wants is never asked to; a consumer
         // view registered kind-wide still runs.
         let calls = Calls::default();
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .on(
                 [Action::Opened],
                 |_: PullRequestWebhookEventPayload| async { Ok::<_, std::convert::Infallible>(()) },
@@ -2060,12 +2041,12 @@ mod octocrab {
             EventKind::PullRequest,
             br#"{"action":"future_action","number":2}"#,
         );
-        assert_eq!(dispatcher.dispatch(future.clone()).await.result, Ok(()));
+        dispatcher.dispatch(future.clone()).await.result.unwrap();
         assert_eq!(calls.lock().await.as_slice(), ["view"]);
 
         // The same handler registered for every action of the kind is asked,
         // and the delivery fails at its decode.
-        let kind_wide = Dispatcher::<AppError>::builder()
+        let kind_wide = Dispatcher::builder()
             .on(AnyAction, |_: PullRequestWebhookEventPayload| async {
                 Ok::<_, std::convert::Infallible>(())
             })
@@ -2083,7 +2064,7 @@ mod octocrab {
         // its own view and succeeds; octocrab's decode fails at that handler,
         // and the error names its registration.
         let calls = Calls::default();
-        let builder = Dispatcher::<AppError>::builder().on(
+        let builder = Dispatcher::builder().on(
             AnyAction,
             recording::<AnyPullRequest>(&calls, "view", Ok(())),
         );
@@ -2102,7 +2083,7 @@ mod octocrab {
 
         assert_eq!(error.tier, Tier::Route);
         assert_eq!(error.registration_site.line(), registration_site);
-        assert_eq!(error.source, AppError::Decode);
+        assert_eq!(AppError::from_boxed(error.source), AppError::Decode);
         assert_eq!(calls.lock().await.as_slice(), ["view"]);
     }
 
@@ -2113,7 +2094,7 @@ mod octocrab {
         // where the chain stopped: each `WebhookEvent` route decodes its own
         // input when it runs, and nothing before the first one needed octocrab.
         let calls = Calls::default();
-        let dispatcher = Dispatcher::<AppError>::builder()
+        let dispatcher = Dispatcher::builder()
             .always(recording::<Envelope>(&calls, "always", Ok(())))
             .on(
                 AnyAction,
@@ -2142,45 +2123,23 @@ mod octocrab {
     }
 
     #[tokio::test]
-    async fn each_handlers_error_converts_into_the_dispatcher_error() {
-        #[derive(Debug, PartialEq)]
+    async fn each_handlers_error_is_boxed_and_read_back_as_itself() {
+        #[derive(Debug, PartialEq, thiserror::Error)]
+        #[error("db")]
         struct DbError;
-        #[derive(Debug, PartialEq)]
+        #[derive(Debug, PartialEq, thiserror::Error)]
+        #[error("api")]
         struct ApiError;
-        #[derive(Debug, PartialEq)]
+        #[derive(Debug, PartialEq, thiserror::Error)]
+        #[error("queue")]
         struct QueueError;
 
-        #[derive(Debug, PartialEq)]
-        enum ServiceError {
-            Decode,
-            Db(DbError),
-            Api(ApiError),
-            Queue(QueueError),
-        }
-
-        impl From<DecodeError> for ServiceError {
-            fn from(_: DecodeError) -> Self {
-                Self::Decode
-            }
-        }
-        impl From<DbError> for ServiceError {
-            fn from(error: DbError) -> Self {
-                Self::Db(error)
-            }
-        }
-        impl From<ApiError> for ServiceError {
-            fn from(error: ApiError) -> Self {
-                Self::Api(error)
-            }
-        }
-        impl From<QueueError> for ServiceError {
-            fn from(error: QueueError) -> Self {
-                Self::Queue(error)
-            }
-        }
-
-        // One dispatcher, three handlers, three error types.
-        let dispatcher = Dispatcher::<ServiceError>::builder()
+        // The property `errors::handlers_with_different_error_types_share_one_dispatcher`
+        // pins, over octocrab's inputs: a route over `WebhookEvent` and one
+        // over a per-kind payload struct box their errors like any other, and
+        // a decode on the handler's behalf changes nothing about the source
+        // when the handler itself fails.
+        let dispatcher = Dispatcher::builder()
             .always(|envelope: Envelope| async move {
                 if envelope.meta.kind == EventKind::Installation {
                     Err(DbError)
@@ -2196,17 +2155,23 @@ mod octocrab {
             })
             .build();
 
-        assert_eq!(
-            unwrapped(dispatcher.dispatch(installation_created()).await),
-            Err(ServiceError::Db(DbError))
-        );
-        assert_eq!(
-            unwrapped(dispatcher.dispatch(check_run_completed()).await),
-            Err(ServiceError::Api(ApiError))
-        );
-        assert_eq!(
-            unwrapped(dispatcher.dispatch(pull_request_opened()).await),
-            Err(ServiceError::Queue(QueueError))
-        );
+        let error = dispatcher
+            .dispatch(installation_created())
+            .await
+            .result
+            .unwrap_err();
+        assert_eq!(source_as::<DbError>(&error), &DbError);
+        let error = dispatcher
+            .dispatch(check_run_completed())
+            .await
+            .result
+            .unwrap_err();
+        assert_eq!(source_as::<ApiError>(&error), &ApiError);
+        let error = dispatcher
+            .dispatch(pull_request_opened())
+            .await
+            .result
+            .unwrap_err();
+        assert_eq!(source_as::<QueueError>(&error), &QueueError);
     }
 }

@@ -1,5 +1,6 @@
 //! Fixtures shared by the crate's unit tests: synthetic envelopes over the
-//! fixture corpus and one application error every handler error converts into.
+//! fixture corpus and one application error the tests read a boxed dispatch
+//! source back as.
 //!
 //! Nothing here carries an authentication claim; the receiver's tests sign
 //! real requests instead.
@@ -10,7 +11,9 @@
               exist depends on the enabled features"
 )]
 
-use crate::{Action, DecodeError, Envelope, EventKind};
+use std::fmt;
+
+use crate::{Action, BoxError, DecodeError, DispatchError, Envelope, EventKind};
 
 /// A synthetic envelope of `kind` over `payload`, with `"delivery"` as its
 /// delivery ID and the meta the receiver would have read from `payload`.
@@ -102,28 +105,54 @@ pub(crate) fn unrepresentable() -> Envelope {
     )
 }
 
-/// The application error a dispatcher under test converts every handler's
-/// error into.
+/// The application error a dispatcher under test fails with, and the view a
+/// test reads a boxed dispatch source back as.
+///
+/// A handler under test returns `Handler(name)`, naming itself, so the call
+/// log and the error name the same handler. A route whose decode failed
+/// carries a boxed [`DecodeError`], which [`from_boxed`](Self::from_boxed)
+/// reads back as `Decode`, so a test asserts on one enum whichever failed.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum AppError {
     Decode,
     Handler(&'static str),
 }
 
-impl From<DecodeError> for AppError {
-    fn from(_: DecodeError) -> Self {
-        Self::Decode
+impl AppError {
+    /// The test's view of a dispatch error's boxed source: the `AppError` the
+    /// handler returned, or `Decode` for the `DecodeError` a route's decode
+    /// failed with. Anything else fails the test.
+    pub(crate) fn from_boxed(error: BoxError) -> Self {
+        match error.downcast::<Self>() {
+            Ok(error) => *error,
+            Err(error) => match error.downcast::<DecodeError>() {
+                Ok(_) => Self::Decode,
+                Err(other) => panic!("neither an AppError nor a DecodeError: {other}"),
+            },
+        }
     }
 }
 
-impl From<&'static str> for AppError {
-    fn from(message: &'static str) -> Self {
-        Self::Handler(message)
+/// A dispatch error's boxed source downcast to the type the handler returned;
+/// any other type fails the test, naming what it was.
+#[track_caller]
+pub(crate) fn source_as<E: std::error::Error + 'static>(error: &DispatchError) -> &E {
+    error.source.downcast_ref::<E>().unwrap_or_else(|| {
+        panic!(
+            "the source is not a {}: {}",
+            std::any::type_name::<E>(),
+            error.source
+        )
+    })
+}
+
+impl fmt::Display for AppError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Decode => formatter.write_str("decode"),
+            Self::Handler(name) => write!(formatter, "handler {name} failed"),
+        }
     }
 }
 
-impl From<std::convert::Infallible> for AppError {
-    fn from(never: std::convert::Infallible) -> Self {
-        match never {}
-    }
-}
+impl std::error::Error for AppError {}

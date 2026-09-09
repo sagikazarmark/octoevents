@@ -47,20 +47,28 @@ reads the "Changed" and "Removed" lists first.
   handler over a payload, an `Action`, an array of them or `AnyAction`.
 - `Dispatcher::dispatch` reports an `Outcome`: the `Match` (`Matched`,
   `UnmatchedAction`, `UnmatchedKind`) beside the result.
-- `DispatchError`: the failing handler's application error wrapped with the
-  `Tier`, the delivery's ID, kind and action, the handler's name and its
-  registration site.
+- `DispatchError`: the failing handler's application error, boxed as a
+  `BoxError`, wrapped with the `Tier`, the delivery's ID, kind and action,
+  the handler's name and its registration site. An `Error` whatever the
+  handler's error was, so a dispatcher registers as a route of another and a
+  reporter walks one chain: `Display` says where, `source()` why. A policy
+  that wants its own type back downcasts the source,
+  `error.source.downcast_ref::<AppError>()`, and a decode failure is
+  `downcast_ref::<DecodeError>()`.
+- `BoxError`: the crate's erased error, `Box<dyn Error + Send + Sync>` on
+  native targets and `Box<dyn Error>` on `wasm32`, where a Worker's error
+  holds a `JsValue`. What every handler's error converts into where it is
+  registered, and what `DispatchError::source` holds. A handler returning
+  `Result<(), BoxError>` needs no error enum; one with an error type of its
+  own keeps it, and the registration asks only `Into<BoxError>`, which every
+  `Error` is.
 - `DecodeError`: the one error of every decode path, with `KindMismatch`,
   `Json` and `Input` variants and the `input`/`input_with_source`
   constructors for a consumer's own `FromEnvelope` impl.
 - `WebhookReceiverBuilder::on_error`: an observer called with the meta and
-  the handler's error before the 500 is answered.
-- `WebhookReceiverBuilder::trace_errors` and `trace_boxed_errors` (`tracing`
-  feature): put the error's text and source on the failed-delivery event.
-  `trace_errors` asks `TracedError`, a sealed trait every `Error` implements,
-  and `trace_boxed_errors` asks `BoxedError`, an error behind a pointer or a
-  `DispatchError` over one; asking `trace_errors` of a boxed error is a
-  compile error that names `trace_boxed_errors`.
+  the handler's error, as the handler returned it, before the 500 is
+  answered. For what tracing does not do: a metric, a dead letter, a line on
+  stderr.
 - The `header` module: the names of the headers the crate reads, as
   `http::HeaderName` constants, for a transport's pre-body signature check
   and a test's `http::Request::builder()`. `CONTENT_TYPE` is
@@ -82,8 +90,6 @@ reads the "Changed" and "Removed" lists first.
   iterator, for a rotation window read from configuration as a list.
 - `From<Vec<EventKind>>` and `From<Vec<(EventKind, Action)>>` on
   `EventMatcher`, for a route table whose size is known at run time.
-- `WebhookReceiverBuilder::trace_errors` and `trace_boxed_errors` are `const
-  fn`, as `body_limit` and `handle_ping` are.
 - `Bytes` re-exported from the `bytes` crate.
 - `ReceiveError::BodyRead` and `BodyError`: a body frame the transport could
   not produce is a receive error like every other pre-handler failure,
@@ -108,8 +114,12 @@ reads the "Changed" and "Removed" lists first.
   handler and registration site of a failure; a failed delivery emits one
   event at ERROR, `handler failed`, with the delivery's identifying fields
   (`delivery_id`, `event`, and `action` and `installation_id` when it has
-  them). The 500 it is answered with is the receive span's `status`, not a
-  field of the event: a handler failure is answered nothing else.
+  them) and the handler's error, boxed, as `error`, an error value whose
+  chain of sources the subscriber renders (`error=<where>
+  error.sources=[<why>, ..]` under the `fmt` subscriber). Unconditional: no
+  setting and no observer is needed to see why a delivery failed. The 500 it
+  is answered with is the receive span's `status`, not a field of the event:
+  a handler failure is answered nothing else.
 - `tracing` feature: the `octoevents.receive` span records the text of the
   `ReceiveError` that refused a request as `error`, so a `bad_request` says
   which refusal it was. The error's source, for a body that could not be
@@ -162,14 +172,32 @@ reads the "Changed" and "Removed" lists first.
   `on_action(kind, action, handler)` are one `on(matcher, handler)`;
   `fallback` takes a handler over the envelope and may be called more than
   once, forming a chain.
-- **Breaking:** `Dispatcher::dispatch` returns `Outcome<E>`, a
+- **Breaking:** `Dispatcher<E>` is `Dispatcher`, with no error type
+  parameter, and so are `DispatcherBuilder`, `DispatchError` and `Outcome`.
+  Every handler's error is boxed as a `BoxError` where the handler is
+  registered, so handlers with different error types share one dispatcher
+  and no enum joins them; `on`, `always` and `fallback` ask
+  `H::Error: Into<BoxError>` of each, which every `Error` is, in place of
+  `E: From<H::Error>` and `on`'s `E: From<DecodeError>`. A `Decode(#[from]
+  DecodeError)` variant an application error carried for the dispatcher's
+  sake is no longer needed. `Dispatcher::<AppError>::builder()` is
+  `Dispatcher::builder()`.
+- **Breaking:** `Dispatcher::dispatch` returns `Outcome`, a
   `#[non_exhaustive]` struct, instead of `Result<(), E>`. The
   `Handler<Envelope>` impl still returns the plain result, and its error is
-  `DispatchError<E>`.
-- **Breaking:** `DispatcherBuilder::on` requires `E: From<DecodeError>`, the
-  conversion of a failed decode for the handler's input; `always`,
-  `fallback` and `build` do not, so a dispatcher of always and fallback
-  handlers builds over any error type.
+  `DispatchError`. `Outcome` and `DispatchError` are `Debug` and not
+  `Clone` or `PartialEq`, which the boxed source is not; a test reads
+  `outcome.matched` and `outcome.result` rather than comparing whole
+  outcomes.
+- **Breaking:** `DispatchError::source` is a `BoxError` and `into_source`
+  returns one. An `on_error` observer over a dispatcher that matched on its
+  application error's variants downcasts the source first:
+  `error.source.downcast_ref::<AppError>()`.
+- **Breaking:** `WebhookReceiverBuilder::build` asks `H::Error:
+  Into<BoxError>` of the receiver's handler, so the failed-delivery event can
+  carry the error; a handler returning `()` or a struct without an `Error`
+  impl is refused there. The `on_error` observer still receives the error as
+  the handler returned it, before the conversion.
 - **Breaking:** `WebhookReceiver<H, E>` is `WebhookReceiver<H>`; the error
   is the handler's.
 - `WebhookReceiver::receive` and the Tower `Service` impl borrow the handler
@@ -197,8 +225,8 @@ reads the "Changed" and "Removed" lists first.
   `http::Response`. `features = ["http"]` becomes `["http-body"]`; `tower`
   implies it, and the default features are `http-body` and `derive`. The
   receiver itself, `WebhookReceiverBuilder` and `receive_bytes` are in the
-  core under every feature set, as are `TracedError` and `BoxedError` under
-  `tracing` alone, since only the body reading touches `http_body`. The
+  core under every feature set, since only the body reading touches
+  `http_body`. The
   `http` crate itself is no longer optional: `from_signed` reads its
   `HeaderMap`, the `header` constants are its `HeaderName`s, and
   `ReceiveError::status` is its `StatusCode`. Every surveyed Rust runtime

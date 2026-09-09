@@ -9,19 +9,18 @@
 //! a request `receive` accepts with no axum in sight, a receiver over another
 //! secret answers the signed request 401, a verifier that also accepts a
 //! previous secret signs under its first, a delivery nothing routes reports
-//! which unmatched `Match` variant the Outcome table names, and the "Boxed
-//! errors" observer reaches a decode failure's serde message from
-//! `error.source.source()`.
+//! which unmatched `Match` variant the Outcome table names, and the
+//! error-handling observer reaches a decode failure's serde message by
+//! walking `source()` from the dispatch error.
 
 #![cfg(all(feature = "http-body", not(target_arch = "wasm32")))]
 
-use octoevents::{
-    AccountMeta, Action, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, Match,
-    Verifier, WebhookReceiverBuilder, WebhookSecret, header,
-};
+use std::error::Error as _;
 
-/// The quickstart's application error: no error enum, `?` converts anything.
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
+use octoevents::{
+    AccountMeta, Action, BoxError, DispatchError, Dispatcher, Envelope, EventKind, EventMeta,
+    Match, Verifier, WebhookReceiverBuilder, WebhookSecret, header,
+};
 
 /// The quickstart's handler, verbatim.
 async fn thank(envelope: Envelope) -> Result<(), BoxError> {
@@ -32,8 +31,8 @@ async fn thank(envelope: Envelope) -> Result<(), BoxError> {
 
 /// The quickstart's dispatcher, which the README's tests and prose state
 /// their claims against.
-fn thanks_opened_issues() -> Dispatcher<BoxError> {
-    Dispatcher::<BoxError>::builder()
+fn thanks_opened_issues() -> Dispatcher {
+    Dispatcher::builder()
         .on((EventKind::Issues, Action::Opened), thank)
         .build()
 }
@@ -41,7 +40,7 @@ fn thanks_opened_issues() -> Dispatcher<BoxError> {
 /// The README's first test, verbatim.
 #[tokio::test]
 async fn thanks_for_an_opened_issue() {
-    let dispatcher = Dispatcher::<BoxError>::builder()
+    let dispatcher = Dispatcher::builder()
         .on((EventKind::Issues, Action::Opened), thank)
         .build();
 
@@ -62,7 +61,7 @@ async fn thanks_for_an_opened_issue() {
 /// is built with signs it, so the test needs no HMAC code of its own.
 #[tokio::test]
 async fn accepts_a_signed_delivery() {
-    let dispatcher = Dispatcher::<BoxError>::builder()
+    let dispatcher = Dispatcher::builder()
         .on((EventKind::Issues, Action::Opened), thank)
         .build();
     let verifier = Verifier::new(WebhookSecret::new("test-secret"));
@@ -183,14 +182,12 @@ async fn a_kind_the_route_table_does_not_know_is_unmatched_by_kind() {
     outcome.result.unwrap();
 }
 
-/// The "Boxed errors" observer walks the chain from `error.source.source()`,
-/// one level below where `report` starts, because `Box<dyn Error + Send +
-/// Sync>` is not itself an `Error` and `DispatchError` over it has no
-/// `source()`. That walk is what reaches the serde field a decode failure
-/// names; `error.source` alone displays the fieldless reason. The box is a
-/// trait object, so `source()` on it needs no `use std::error::Error`.
+/// The "Error handling" observer walks the chain from the dispatch error's
+/// `source()`: the decode error first, which displays the fieldless reason,
+/// then the serde error beneath it, which names the field a decode failure
+/// missed. That walk is what reaches the field.
 #[tokio::test]
-async fn the_boxed_observer_reaches_the_serde_field_from_error_source_source() {
+async fn the_observer_reaches_the_serde_field_by_walking_source() {
     /// A view whose `title` the payload below lacks; nothing reads it, the
     /// decode is the point. The README derives its kind; here the impl is
     /// written by hand so the file compiles without the `derive` feature.
@@ -213,9 +210,7 @@ async fn the_boxed_observer_reaches_the_serde_field_from_error_source_source() {
         Ok(())
     }
 
-    let dispatcher = Dispatcher::<BoxError>::builder()
-        .on([Action::Opened], label)
-        .build();
+    let dispatcher = Dispatcher::builder().on([Action::Opened], label).build();
 
     let envelope = Envelope::new(
         "delivery-1",
@@ -223,23 +218,28 @@ async fn the_boxed_observer_reaches_the_serde_field_from_error_source_source() {
         br#"{"action":"opened","issue":{"number":7}}"#,
     );
 
-    let error: DispatchError<BoxError> = dispatcher.dispatch(envelope).await.result.unwrap_err();
+    let error: DispatchError = dispatcher.dispatch(envelope).await.result.unwrap_err();
 
     // The README's observer, its `eprintln!`s collected instead.
-    let mut lines = vec![format!("{error}: {}", error.source)];
-    let mut cause = error.source.source();
+    let mut lines = vec![error.to_string()];
+    let mut cause = error.source();
     while let Some(error) = cause {
         lines.push(format!("  caused by: {error}"));
         cause = error.source();
     }
 
-    assert_eq!(lines.len(), 2, "{lines:#?}");
+    assert_eq!(lines.len(), 3, "{lines:#?}");
     assert!(
-        lines[0].ends_with(": payload could not be decoded"),
+        lines[0].contains("failed in the route tier"),
         "{}",
         lines[0]
     );
+    assert!(
+        lines[1].ends_with("payload could not be decoded"),
+        "{}",
+        lines[1]
+    );
     // The field name is the README's claim; the sentence around it is
     // serde_json's.
-    assert!(lines[1].contains("`title`"), "{}", lines[1]);
+    assert!(lines[2].contains("`title`"), "{}", lines[2]);
 }

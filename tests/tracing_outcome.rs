@@ -33,36 +33,21 @@ mod common;
 
 use common::{Fields, SpanRecord, Value};
 use octoevents::{
-    Action, AnyAction, DecodeError, DispatchError, Dispatcher, Envelope, EventKind, Handler as _,
-    Match, Outcome, Signature, SignatureError, Verifier, WebhookSecret,
+    Action, AnyAction, DispatchError, Dispatcher, Envelope, EventKind, Handler as _, Match,
+    Outcome, Signature, SignatureError, Verifier, WebhookSecret,
 };
 
-#[derive(Debug, PartialEq)]
-enum AppError {
-    Decode,
-    Handler(&'static str),
-}
-
-impl From<DecodeError> for AppError {
-    fn from(_: DecodeError) -> Self {
-        Self::Decode
-    }
-}
-
-impl From<&'static str> for AppError {
-    fn from(message: &'static str) -> Self {
-        Self::Handler(message)
-    }
+/// The boxed source's text: the handlers here fail with a `&'static str`,
+/// which the box displays verbatim.
+fn source_text(error: DispatchError) -> String {
+    error.into_source().to_string()
 }
 
 /// The match and the handlers' result with the dispatch error unwrapped to
-/// its source: these tests check the span's label against what was returned,
-/// not where the failing handler was registered.
-fn unwrapped_outcome<E>(outcome: Outcome<E>) -> (Match, Result<(), E>) {
-    (
-        outcome.matched,
-        outcome.result.map_err(DispatchError::into_source),
-    )
+/// its source's text: these tests check the span's label against what was
+/// returned, not where the failing handler was registered.
+fn unwrapped_outcome(outcome: Outcome) -> (Match, Result<(), String>) {
+    (outcome.matched, outcome.result.map_err(source_text))
 }
 
 /// A view any `pull_request` payload satisfies. Written by hand rather than
@@ -107,10 +92,10 @@ where
     )
 }
 
-fn dispatcher() -> Dispatcher<AppError> {
-    Dispatcher::<AppError>::builder()
+fn dispatcher() -> Dispatcher {
+    Dispatcher::builder()
         .on([Action::Opened], |_: AnyPullRequest| async {
-            Ok::<_, AppError>(())
+            Ok::<_, &'static str>(())
         })
         .on([Action::Closed], |_: AnyPullRequest| async {
             Err::<(), _>("routed")
@@ -139,7 +124,7 @@ fn the_span_records_one_of_four_outcomes_derived_from_the_returned_outcome() {
     assert_eq!(fields.str("outcome"), Some("handler_error"));
     assert_eq!(
         unwrapped_outcome(outcome),
-        (Match::Matched, Err(AppError::Handler("routed")))
+        (Match::Matched, Err("routed".to_owned()))
     );
 
     // Unmatched with the kind known and unknown both read as unmatched: the
@@ -159,7 +144,7 @@ fn the_span_records_one_of_four_outcomes_derived_from_the_returned_outcome() {
     assert_eq!(fields.str("outcome"), Some("unmatched_error"));
     assert_eq!(
         unwrapped_outcome(outcome),
-        (Match::UnmatchedKind, Err(AppError::Handler("unmatched")))
+        (Match::UnmatchedKind, Err("unmatched".to_owned()))
     );
 }
 
@@ -173,8 +158,8 @@ fn a_failure_before_routing_is_labelled_by_the_match_the_route_table_decided() {
     // No fallback is registered: the label must not claim one ran. The
     // location is that of the registration method's name, so the failing
     // handler is registered on the line after `line!()`.
-    let builder = Dispatcher::<AppError>::builder().on(AnyAction, |_: AnyPullRequest| async {
-        Ok::<_, AppError>(())
+    let builder = Dispatcher::builder().on(AnyAction, |_: AnyPullRequest| async {
+        Ok::<_, &'static str>(())
     });
     let registration_line = line!() + 1;
     let dispatcher = builder.always(fail_audit).build();
@@ -189,7 +174,7 @@ fn a_failure_before_routing_is_labelled_by_the_match_the_route_table_decided() {
     assert_eq!(fields.str("tier"), Some("always"));
     assert_eq!(
         unwrapped_outcome(outcome),
-        (Match::Matched, Err(AppError::Handler("audit")))
+        (Match::Matched, Err("audit".to_owned()))
     );
 
     let (fields, outcome) =
@@ -199,7 +184,7 @@ fn a_failure_before_routing_is_labelled_by_the_match_the_route_table_decided() {
     assert_registered_on(&fields, registration_line);
     assert_eq!(
         unwrapped_outcome(outcome),
-        (Match::UnmatchedKind, Err(AppError::Handler("audit")))
+        (Match::UnmatchedKind, Err("audit".to_owned()))
     );
 }
 
@@ -210,15 +195,12 @@ fn the_handle_path_records_the_same_outcome() {
     let (fields, result) =
         traced(dispatcher.handle(envelope(EventKind::PullRequest, Some(Action::Closed))));
     assert_eq!(fields.str("outcome"), Some("handler_error"));
-    assert_eq!(
-        result.map_err(DispatchError::into_source),
-        Err(AppError::Handler("routed"))
-    );
+    assert_eq!(result.map_err(source_text), Err("routed".to_owned()));
 
     let (fields, result) =
         traced(dispatcher.handle(envelope(EventKind::CheckRun, Some(Action::Completed))));
     assert_eq!(fields.str("outcome"), Some("unmatched_ok"));
-    assert_eq!(result.map_err(DispatchError::into_source), Ok(()));
+    result.unwrap();
 }
 
 /// A fallback that fails `check_run` deliveries and passes every other kind.
@@ -234,7 +216,7 @@ async fn fail_check_run(envelope: Envelope) -> Result<(), &'static str> {
 fn a_failure_records_the_tier_the_handler_and_the_registration_site_of_the_failing_handler() {
     // The location is that of the registration method's name, so the failing
     // handler is registered on the line after `line!()`.
-    let builder = Dispatcher::<AppError>::builder();
+    let builder = Dispatcher::builder();
     let registration_line = line!() + 1;
     let dispatcher = builder.fallback(fail_check_run).build();
 
@@ -299,7 +281,7 @@ impl Fallible for Audit {
 
 #[test]
 fn a_handler_name_with_spaces_in_it_is_recorded_whole() {
-    let dispatcher = Dispatcher::<AppError>::builder()
+    let dispatcher = Dispatcher::builder()
         .always(<Audit as Fallible>::fail)
         .build();
 
@@ -471,17 +453,15 @@ mod receiving {
     use http_body_util::Full;
     use octoevents::{DispatchError, Dispatcher, WebhookReceiver, WebhookReceiverBuilder};
 
-    use super::{AppError, BODY, verifier};
+    use super::{BODY, verifier};
 
     /// The receiver's builder, for a test that changes a setting before it
     /// builds.
-    pub(super) fn builder() -> WebhookReceiverBuilder<DispatchError<AppError>> {
+    pub(super) fn builder() -> WebhookReceiverBuilder<DispatchError> {
         WebhookReceiverBuilder::new(verifier())
     }
 
-    pub(super) fn receiver(
-        dispatcher: Dispatcher<AppError>,
-    ) -> WebhookReceiver<Dispatcher<AppError>> {
+    pub(super) fn receiver(dispatcher: Dispatcher) -> WebhookReceiver<Dispatcher> {
         builder().build(dispatcher)
     }
 
@@ -572,7 +552,7 @@ fn the_receive_span_records_one_of_five_outcomes_beside_the_status_answered() {
         ),
         (
             "a delivery its handler fails",
-            receiving::receiver(Dispatcher::<AppError>::builder().always(fail_audit).build()),
+            receiving::receiver(Dispatcher::builder().always(fail_audit).build()),
             receiving::signed_request(),
             "handler_error",
             500,

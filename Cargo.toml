@@ -81,7 +81,6 @@ axum = "0.8.4"
 tokio = { version = "1.47.1", features = ["macros", "net", "rt-multi-thread", "sync"] }
 tower = { version = "0.5.2", features = ["util"] }
 tracing-subscriber = { version = "0.3.20", features = ["registry"] }
-trybuild = "1.0.121"
 
 [package.metadata.docs.rs]
 all-features = true

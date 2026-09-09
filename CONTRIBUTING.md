@@ -30,15 +30,6 @@ skips the README's programs, the fixture corpus tests in `src/octocrab.rs` and
 every test in the three `tracing_*` binaries, `tracing_hygiene` among them,
 and passes with nothing to say about them. `just full` is the complete run.
 
-`tests/diagnostics.rs` holds a compile-time diagnostic to its rendered text:
-each file under `tests/ui/` must fail to compile with exactly the `.stderr`
-beside it. The snapshot changes only when the message, the note, the bound's
-signature or rustc's wording does, never for a doc edit above the bound; when
-one of those changes on purpose, `TRYBUILD=overwrite cargo test --all-features
---test diagnostics` rewrites the `.stderr`, and the diff is reviewed as the
-message is. The harness needs `http-body` and `tracing`, so it too is in what a
-plain `cargo test` skips.
-
 A plain `cargo doc` is partial too: it builds with the default features, and
 the front page links to items that exist only under `http-body`. The comment on the
 link definitions at the end of the front page in `src/lib.rs` says how they

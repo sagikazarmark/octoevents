@@ -1,11 +1,11 @@
 //! `receive` composes with axum's `post` for every handler `post_service`
 //! accepts.
 //!
-//! The README's quickstart names `Box<dyn Error + Send + Sync>` as the
-//! application error, and its "Transports" section mounts the receiver
-//! without the `tower` feature by calling `receive` inside an axum closure.
-//! axum requires that closure's future to be `Send`, so the two compose only
-//! if `receive`'s future is `Send` for a dispatcher over the boxed error.
+//! The README's quickstart handlers return `BoxError`, and its "Transports"
+//! section mounts the receiver without the `tower` feature
+//! by calling `receive` inside an axum closure. axum requires that closure's
+//! future to be `Send`, so the two compose only if `receive`'s future is
+//! `Send` for a dispatcher.
 //! These tests hold the receiver to that: a bare `Send` assertion on the
 //! future, and the README's wiring driven end to end with the README's
 //! quickstart handler.
@@ -16,13 +16,10 @@ use axum::{Router, body::Body, extract::Request, routing::post};
 use bytes::Bytes;
 use http::StatusCode;
 use octoevents::{
-    Action, Dispatcher, Envelope, EventKind, Verifier, WebhookReceiver, WebhookReceiverBuilder,
-    WebhookSecret,
+    Action, BoxError, Dispatcher, Envelope, EventKind, Verifier, WebhookReceiver,
+    WebhookReceiverBuilder, WebhookSecret,
 };
 use tower::ServiceExt as _;
-
-/// The README's application error: no error enum, `?` converts anything.
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// The README's quickstart verifier, over its development secret; the
 /// requests below are signed with it.
@@ -37,10 +34,10 @@ async fn thank(envelope: Envelope) -> Result<(), BoxError> {
     Ok(())
 }
 
-/// The README's quickstart receiver: a dispatcher over the boxed error with
-/// `thank` routed for `issues.opened`.
-fn quickstart() -> WebhookReceiver<Dispatcher<BoxError>> {
-    let dispatcher = Dispatcher::<BoxError>::builder()
+/// The README's quickstart receiver: a dispatcher with `thank` routed for
+/// `issues.opened`.
+fn quickstart() -> WebhookReceiver<Dispatcher> {
+    let dispatcher = Dispatcher::builder()
         .on((EventKind::Issues, Action::Opened), thank)
         .build();
     WebhookReceiverBuilder::new(verifier()).build(dispatcher)

@@ -60,9 +60,26 @@ receives: the input type `I` is any `FromEnvelope`, and it says what the
 handler gets and what is decoded for it: the `Envelope` (bytes included), the
 `EventMeta` alone, a `Payload` view alone, or `Event<P>` for the meta beside
 the payload. The receiver and the always and fallback tiers take a handler
-over the envelope; a routed handler is over any input. In prose, "a handler
-over `Envelope`", "a handler over `Event<P>`".
+over the envelope; a routed handler is over any input. Its error is its own,
+`type Error` on the trait with no bound; where a handler is registered (`on`,
+`always`, `fallback`, the receiver's `build`) the error is asked to be
+`Into<BoxError>`, which every `Error` is. In prose, "a handler over
+`Envelope`", "a handler over `Event<P>`".
 _Avoid_: Callback, subscriber, webhook handler and event handler (the former two flavours; now one trait and an input type), typed handler, payload handler (a handler over a `Payload` is registered with `on` like any other; its type fixes the kind when the matcher gives actions alone), raw handler (raw named a removed tier), meta handler (removed; a handler over `EventMeta` receives only the metadata)
+
+**BoxError**:
+The crate's erased error, `octoevents::BoxError`: `Box<dyn Error + Send +
+Sync>` on native targets, the shape tower, hyper and axum call by that name,
+and `Box<dyn Error>` on `wasm32`, where a Worker's error holds a `JsValue`
+and is neither. What every handler's error converts into where the handler
+is registered, and what a dispatch error holds as its source. The one bound
+the crate places on an error, `Into<BoxError>`, admits every `Error + Send +
+Sync + 'static` type through std's blanket `From`, `BoxError` itself,
+`anyhow::Error`, `String`, `&str` and `Infallible`; `()` and a bare struct
+without an `Error` impl are refused at the registration. The alias, not the
+spelled-out box, so a consumer's `Result<(), BoxError>` compiles for a
+Worker and a native server alike, as `MaybeSend` does for a future.
+_Avoid_: `BoxedError` (the removed bound `trace_boxed_errors` asked), `DynError`, boxed error as the type (prose for what the alias is, fine), application error for the box (the application error is what a handler returns; the box is what it becomes)
 
 **Event**:
 `Event<P>`: the envelope decoded for one handler, the `EventMeta` beside the
@@ -145,32 +162,38 @@ the dispatch span.
 _Avoid_: Handler ID, handler label, type name alone (says the mechanism, not what it names)
 
 **Dispatch error**:
-What a failed dispatch reports: the application error wrapped with the tier,
-the delivery's ID, kind and action, the handler name and the registration
-site of the failing handler. Says where, not why; why is its source, the
-application error. A decode failure is reported at the handler that needed
-the decode. What the error observer receives when a dispatcher is the
-receiver's handler.
-_Avoid_: Handler error (the application error inside it), failure (prose for the event, not the type)
+What a failed dispatch reports: the application error, boxed as a `BoxError`,
+wrapped with the tier, the delivery's ID, kind and action, the handler name
+and the registration site of the failing handler. Says where, not why; why is
+its source, the boxed application error, which a policy that wants its own
+type back downcasts (`source.downcast_ref::<AppError>()`). A decode failure is
+reported at the handler that needed the decode, the `DecodeError` as the
+source. The type is `DispatchError`, an `Error` whatever the handler's error
+was, so a dispatcher nests as a route of another. What the error observer
+receives when a dispatcher is the receiver's handler.
+_Avoid_: Handler error (the application error inside it), failure (prose for the event, not the type), `DispatchError<E>` (the former generic shape; the source is always the box)
 
 **Error observer**:
 The function registered with `on_error` on the receiver builder, called with
-the event meta and a reference to the handler's error after a handler fails
-and before the 500 is answered. Synchronous, with no bound on the error type,
-and never called for a receive failure or a short-circuited ping. Not how the
-error's text reaches `tracing`; that is the failed-delivery event's setting.
-_Avoid_: Error handler (it handles nothing; the response is unchanged), hook, middleware, trace_error (the removed observer that emitted a second event; one letter from `trace_errors`, the builder setting that puts the error's text on the one event, which is not an observer)
+the event meta and a reference to the handler's error, as the handler
+returned it and before the receiver boxes it, after a handler fails and
+before the 500 is answered. Synchronous, and never called for a receive
+failure or a short-circuited ping. For what tracing does not do: a metric, a
+dead letter, a line on stderr; it runs beside the failed-delivery event and
+changes nothing about it.
+_Avoid_: Error handler (it handles nothing; the response is unchanged), hook, middleware, trace_error, `trace_errors` and `trace_boxed_errors` (removed: an observer that emitted a second event, then two builder settings that put the error on the one event; the event carries it unconditionally now)
 
 **Failed-delivery event**:
 The one `tracing` event at ERROR the receiver emits when a handler fails,
 `handler failed`: the event meta's identifying fields (delivery ID, event
-name, and action and installation ID when the delivery has them), and,
-when the receiver builder was asked with `trace_errors` (an `Error`) or
-`trace_boxed_errors` (a `BoxedError`: an error behind a pointer, or a dispatch
-error over one), the error's text as `error` and its source as `source`, the
-chain beneath rendered by the subscriber. One event whether or not the text
-is on it and whether or not an observer is registered.
-_Avoid_: Handler error event (the removed second event), log line (a subscriber's rendering of it), error event in lowercase (ambiguous with the `error` field; "ERROR event" and "event at ERROR" name the level and are fine)
+name, and action and installation ID when the delivery has them) and the
+handler's error, boxed, as `error`, an error value whose text and chain of
+sources the subscriber renders (`error=<where> error.sources=[<why>, ..]`
+under the `fmt` subscriber). Unconditional: one event, error included,
+whether or not an observer is registered. `error` is the one field name
+recorded in two forms, text alone on the receive span for a refusal and an
+error value here; to every subscriber it is the error's text in both.
+_Avoid_: Handler error event (the removed second event), log line (a subscriber's rendering of it), error event in lowercase (ambiguous with the `error` field; "ERROR event" and "event at ERROR" name the level and are fine), `source` as a field (the removed second field; the chain is under `error`)
 
 **Outcome**:
 What one dispatch reports: whether the delivery was matched, and if not,
