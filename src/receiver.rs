@@ -23,7 +23,7 @@ use crate::{
     header, trace,
 };
 
-type ServiceResponse = Response<Empty<Bytes>>;
+type ReceiveResponse = Response<Empty<Bytes>>;
 
 // The erased `on_error` observer. A trait object admits only one non-auto
 // trait, so this cannot be written as `dyn Fn(..) + MaybeSend + MaybeSync` and
@@ -480,7 +480,7 @@ where
     pub fn receive<B>(
         &self,
         request: Request<B>,
-    ) -> impl Future<Output = ServiceResponse> + MaybeSend
+    ) -> impl Future<Output = ReceiveResponse> + MaybeSend
     where
         B: Body<Data = Bytes> + MaybeSend,
         B::Error: fmt::Display,
@@ -609,9 +609,9 @@ where
     B: Body<Data = Bytes> + MaybeSend + 'static,
     B::Error: fmt::Display,
 {
-    type Response = ServiceResponse;
+    type Response = ReceiveResponse;
     type Error = Infallible;
-    type Future = BoxFuture<'static, Result<ServiceResponse, Infallible>>;
+    type Future = BoxFuture<'static, Result<ReceiveResponse, Infallible>>;
 
     fn poll_ready(&mut self, _context: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
@@ -626,7 +626,7 @@ where
     }
 }
 
-fn empty_response(status: ResponseStatus) -> ServiceResponse {
+fn empty_response(status: ResponseStatus) -> ReceiveResponse {
     Response::builder()
         .status(http::StatusCode::from(status))
         .body(Empty::new())

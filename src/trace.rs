@@ -1,4 +1,5 @@
-//! Span-field recording behind the `tracing` feature.
+//! Span-field recording behind the `tracing` feature, and the two bounds the
+//! receiver's `trace_errors` and `trace_boxed_errors` ask.
 //!
 //! The contract an operator relies on (the three spans, their levels and
 //! fields, the `outcome` vocabularies, the ERROR event) is documented once,
@@ -7,7 +8,13 @@
 //! implementation makes. What only the receiver emits, the failed-delivery
 //! event, the setting that decides which fields of the error it carries, and
 //! the `error` a receive span records for a refusal, lives with the receiver
-//! in `service`.
+//! in `receiver`.
+//!
+//! The recording functions exist under every feature set, as no-ops without
+//! `tracing`, so their call sites carry no `cfg`. The two bounds,
+//! [`TracedError`] and [`BoxedError`], are the receiver's alone and exist
+//! only when it does, with `http-body` and `tracing` together; `boxed_error`
+//! says why they sit here rather than with the receiver.
 //!
 //! The spans this crate opens (`octoevents.verify`, `octoevents.receive`,
 //! `octoevents.dispatch`) declare their late-bound fields empty and fill them
@@ -29,6 +36,16 @@
 //! computed MACs, and secrets are never recorded. `tests/tracing_hygiene.rs`
 //! holds that invariant; `tests/tracing_outcome.rs` holds the one above, and
 //! `tests/tracing_failed_delivery.rs` the ERROR event's.
+
+#[cfg(all(feature = "http-body", feature = "tracing"))]
+mod boxed_error;
+#[cfg(all(feature = "http-body", feature = "tracing"))]
+mod traced_error;
+
+#[cfg(all(feature = "http-body", feature = "tracing"))]
+pub use boxed_error::BoxedError;
+#[cfg(all(feature = "http-body", feature = "tracing"))]
+pub use traced_error::TracedError;
 
 /// Records `value` into the named field of the current span.
 #[cfg(feature = "tracing")]

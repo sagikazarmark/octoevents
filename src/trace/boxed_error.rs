@@ -4,9 +4,9 @@
 //! The receiver is its only consumer and the receiver exists with `http-body`,
 //! so the module and the export exist with `http-body` and `tracing` together; a
 //! `tracing`-only build has nothing that could use it and does not compile
-//! it. It is a module of its own rather than part of the receiver because the
-//! impl for [`DispatchError`] names the dispatcher's error type, and the
-//! receiver imports nothing from `dispatch`: it knows a dispatcher only as a
+//! it. It sits under `trace` rather than in the receiver because the impl for
+//! [`DispatchError`] names the dispatcher's error type, and the receiver
+//! imports nothing from `dispatch`: it knows a dispatcher only as a
 //! `Handler<Envelope>`, which is what makes the policy seam true.
 
 use std::error::Error;

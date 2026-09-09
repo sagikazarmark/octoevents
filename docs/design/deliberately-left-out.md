@@ -446,7 +446,7 @@ waits for `trace_errors`. A setting for it (`trace_body_errors`, say) was not
 added: the fixed text already says which refusal it was, and a transport's own
 logging says why its stream broke. The text stays on the error value, where a
 transport built on `Envelope::from_signed` that holds it decides. Recorded on
-`record_refusal` in `service` and in the `Tracing` section of the crate front
+`record_refusal` in `receiver` and in the `Tracing` section of the crate front
 page.
 
 ## The derive is suggested for `EventMeta`: a note cannot be filtered on `Self`
