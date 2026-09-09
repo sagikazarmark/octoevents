@@ -275,15 +275,16 @@ alternatives to running it at receipt are in
 _Avoid_: Peek, sniff, extract (unqualified; "extracted" is fine in prose), decode (the full, fallible turn into a handler's input), parse (kept for the header-to-kind step), lazy or deferred meta (a shape considered and declined; the meta is complete when the envelope is)
 
 **Decode**:
-Turning an envelope into a handler's input, through `FromEnvelope`: a serde
-`Payload` type checks the kind and then decodes the bytes
-(`Envelope::decode_payload`), `EventMeta` decodes nothing and `Envelope` is
-a clone, `Event<P>` pairs the meta with `P`'s decode, octocrab's
-`WebhookEvent` decodes into octocrab's model (`Envelope::decode_event`), and a
+Turning an envelope into a handler's input, through `FromEnvelope`, the one
+way to decode and spelled the same for every input, `P::from_envelope`: a
+serde `Payload` type checks the kind and then decodes the bytes, `EventMeta`
+decodes nothing and `Envelope` is a clone, `Event<P>` pairs the meta with
+`P`'s decode, octocrab's `WebhookEvent` decodes into octocrab's model, and a
 consumer type implementing `FromEnvelope` itself decodes as it sees fit, a
-view over several kinds with the kind-free `Envelope::decode`. A decode failure
+view over several kinds with the kind-free `Envelope::decode`, the one
+decoding primitive on the envelope. A decode failure
 is a `DecodeError` saying why (a kind mismatch, a JSON error, or the input's
 own reason, `DecodeError::Input`, the one a consumer's impl returns for a
 failure that is neither) and fails the delivery at the position of the handler
 that needed it.
-_Avoid_: Parse (kept for the header-to-kind and probe steps), deserialize (the serde mechanism, not the concept)
+_Avoid_: Parse (kept for the header-to-kind and probe steps), deserialize (the serde mechanism, not the concept), `decode_payload` and `decode_event` (removed inherent spellings of `from_envelope`)

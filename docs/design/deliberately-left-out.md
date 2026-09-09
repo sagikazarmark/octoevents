@@ -713,8 +713,8 @@ forward) was 48 lines, 35 of code; a dispatcher with one action-routed
 registration was 25 lines, 19 of code, and buys the
 dispatch error (tier, handler name, registration site) and the outcome,
 which the adapter would have to reinvent. The third shape, a handler over
-`Envelope` that decodes its own view with `Envelope::decode_payload`, was
-22 lines, and is the shape `decode_payload`'s own docs and the `Handler`
+`Envelope` that decodes its own view with `View::from_envelope(&envelope)`,
+was 22 lines, and is the shape the `FromEnvelope` docs and the `Handler`
 docs point the one-kind case at.
 What the adapter would save, the dispatcher already saves, in fewer lines
 and saying more.
@@ -726,4 +726,4 @@ on `wasm32` with the crate's own "is not a handler over `Envelope`". The
 wants the adapter writes it as first written, on both targets. Reopens if a
 run finds the one-route dispatcher itself the friction, now that the bound
 no longer is. The `Handler` docs point the one-kind case at
-`Envelope::decode_payload`.
+`View::from_envelope`.

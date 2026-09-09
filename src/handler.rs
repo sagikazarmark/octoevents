@@ -134,10 +134,10 @@ use crate::{MaybeSend, MaybeSync};
 /// receiver is `Clone` for any `H` without one.
 ///
 /// For one kind and nothing else, no dispatcher is needed: a handler over the
-/// envelope decodes its own view with
-/// [`Envelope::decode_payload`](crate::Envelope::decode_payload), whose kind
-/// check refuses a delivery of another kind at the kind, so a misconfigured
-/// webhook fails loudly rather than at a missing field.
+/// envelope decodes its own view with `View::from_envelope(&envelope)`, the
+/// [`FromEnvelope`](crate::FromEnvelope) impl every [`Payload`](crate::Payload)
+/// has, whose kind check refuses a delivery of another kind at the kind, so
+/// a misconfigured webhook fails loudly rather than at a missing field.
 ///
 /// Passing something that is not a handler names the input and the shape
 /// expected rather than the `Fn` bound behind it. For a struct with no impl,

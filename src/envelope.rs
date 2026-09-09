@@ -340,7 +340,8 @@ impl Envelope {
     /// `T` is any serde type and nothing ties it to the envelope's kind, so a
     /// view over fields several kinds share (the sender's `type`, say) decodes
     /// from an envelope of any kind. For a view bound to one kind, implement
-    /// [`Payload`](crate::Payload) and call [`Envelope::decode_payload`],
+    /// [`Payload`](crate::Payload) and decode with
+    /// [`FromEnvelope::from_envelope`](crate::FromEnvelope::from_envelope),
     /// which refuses an envelope of another kind before decoding.
     ///
     /// # Errors
@@ -489,12 +490,11 @@ impl BodyError {
 
 /// Why an envelope's payload could not be decoded.
 ///
-/// The one error type of every decode path: [`Envelope::decode`],
-/// [`Envelope::decode_payload`], and `Envelope::decode_event` (`octocrab`
-/// feature) return it, and the dispatcher reports it for a handler whose
-/// input could not be decoded. A single `From<DecodeError>` impl is therefore
-/// the only conversion of a decode failure an application error needs,
-/// whichever path decoded.
+/// The one error type of every decode path: [`Envelope::decode`] and every
+/// [`FromEnvelope`](crate::FromEnvelope) impl return it, and the dispatcher
+/// reports it for a handler whose input could not be decoded. A single
+/// `From<DecodeError>` impl is therefore the only conversion of a decode
+/// failure an application error needs, whichever input decoded.
 ///
 /// Three variants, each saying why: [`KindMismatch`](Self::KindMismatch),
 /// when a [`Payload`](crate::Payload) type's kind disagrees with the

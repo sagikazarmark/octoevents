@@ -850,7 +850,8 @@ mod decode {
 
     /// A view over an `issues` payload. Not a `Payload`: `decode` ties
     /// nothing to the kind, so the view declares none; the kind-checked
-    /// decode is `decode_payload`'s, tested where it lives, in `payload`.
+    /// decode is the `Payload`'s `FromEnvelope` impl, tested where it lives,
+    /// in `payload`.
     #[derive(Debug, serde::Deserialize)]
     struct IssueNumber {
         issue: Numbered,

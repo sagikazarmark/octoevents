@@ -106,7 +106,7 @@
 //! | `http-body` | yes | [`WebhookReceiver`] and [`WebhookReceiverBuilder`], with [`WebhookReceiver::receive`] over an `http::Request` whose body is an `http_body::Body` |
 //! | `derive` | yes | `#[derive(Payload)]`, declaring a serde type's kind with `#[payload(EventKind::..)]`; without it, a payload is declared with a three-line `impl Payload` |
 //! | `tower` | no | `tower_service::Service` for [`WebhookReceiver`] |
-//! | `octocrab` | no | [`FromEnvelope`] for octocrab's `WebhookEvent`, [`Payload`] for its per-kind payload structs, `Envelope::decode_event`; see [Feature caveats](#feature-caveats) |
+//! | `octocrab` | no | [`FromEnvelope`] for octocrab's `WebhookEvent` and [`Payload`] for its per-kind payload structs; see [Feature caveats](#feature-caveats) |
 //! | `tracing` | no | The spans and the failed-delivery event under [Tracing](#tracing), and `trace_errors` / `trace_boxed_errors` on [`WebhookReceiverBuilder`] |
 //!
 //! The core (envelope, verification, the handler trait and its inputs, the
@@ -195,10 +195,10 @@
 //! # Feature caveats
 //!
 //! Enabling the `octocrab` feature makes octocrab's pre-1.0 version part of
-//! this crate's public API: the `FromEnvelope` impl for its `WebhookEvent`,
-//! the `Payload` impls for its per-kind payload structs, and
-//! `Envelope::decode_event` expose octocrab's types, so an octocrab major
-//! bump is a breaking change for handlers over them. octocrab goes in the
+//! this crate's public API: the `FromEnvelope` impl for its `WebhookEvent`
+//! and the `Payload` impls for its per-kind payload structs expose octocrab's
+//! types, so an octocrab major bump is a breaking change for handlers over
+//! them. octocrab goes in the
 //! consumer's own `[dependencies]` too, to name those types; this crate
 //! re-exports none of them. The core (envelope, verification, receiver, the
 //! handler trait and its inputs, and the whole dispatcher) does not depend on

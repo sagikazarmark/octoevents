@@ -684,7 +684,7 @@ matching handler and aggregates.
 | `http-body` | yes | `WebhookReceiver` and its builder, with `receive` over an `http::Request` whose body is an `http_body::Body` |
 | `derive` | yes | `#[derive(Payload)]`, declaring a serde view's kind with `#[payload(EventKind::..)]`. Without it the same impl is three lines by hand |
 | `tower` | no | `tower_service::Service` for `WebhookReceiver`, so it mounts with `post_service` |
-| `octocrab` | no | `FromEnvelope` for octocrab's `WebhookEvent`, `Payload` for its per-kind structs, `Envelope::decode_event`. Makes octocrab's pre-1.0 types part of this crate's public API |
+| `octocrab` | no | `FromEnvelope` for octocrab's `WebhookEvent` and `Payload` for its per-kind structs. Makes octocrab's pre-1.0 types part of this crate's public API |
 | `tracing` | no | The spans and the failed-delivery event under [Tracing](#tracing), and `trace_errors` / `trace_boxed_errors` on the receiver builder |
 
 The core (envelope, verification, the handler trait and its inputs, the

@@ -32,7 +32,6 @@ reads the "Changed" and "Removed" lists first.
   with no HMAC code of its own.
 - `Envelope::new`: an unverified envelope for a test, its meta read from the
   same bytes the receiver would read.
-- `Envelope::decode_payload`: a kind-checked decode into any `Payload`.
 - `Handler<I>`: one handler trait over any `FromEnvelope` input: the
   `Envelope`, the `EventMeta`, a `Payload` view or `Event<P>` for the meta
   beside the payload. Implemented by `async fn` items, structs, closures and
@@ -137,8 +136,13 @@ reads the "Changed" and "Removed" lists first.
   two fields they are, a test builds one as a literal, and a field GitHub
   adds is a breaking change here as it would be to the literal.
 - **Breaking:** `Envelope::parse` is `Envelope::decode` and returns
-  `DecodeError`; `Envelope::parse_typed` (`octocrab` feature) is
-  `Envelope::decode_event`.
+  `DecodeError`, the kind-free decode a consumer's own `FromEnvelope` impl
+  calls. `Envelope::parse_typed` (`octocrab` feature) is gone; octocrab's
+  `WebhookEvent` decodes as every other input does,
+  `WebhookEvent::from_envelope(&envelope)`. There is one way to decode an
+  input, `FromEnvelope::from_envelope`, and no inherent method beside it: a
+  `decode_payload` and a `decode_event` existed on the way here and each was
+  called from nowhere but the `FromEnvelope` impl two lines above it.
 - **Breaking:** `WebhookHandler<E>` is `Handler<I>`, with the error as the
   associated type `Error` and the input as the type parameter. A handler
   over the envelope is `Handler<Envelope>`.

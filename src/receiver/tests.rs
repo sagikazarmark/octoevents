@@ -22,7 +22,9 @@ use http::Request;
 use http_body::Frame;
 use http_body_util::Full;
 
-use crate::{DecodeError, Envelope, EventKind, Handler, Payload, Verifier, WebhookSecret};
+use crate::{
+    DecodeError, Envelope, EventKind, FromEnvelope, Handler, Payload, Verifier, WebhookSecret,
+};
 
 /// A production-shaped handler: dependencies as fields, borrowed through
 /// `&self`, and deliberately not `Clone`.
@@ -59,8 +61,8 @@ impl Payload for IssueView {
 }
 
 /// The single-handler path: a handler over the envelope that decodes one
-/// kind's view itself with `decode_payload`. What a kind mismatch or a
-/// payload that does not fit the view does is `decode_payload`'s own
+/// kind's view itself with `from_envelope`. What a kind mismatch or a
+/// payload that does not fit the view does is the `Payload` impl's own
 /// test; here it is one handler the receiver hands the envelope to.
 struct IssueRecorder {
     seen: Arc<std::sync::Mutex<Vec<(String, String, u64)>>>,
@@ -71,7 +73,7 @@ impl Handler<Envelope> for IssueRecorder {
 
     #[expect(clippy::unused_async_trait_impl)]
     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
-        let payload = envelope.decode_payload::<IssueView>()?;
+        let payload = IssueView::from_envelope(&envelope)?;
         self.seen.lock().unwrap().push((
             envelope.meta.delivery_id,
             payload.action,
