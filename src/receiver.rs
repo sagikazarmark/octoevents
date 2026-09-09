@@ -1,26 +1,37 @@
+#[cfg(feature = "http-body")]
+use std::pin::pin;
 #[cfg(feature = "tower")]
 use std::{
     convert::Infallible,
     task::{Context, Poll},
 };
-use std::{fmt, future::Future, marker::PhantomData, pin::pin, sync::Arc};
+use std::{fmt, future::Future, marker::PhantomData, sync::Arc};
 
-use bytes::{Bytes, BytesMut};
-use http::{HeaderMap, Request, Response, StatusCode};
+use bytes::Bytes;
+#[cfg(feature = "http-body")]
+use bytes::BytesMut;
+use http::{HeaderMap, StatusCode};
+#[cfg(feature = "http-body")]
+use http::{Request, Response};
+#[cfg(feature = "http-body")]
 use http_body::Body;
+#[cfg(feature = "http-body")]
 use http_body_util::{BodyExt as _, Empty};
 #[cfg(feature = "tower")]
 use tower_service::Service;
 
+#[cfg(feature = "http-body")]
+use crate::BodyError;
 #[cfg(feature = "tower")]
 use crate::runtime::BoxFuture;
 #[cfg(feature = "tracing")]
 use crate::{Action, BoxedError, TracedError};
 use crate::{
-    BodyError, DEFAULT_BODY_LIMIT, Envelope, EventKind, EventMeta, Handler, MaybeSend, MaybeSync,
-    ReceiveError, SignatureError, Verifier, header, trace,
+    DEFAULT_BODY_LIMIT, Envelope, EventKind, EventMeta, Handler, MaybeSend, MaybeSync,
+    ReceiveError, Verifier, envelope::Refusal, header, trace,
 };
 
+#[cfg(feature = "http-body")]
 type ReceiveResponse = Response<Empty<Bytes>>;
 
 // The erased `on_error` observer. A trait object admits only one non-auto
@@ -99,11 +110,22 @@ impl<E> WebhookReceiverBuilder<E> {
         }
     }
 
-    /// Sets the maximum bytes read from an unauthenticated request.
+    /// Sets the maximum body size, in bytes, of a request the receiver
+    /// accepts.
     ///
-    /// GitHub never sends payloads above [`DEFAULT_BODY_LIMIT`]. Lower values
-    /// reduce memory exposure when an application's real events are smaller;
-    /// raising the limit does not enable larger GitHub deliveries.
+    /// On `receive` it is the most the receiver accumulates from the
+    /// transport: a body whose size hint is already over is refused before
+    /// the first frame, and the read stops at the frame that would carry the
+    /// total past the limit, so the receiver holds at most the limit plus
+    /// one frame. How large a frame the transport yields is the transport's
+    /// own bound (hyper's and axum's are small; a body that hands over its
+    /// whole payload as one frame hands it over whatever the limit). On
+    /// `receive_bytes` the body is the caller's already, and the limit is
+    /// checked against its length. Either way a body over it is
+    /// [`ReceiveError::BodyTooLarge`](crate::ReceiveError::BodyTooLarge),
+    /// 413. GitHub never sends payloads above [`DEFAULT_BODY_LIMIT`]. Lower
+    /// values reduce memory exposure when an application's real events are
+    /// smaller; raising the limit does not enable larger GitHub deliveries.
     #[must_use]
     pub const fn body_limit(mut self, limit: usize) -> Self {
         self.config.body_limit = limit;
@@ -272,7 +294,7 @@ impl<E> WebhookReceiverBuilder<E> {
     /// [`TracedError`]: crate::TracedError
     #[cfg(feature = "tracing")]
     #[must_use]
-    pub fn trace_errors(mut self) -> Self
+    pub const fn trace_errors(mut self) -> Self
     where
         E: TracedError,
     {
@@ -313,7 +335,7 @@ impl<E> WebhookReceiverBuilder<E> {
     /// [`BoxedError`]: crate::BoxedError
     #[cfg(feature = "tracing")]
     #[must_use]
-    pub fn trace_boxed_errors(mut self) -> Self
+    pub const fn trace_boxed_errors(mut self) -> Self
     where
         E: BoxedError,
     {
@@ -363,14 +385,28 @@ impl<E> Clone for WebhookReceiverBuilder<E> {
 
 /// Authenticates, bounds, and dispatches GitHub webhooks.
 ///
-/// [`WebhookReceiver::receive`] is the entry point everywhere; enabling the
-/// `tower` feature additionally implements `tower_service::Service` over the
-/// same policy, for routers that want it.
+/// Two entry points over one policy. [`receive`] (`http-body` feature, on by
+/// default) takes an `http::Request` whose body is an `http_body::Body` and
+/// answers with an `http::Response`; enabling the `tower` feature
+/// additionally implements `tower_service::Service` over it, for routers
+/// that want that. [`WebhookReceiver::receive_bytes`], in the core under
+/// every feature set, takes the request's `http::HeaderMap` and its body as
+/// [`Bytes`] already read, and answers with the `http::StatusCode`, for a
+/// transport with no `http_body::Body`, which is what every surveyed
+/// serverless runtime hands over.
 ///
 /// The caller's router remains responsible for paths and methods. Responses
 /// intentionally have empty bodies: handler details belong in logs, not in the
 /// delivery record GitHub stores, and the builder's `on_error` observer is
 /// where they are handed over.
+///
+// `receive` exists only under `http-body`; its link is an intra-doc path when
+// it is compiled in and its docs.rs URL when it is not, as the front page does.
+#[cfg_attr(feature = "http-body", doc = "[`receive`]: WebhookReceiver::receive")]
+#[cfg_attr(
+    not(feature = "http-body"),
+    doc = "[`receive`]: https://docs.rs/octoevents/latest/octoevents/struct.WebhookReceiver.html#method.receive"
+)]
 // Bounded on the struct, as `Inner` is, because the observer's type names
 // `H::Error`. Nothing is lost: `build` already required a handler.
 pub struct WebhookReceiver<H: Handler<Envelope>> {
@@ -474,6 +510,7 @@ where
     /// [`Dispatcher`]: crate::Dispatcher
     // Written as `fn -> impl Future` for the bound on the return type; the
     // body is the `async` block an `async fn` would desugar to.
+    #[cfg(feature = "http-body")]
     #[expect(clippy::manual_async_fn)]
     pub fn receive<B>(
         &self,
@@ -483,7 +520,77 @@ where
         B: Body<Data = Bytes> + MaybeSend,
         B::Error: fmt::Display,
     {
-        async move { empty_response(self.inner.process(request).await) }
+        async move { empty_response(self.inner.process_request(request).await) }
+    }
+
+    /// Authenticates, bounds, and dispatches one request whose body is
+    /// already in hand, answering with the status.
+    ///
+    /// The same contract as [`receive`], for a transport with no
+    /// `http_body::Body`: the request's `http::HeaderMap` and its body as
+    /// [`Bytes`], which is the shape every surveyed Rust runtime hands over
+    /// (`lambda_http`, `spin-sdk` and `wstd` give an `http::Request` with the
+    /// body read, `worker` and `fastly` convert to one, `aws_lambda_events`
+    /// carries a `HeaderMap` and a body string in its event structs), and
+    /// the `http::StatusCode` to answer with, since a response type is the
+    /// transport's. In order: a request whose signature header is absent
+    /// (401) or not a signature (400) is refused from the headers; a body
+    /// over the limit is 413; then [`Envelope::from_signed`] verifies and
+    /// builds the envelope, a verified `ping` is 204 unless the builder was
+    /// asked to `handle_ping`, and the handler runs, 204 when it succeeds
+    /// and 500 when it fails, after the `on_error` observer and the
+    /// failed-delivery event. Every span and field the `tracing` feature
+    /// records on `receive` is recorded here.
+    ///
+    /// A transport that streams its body and wants to refuse unsigned
+    /// traffic before buffering runs the header check itself, as the
+    /// receiver does: `Signature::try_from` on the
+    /// [`header::SIGNATURE`](crate::header::SIGNATURE) value, answered with
+    /// [`ReceiveError::status`]; then this method repeats the check on the
+    /// 71-byte header, which is cheaper than handing the parsed value across.
+    ///
+    /// ```
+    /// use http::HeaderMap;
+    /// use octoevents::{Bytes, Dispatcher, Verifier, WebhookReceiverBuilder, WebhookSecret, header};
+    ///
+    /// type BoxError = Box<dyn std::error::Error + Send + Sync>;
+    ///
+    /// # tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
+    /// let dispatcher = Dispatcher::<BoxError>::builder().build();
+    /// let verifier = Verifier::new(WebhookSecret::new("test-secret"));
+    /// let webhook = WebhookReceiverBuilder::new(verifier.clone()).build(dispatcher);
+    ///
+    /// // What a serverless runtime hands over: the headers and the body, read.
+    /// let body = Bytes::from_static(br#"{"action":"opened","sender":{"id":1,"login":"octocat"}}"#);
+    /// let mut headers = HeaderMap::new();
+    /// headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+    /// headers.insert(header::DELIVERY_ID, "delivery-1".parse().unwrap());
+    /// headers.insert(header::EVENT_NAME, "issues".parse().unwrap());
+    /// headers.insert(header::SIGNATURE, verifier.sign(&body).into());
+    ///
+    /// let status = webhook.receive_bytes(&headers, body).await;
+    ///
+    /// assert_eq!(status, 204);
+    /// # });
+    /// ```
+    ///
+    /// The future is `Send` on native targets whenever the handler is, as
+    /// [`receive`]'s is, and for the same reason.
+    ///
+    #[cfg_attr(feature = "http-body", doc = "[`receive`]: WebhookReceiver::receive")]
+    #[cfg_attr(
+        not(feature = "http-body"),
+        doc = "[`receive`]: https://docs.rs/octoevents/latest/octoevents/struct.WebhookReceiver.html#method.receive"
+    )]
+    // Written as `fn -> impl Future` for the bound on the return type; the
+    // body is the `async` block an `async fn` would desugar to.
+    #[expect(clippy::manual_async_fn)]
+    pub fn receive_bytes(
+        &self,
+        headers: &HeaderMap,
+        body: Bytes,
+    ) -> impl Future<Output = StatusCode> + MaybeSend {
+        async move { self.inner.process_bytes(headers, body).await }
     }
 }
 
@@ -491,6 +598,40 @@ impl<H> Inner<H>
 where
     H: Handler<Envelope>,
 {
+    /// The receiving path over an `http::Request`: the body is read from the
+    /// transport, within the limit, once the headers have passed.
+    #[cfg(feature = "http-body")]
+    async fn process_request<B>(&self, request: Request<B>) -> StatusCode
+    where
+        B: Body<Data = Bytes>,
+        B::Error: fmt::Display,
+    {
+        let (parts, body) = request.into_parts();
+        let limit = self.config.body_limit;
+        self.process(&parts.headers, read_body(body, limit)).await
+    }
+
+    /// The receiving path over a body already read: the limit is checked on
+    /// its length, once the headers have passed.
+    async fn process_bytes(&self, headers: &HeaderMap, body: Bytes) -> StatusCode {
+        let limit = self.config.body_limit;
+        self.process(headers, async move {
+            if body.len() > limit {
+                Err(ReceiveError::BodyTooLarge { limit })
+            } else {
+                Ok(body)
+            }
+        })
+        .await
+    }
+
+    /// The receiving contract, inside the receive span, with the body as a
+    /// future so the two paths differ only in how it is produced: the
+    /// header-only refusal runs first, and `body` is awaited only for a
+    /// request that passed it. On the request path that is what keeps
+    /// unsigned traffic from occupying `body_limit` bytes of memory; on the
+    /// bytes path the caller holds them already, and the refusal spares the
+    /// verification.
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(
@@ -505,18 +646,15 @@ where
             )
         )
     )]
-    async fn process<B>(&self, request: Request<B>) -> StatusCode
-    where
-        B: Body<Data = Bytes>,
-        B::Error: fmt::Display,
-    {
-        let (parts, body) = request.into_parts();
-        let headers = &parts.headers;
+    async fn process(
+        &self,
+        headers: &HeaderMap,
+        body: impl Future<Output = Result<Bytes, ReceiveError>>,
+    ) -> StatusCode {
         record_headers(headers);
 
         // A request whose signature header is absent or not a signature is
-        // refused on the headers alone, so unsigned traffic never occupies
-        // `body_limit` bytes of memory. `Envelope::from_signed` repeats the
+        // refused on the headers alone. `Envelope::from_signed` repeats the
         // check for transports that construct envelopes directly, and parses
         // the header again for the verifier; the header is 71 bytes, so the
         // second parse is cheaper than handing the first one across.
@@ -526,13 +664,13 @@ where
 
         let Config {
             verifier,
-            body_limit,
             handle_ping,
             observer,
             error_fields,
+            ..
         } = &self.config;
 
-        let bytes = match read_body(body, *body_limit).await {
+        let bytes = match body.await {
             Ok(bytes) => bytes,
             Err(error) => return refuse(&error),
         };
@@ -620,10 +758,11 @@ where
         // handle to the receiver state rather than borrowing `self`.
         let inner = Arc::clone(&self.inner);
 
-        Box::pin(async move { Ok(empty_response(inner.process(request).await)) })
+        Box::pin(async move { Ok(empty_response(inner.process_request(request).await)) })
     }
 }
 
+#[cfg(feature = "http-body")]
 fn empty_response(status: StatusCode) -> ReceiveResponse {
     Response::builder()
         .status(status)
@@ -639,7 +778,11 @@ fn empty_response(status: StatusCode) -> ReceiveResponse {
 /// it mid-stream at the frame that crossed, both as
 /// [`ReceiveError::BodyTooLarge`]; a frame the transport could not produce is
 /// [`ReceiveError::BodyRead`], with the transport's error as text. Trailers
-/// are passed over and do not count toward the limit.
+/// are passed over and do not count toward the limit. The limit bounds the
+/// accumulator, not a frame: a frame is the transport's allocation and has
+/// arrived before its length can be read, so the crossing frame is held for
+/// the length of the check and dropped with the error.
+#[cfg(feature = "http-body")]
 async fn read_body<B>(body: B, limit: usize) -> Result<Bytes, ReceiveError>
 where
     B: Body<Data = Bytes>,
@@ -699,14 +842,31 @@ fn record_outcome(outcome: &'static str, status: StatusCode) -> StatusCode {
 }
 
 /// Answers a request refused before any handler ran: the status the contract
-/// maps `error` to, recorded as the span's outcome, and the error's text as
-/// the span's `error`, so the span says which refusal it was where `outcome`
-/// says only its class. Every pre-handler failure is an error value and goes
-/// through here, so none selects a status on its own.
+/// maps `error` to, recorded as the span's outcome under the refusal's
+/// label, and the error's text as the span's `error`, so the span says which
+/// refusal it was where `outcome` says only its class. Every pre-handler
+/// failure is an error value and goes through here, so none selects a status
+/// on its own; the label and the status are read off the one `Refusal` the
+/// error partitions into, so a dashboard's `outcome` and the code cannot
+/// drift apart.
 fn refuse(error: &ReceiveError) -> StatusCode {
-    let status = record_outcome(refusal_label(error), error.status());
+    let refusal = error.refusal();
+    let status = record_outcome(refusal_label(refusal), refusal.status());
     record_refusal(error);
     status
+}
+
+/// The `outcome` the receive span records for a refusal: the front page's
+/// vocabulary, which a dashboard filters on verbatim, so each is a literal
+/// here and not derived from the status. One label per class, over the
+/// exhaustive `Refusal`, so a class this crate adds fails to compile here
+/// until it has a label.
+const fn refusal_label(refusal: Refusal) -> &'static str {
+    match refusal {
+        Refusal::Unauthorized => "unauthorized",
+        Refusal::BadRequest => "bad_request",
+        Refusal::PayloadTooLarge => "payload_too_large",
+    }
 }
 
 /// Records the refusal's text on the receive span as `error`, through
@@ -727,31 +887,6 @@ fn record_refusal(error: &ReceiveError) {
 /// Records nothing: the `tracing` feature is disabled.
 #[cfg(not(feature = "tracing"))]
 fn record_refusal(_error: &ReceiveError) {}
-
-/// The `outcome` the receive span records for a request refused with `error`:
-/// the front page's vocabulary for the refusals.
-///
-/// Read off the refusal, not off the status it is answered with, so the
-/// label comes from the reason and a `ReceiveError` variant this crate adds
-/// fails to compile here until it has one, as it does in
-/// [`ReceiveError::status`] until it has a code; the two matches partition
-/// the variants alike because the vocabulary names one label per code. A
-/// label rather than the code, so `outcome` is a string on every span the
-/// crate opens; the code is the span's `status` field. The vocabulary is the
-/// receive span's own, which is why it lives with the receiver and not on
-/// `ReceiveError`.
-const fn refusal_label(error: &ReceiveError) -> &'static str {
-    match error {
-        ReceiveError::Signature(SignatureError::Missing | SignatureError::Mismatch) => {
-            "unauthorized"
-        }
-        ReceiveError::Signature(SignatureError::Malformed)
-        | ReceiveError::MissingHeader { .. }
-        | ReceiveError::UnsupportedContentType
-        | ReceiveError::BodyRead(_) => "bad_request",
-        ReceiveError::BodyTooLarge { .. } => "payload_too_large",
-    }
-}
 
 /// Which fields of the handler's error the failed-delivery event carries:
 /// the receiver's setting, made on the builder.

@@ -43,7 +43,7 @@ All five registrations compiled in one round with serde views, a thiserror error
 - Registering a payload view under the wrong kind through `on` is a runtime kind mismatch ("expected a issues event", article included), not a compile error; anticipated in `on`'s rustdoc, not in the README.
 - `"pull_request.opened".parse::<EventKind>()` is silently an unknown kind.
 - A hand-built `EventMeta::new` probes nothing from the bytes, so meta and payload can disagree in a test (`installation None` beside a body that carries one); the README says "an `EventMeta` for the delivery" without warning.
-- `RepositoryRef` is all-or-nothing on a partial `repository` object.
+- `RepositoryMeta` is all-or-nothing on a partial `repository` object.
 - Bare `Ok(())` in a closure: E0283 with an unusable `E` suggestion; anticipated by the README.
 - octocrab must be added as a direct dependency to name its types, undocumented; its `installation` struct still lacks the `installation` object and strict decode still answers 500 on one drifted field, both now stated in the Features row.
 - Rust knowledge assumed: `use std::error::Error as _` for `source()`, `#[error(transparent)]`/`#[from]`, the `Ok::<_, E>` turbofish, and the "`Box<dyn Error>` is not itself an `Error`" paragraph before the first route.

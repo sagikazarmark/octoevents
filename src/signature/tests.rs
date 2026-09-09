@@ -53,6 +53,26 @@ mod secret {
     }
 
     #[test]
+    fn bytes_build_the_secret_new_would_and_refuse_empty_ones_as_a_value() {
+        // The two byte shapes a secret read from a file or a secret manager
+        // arrives in, each the fallible counterpart of `new` for bytes as
+        // `parse` is for a string.
+        let owned = WebhookSecret::try_from(b"super-secret".to_vec()).unwrap();
+        let borrowed = WebhookSecret::try_from(&b"super-secret"[..]).unwrap();
+
+        assert_eq!(*owned.0, *WebhookSecret::new("super-secret").0);
+        assert_eq!(*borrowed.0, *owned.0);
+        assert_eq!(
+            WebhookSecret::try_from(Vec::new()).unwrap_err(),
+            WebhookSecretError::Empty
+        );
+        assert_eq!(
+            WebhookSecret::try_from(&[][..]).unwrap_err(),
+            WebhookSecretError::Empty
+        );
+    }
+
+    #[test]
     fn a_clone_carries_the_same_bytes() {
         let secret = WebhookSecret::new("super-secret");
 
@@ -62,9 +82,8 @@ mod secret {
 
 mod signature {
     use http::HeaderValue;
-    use subtle::ConstantTimeEq as _;
 
-    use super::{DOCUMENTED_SIGNATURE, EMPTY_BODY_SIGNATURE, Signature, SignatureError};
+    use super::{DOCUMENTED_SIGNATURE, Signature, SignatureError};
 
     #[test]
     fn parses_githubs_documented_test_vector_and_renders_it_back() {
@@ -169,19 +188,6 @@ mod signature {
         assert_eq!(debug, "Signature([REDACTED])");
         assert!(!debug.contains("757107ea"));
     }
-
-    #[test]
-    fn constant_time_equality_tells_signatures_apart() {
-        // The comparison the verifier folds over its secrets: equal MACs are
-        // equal, different ones are not. That it runs in constant time is
-        // `subtle`'s promise, not something a test can time.
-        let signature: Signature = DOCUMENTED_SIGNATURE.parse().unwrap();
-        let same: Signature = DOCUMENTED_SIGNATURE.parse().unwrap();
-        let other: Signature = EMPTY_BODY_SIGNATURE.parse().unwrap();
-
-        assert!(bool::from(signature.ct_eq(&same)));
-        assert!(!bool::from(signature.ct_eq(&other)));
-    }
 }
 
 mod verify {
@@ -267,6 +273,22 @@ mod sign {
             verifier.sign(b"Hello, World!").to_string(),
             DOCUMENTED_SIGNATURE
         );
+    }
+
+    #[test]
+    fn a_verifier_from_a_secret_signs_under_it_and_extending_appends_after_it() {
+        // `From` is `new`, and `Extend` is `also` over an iterator: the first
+        // secret stays first, so `sign` still signs under it, and the
+        // extended-in secrets verify beside it.
+        let mut verifier = Verifier::from(WebhookSecret::new("It's a Secret to Everybody"));
+        verifier.extend([WebhookSecret::new("previous"), WebhookSecret::new("older")]);
+
+        assert_eq!(
+            verifier.sign(b"Hello, World!").to_string(),
+            DOCUMENTED_SIGNATURE
+        );
+        let under_older = Verifier::new(WebhookSecret::new("older")).sign(b"Hello, World!");
+        assert_eq!(verifier.verify(&under_older, b"Hello, World!"), Ok(()));
     }
 
     #[test]

@@ -20,8 +20,10 @@ const SHA256_HEX_CHARS: usize = SHA256_BYTES * 2;
 
 /// Bytes that cannot be a [`WebhookSecret`].
 ///
-/// Reported by [`str::parse`] into a [`WebhookSecret`]; the panicking
-/// [`WebhookSecret::new`] panics with the same message instead. This is a
+/// Reported by the fallible constructors of a [`WebhookSecret`],
+/// [`str::parse`] for a string and `TryFrom<Vec<u8>>` or `TryFrom<&[u8]>`
+/// for bytes; the panicking [`WebhookSecret::new`] panics with the same
+/// message instead. This is a
 /// configuration failure, found before any delivery arrives, and so is kept
 /// apart from [`SignatureError`], which reports a body that did not
 /// authenticate.
@@ -41,8 +43,10 @@ pub enum WebhookSecretError {
 ///
 /// A secret is never empty: an empty one is the unset- or
 /// mistyped-environment-variable failure mode, and verifying against it would
-/// accept any sender who guessed the key. Both constructors refuse one, so a
-/// [`Verifier`] cannot be handed one and has nothing left to check.
+/// accept any sender who guessed the key. Every constructor refuses one,
+/// [`WebhookSecret::new`] by panicking and [`str::parse`], `TryFrom<Vec<u8>>`
+/// and `TryFrom<&[u8]>` with a [`WebhookSecretError`], so a [`Verifier`]
+/// cannot be handed one and has nothing left to check.
 ///
 /// `Display` is deliberately not implemented: interpolating a secret into a
 /// format string is a compile error rather than silently redacted output.
@@ -51,14 +55,15 @@ pub enum WebhookSecretError {
 /// Each clone owns and independently zeroizes its own copy. The HMAC
 /// implementation necessarily keeps derived key material outside this value;
 /// that internal state is not guaranteed to be zeroized by the `hmac` crate.
+#[derive(Clone)]
 pub struct WebhookSecret(Zeroizing<Vec<u8>>);
 
 impl WebhookSecret {
     /// Creates a secret from raw bytes.
     ///
     /// For a deployment that reads its secret at startup, where an empty one
-    /// should stop the process. [`str::parse`] reports the same failure as a
-    /// value, for one that reads it per request.
+    /// should stop the process. [`str::parse`] and `TryFrom<Vec<u8>>` report
+    /// the same failure as a value, for one that reads it per request.
     ///
     /// # Panics
     ///
@@ -96,13 +101,6 @@ impl WebhookSecret {
     }
 }
 
-impl Clone for WebhookSecret {
-    fn clone(&self) -> Self {
-        // The bytes were checked when `self` was made.
-        Self(Zeroizing::new(self.0.to_vec()))
-    }
-}
-
 /// Reads a secret from a string, refusing an empty one as a value.
 ///
 /// The fallible counterpart of [`WebhookSecret::new`], for a deployment that
@@ -124,6 +122,38 @@ impl FromStr for WebhookSecret {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         Self::try_new(value.as_bytes().to_vec())
+    }
+}
+
+/// Reads a secret from owned bytes, refusing empty ones as a value.
+///
+/// The fallible counterpart of [`WebhookSecret::new`] for a secret that is
+/// not a string: one read from a file or a secret manager as bytes. The
+/// vector is taken as it is, no copy, and zeroed when the secret drops.
+///
+/// ```
+/// use octoevents::{WebhookSecret, WebhookSecretError};
+///
+/// let secret = WebhookSecret::try_from(b"current secret".to_vec())?;
+/// # let _ = secret;
+///
+/// assert_eq!(WebhookSecret::try_from(Vec::new()).unwrap_err(), WebhookSecretError::Empty);
+/// # Ok::<(), WebhookSecretError>(())
+/// ```
+impl TryFrom<Vec<u8>> for WebhookSecret {
+    type Error = WebhookSecretError;
+
+    fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
+        Self::try_new(bytes)
+    }
+}
+
+/// Reads a secret from borrowed bytes, copying them; see `TryFrom<Vec<u8>>`.
+impl TryFrom<&[u8]> for WebhookSecret {
+    type Error = WebhookSecretError;
+
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        Self::try_new(bytes.to_vec())
     }
 }
 
@@ -192,9 +222,17 @@ pub enum SignatureError {
 /// `From<Signature> for HeaderValue` is the same text as the header a test
 /// puts on its synthetic request; both are the inverse of parsing. `Debug`
 /// is redacted: the value is secret-derived, and the crate records nothing
-/// computed from the secret. The only comparison is [`subtle::ConstantTimeEq`],
-/// the one the verifier folds over its secrets; there is no `PartialEq`, so
-/// two signatures cannot be compared with `==` by accident.
+/// computed from the secret. There is no comparison: no `PartialEq`, and no
+/// `ConstantTimeEq` either; the verifier compares the MAC bytes inside
+/// [`Verifier::verify`], in constant time over every configured secret with
+/// no early exit. Not for timing: a constant-time `==` would be safe, and
+/// `digest::CtOutput`, the type the MAC is finalized as, has one. It is so
+/// that the crate offers one verification path, `verify`, and
+/// `signature == verifier.sign(body)`, which would check one secret and skip
+/// the verify span, is not a second one it hands out. Rendering two
+/// signatures with `Display` and comparing the strings remains possible, as
+/// it must while the value is printable; it is a way around the crate's
+/// path, not a path the crate offers.
 ///
 /// ```
 /// use http::HeaderValue;
@@ -217,6 +255,24 @@ pub enum SignatureError {
 ///     SignatureError::Malformed
 /// );
 /// # Ok::<(), SignatureError>(())
+/// ```
+///
+/// Neither `==` nor `ct_eq` compiles on two signatures, the trait in scope
+/// or not; the check is [`Verifier::verify`]:
+///
+/// ```compile_fail,E0369
+/// use octoevents::{Verifier, WebhookSecret};
+///
+/// let verifier = Verifier::new(WebhookSecret::new("secret"));
+/// let _ = verifier.sign(b"a") == verifier.sign(b"a");
+/// ```
+///
+/// ```compile_fail,E0599
+/// use octoevents::{Verifier, WebhookSecret};
+/// use subtle::ConstantTimeEq;
+///
+/// let verifier = Verifier::new(WebhookSecret::new("secret"));
+/// let _ = verifier.sign(b"a").ct_eq(&verifier.sign(b"a"));
 /// ```
 #[derive(Clone)]
 pub struct Signature([u8; SHA256_BYTES]);
@@ -294,13 +350,6 @@ impl From<Signature> for HeaderValue {
 impl fmt::Debug for Signature {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("Signature([REDACTED])")
-    }
-}
-
-/// Constant-time comparison of the MAC bytes.
-impl ConstantTimeEq for Signature {
-    fn ct_eq(&self, other: &Self) -> Choice {
-        self.0.ct_eq(&other.0)
     }
 }
 
@@ -400,7 +449,7 @@ impl Verifier {
     pub fn verify(&self, signature: &Signature, body: &[u8]) -> Result<(), SignatureError> {
         let mut matched = Choice::from(0);
         for secret in self.secrets.iter() {
-            matched |= secret.sign(body).ct_eq(signature);
+            matched |= secret.sign(body).0.ct_eq(&signature.0);
         }
 
         if bool::from(matched) {
@@ -448,6 +497,32 @@ impl Verifier {
     pub fn sign(&self, body: &[u8]) -> Signature {
         // `new` puts one secret in and nothing takes one out.
         self.secrets[0].sign(body)
+    }
+}
+
+/// A verifier over one secret, [`Verifier::new`] as a conversion, for a
+/// builder or a config type that takes `impl Into<Verifier>`.
+impl From<WebhookSecret> for Verifier {
+    fn from(secret: WebhookSecret) -> Self {
+        Self::new(secret)
+    }
+}
+
+/// Accepts further secrets, [`Verifier::also`] over an iterator, for a
+/// rotation window read from configuration as a list.
+///
+/// ```
+/// use octoevents::{Verifier, WebhookSecret};
+///
+/// let previous = ["previous secret", "older secret"];
+///
+/// let mut verifier = Verifier::new(WebhookSecret::new("current secret"));
+/// verifier.extend(previous.map(WebhookSecret::new));
+/// # let _ = verifier;
+/// ```
+impl Extend<WebhookSecret> for Verifier {
+    fn extend<T: IntoIterator<Item = WebhookSecret>>(&mut self, secrets: T) {
+        Arc::make_mut(&mut self.secrets).extend(secrets);
     }
 }
 

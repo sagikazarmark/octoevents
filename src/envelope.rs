@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::{EventKind, EventMeta, SignatureError, TargetType, Verifier, header};
 
-/// A GitHub webhook and its routing metadata.
+/// The verified unit of receipt: the exact payload bytes and their metadata.
 ///
 /// An envelope is the composition of its routing metadata and the exact
 /// payload bytes: `meta` is everything a handler needs to route, deduplicate,
@@ -122,7 +122,7 @@ use crate::{EventKind, EventMeta, SignatureError, TargetType, Verifier, header};
 /// omitted rather than written as `null`. Unknown fields are ignored, so a
 /// producer may annotate the document for its own transport, and a producer
 /// on a newer version of this crate does not break an older consumer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Envelope {
     /// The routing metadata extracted from the headers and the payload probe.
@@ -145,20 +145,23 @@ pub struct Envelope {
 }
 
 impl Envelope {
-    /// Authenticates the body before constructing an envelope and extracting fields.
+    /// Verifies the signature over the body, then builds the envelope.
     ///
-    /// This is the sans-I/O entry point: the receiver (`http-body` feature)
-    /// is built on it, and a transport with no `http_body::Body` calls it
-    /// directly with the request's `http::HeaderMap` and the body as
-    /// [`Bytes`], which is the shape every surveyed Rust runtime hands over:
-    /// `lambda_http` and `spin-sdk` give an `http::Request`, `worker` and
-    /// `fastly` convert to one, and `aws_lambda_events` carries a `HeaderMap`
-    /// in its event structs. A consumer hand-parsing a raw invocation event
-    /// collects its `(name, value)` pairs into a `HeaderMap`, and header-name
-    /// case is `HeaderName`'s to handle, not theirs. Answer with the
-    /// receiver's contract, as an `http::StatusCode`: [`ReceiveError::status`]
-    /// for a failure here, `NO_CONTENT` once the handler has succeeded, and
-    /// `INTERNAL_SERVER_ERROR` when it has failed.
+    /// This is the one step of receiving that produces the envelope, and the
+    /// receiver is built on it. A transport calls it directly when it wants
+    /// the envelope and not the receiver's answer: to forward the envelope
+    /// over the wire format, to persist it before any handler runs, or to
+    /// route it itself. It takes the request's `http::HeaderMap` and the body
+    /// as [`Bytes`], the shape every surveyed Rust runtime hands over: a
+    /// consumer hand-parsing a raw invocation event collects its `(name,
+    /// value)` pairs into a `HeaderMap`, and header-name case is
+    /// `HeaderName`'s to handle, not theirs. A failure is answered with
+    /// [`ReceiveError::status`], the receiver's contract. For the whole
+    /// contract over the same two arguments, the header-only refusal, the
+    /// body limit, the `ping` short-circuit, the handler, the observer and
+    /// the tracing, call
+    /// [`WebhookReceiver::receive_bytes`](crate::WebhookReceiver::receive_bytes)
+    /// instead, which is in the core beside this.
     ///
     /// The headers are read by the names in [`header`](crate::header), by
     /// which `HeaderMap` matches case-insensitively, and a repeated header
@@ -183,76 +186,45 @@ impl Envelope {
     ///
     /// # What the receiver adds
     ///
-    /// `WebhookReceiver` (`http-body` feature) does three things around this
-    /// call that a transport built directly on it must do for itself, or
-    /// decide to go without. This is the receiver's sequence for a transport
-    /// that is handed the headers and the body; each of the three returns the
-    /// status the receiver would, and the handler runs only once all three
-    /// have passed:
+    /// Around this call the receiver refuses a request whose signature header
+    /// is absent (401) or not a signature (400) from the headers alone: on
+    /// `receive`, before the body is read from the transport, so unsigned
+    /// traffic never occupies memory, and on `receive_bytes`, before anything
+    /// else, the bytes being the caller's already. It bounds the body at the
+    /// configured limit (413), and answers a verified `ping` 204 before any
+    /// handler runs, unless asked to `handle_ping`. A transport
+    /// calling this function directly does those for itself, or decides to go
+    /// without: without the first, unsigned traffic is buffered before it is
+    /// refused; without the second, this function verifies whatever it is
+    /// given; without the third, a transport that forwards every envelope
+    /// forwards pings too. The header check is `Signature::try_from` on the
+    /// [`header::SIGNATURE`](crate::header::SIGNATURE) value, answered with
+    /// [`ReceiveError::status`]:
     ///
     /// ```
     /// use http::{HeaderMap, StatusCode};
-    /// use octoevents::{
-    ///     Bytes, DEFAULT_BODY_LIMIT, Envelope, EventKind, Handler, ReceiveError, Signature,
-    ///     SignatureError, Verifier, header,
-    /// };
+    /// use octoevents::{Bytes, Envelope, ReceiveError, Signature, SignatureError, Verifier, header};
     ///
-    /// async fn receive<H: Handler<Envelope>>(
+    /// fn envelope_or_status(
     ///     verifier: &Verifier,
     ///     headers: &HeaderMap,
     ///     body: Bytes,
-    ///     handler: &H,
-    /// ) -> StatusCode {
-    ///     // Header-only rejection: a request whose signature header is
-    ///     // absent (401) or not a signature (400) is refused before the body
-    ///     // is read, so it never occupies memory. Decidable from the headers,
-    ///     // so a transport that streams runs it before buffering;
-    ///     // `from_signed` reaches the same answer for one that does not.
-    ///     let signature = headers
+    /// ) -> Result<Envelope, StatusCode> {
+    ///     // Decidable from the headers, so a transport that streams runs it
+    ///     // before buffering; `from_signed` reaches the same answer after.
+    ///     headers
     ///         .get(&header::SIGNATURE)
     ///         .ok_or(SignatureError::Missing)
-    ///         .and_then(Signature::try_from);
-    ///     if let Err(error) = signature {
-    ///         return ReceiveError::from(error).status();
-    ///     }
+    ///         .and_then(Signature::try_from)
+    ///         .map_err(|error| ReceiveError::from(error).status())?;
     ///
-    ///     // The body limit: 413 past GitHub's 25 MiB cap. The receiver stops
-    ///     // reading at the limit; a transport that streams does the same,
-    ///     // and one handed the body already read checks its length. A read
-    ///     // that fails partway is `ReceiveError::BodyRead`, 400, its text the
-    ///     // crate's and the transport's error one `source()` beneath, as a
-    ///     // `BodyError`; a transport handed the bytes never sees one.
-    ///     if body.len() > DEFAULT_BODY_LIMIT {
-    ///         return ReceiveError::BodyTooLarge { limit: DEFAULT_BODY_LIMIT }.status();
-    ///     }
-    ///
-    ///     let envelope = match Envelope::from_signed(verifier, headers, body) {
-    ///         Ok(envelope) => envelope,
-    ///         Err(error) => return error.status(),
-    ///     };
-    ///
-    ///     // The ping short-circuit: a verified `ping` is 204 and reaches no
-    ///     // handler, unless the receiver was built with `handle_ping(true)`.
-    ///     // After `from_signed`, so an unsigned ping is still 401.
-    ///     if matches!(envelope.meta.kind, EventKind::Ping) {
-    ///         return StatusCode::NO_CONTENT;
-    ///     }
-    ///
-    ///     match handler.handle(envelope).await {
-    ///         Ok(()) => StatusCode::NO_CONTENT,
-    ///         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
-    ///     }
+    ///     Envelope::from_signed(verifier, headers, body).map_err(|error| error.status())
     /// }
     /// ```
     ///
-    /// Without the first, unsigned traffic is buffered before it is refused;
-    /// without the second, this function verifies whatever it is given;
-    /// without the third, a transport that forwards every envelope forwards
-    /// pings too.
-    ///
     /// # Errors
     ///
-    /// Returns an authentication error first, [`ReceiveError::Signature`]:
+    /// Returns a signature error first, [`ReceiveError::Signature`]:
     /// [`SignatureError::Missing`] when the header is absent,
     /// [`SignatureError::Malformed`] when it does not parse as a
     /// [`Signature`](crate::Signature), [`SignatureError::Mismatch`] when no configured secret
@@ -340,7 +312,8 @@ impl Envelope {
     /// `T` is any serde type and nothing ties it to the envelope's kind, so a
     /// view over fields several kinds share (the sender's `type`, say) decodes
     /// from an envelope of any kind. For a view bound to one kind, implement
-    /// [`Payload`](crate::Payload) and call [`Envelope::decode_payload`],
+    /// [`Payload`](crate::Payload) and decode with
+    /// [`FromEnvelope::from_envelope`](crate::FromEnvelope::from_envelope),
     /// which refuses an envelope of another kind before decoding.
     ///
     /// # Errors
@@ -388,15 +361,22 @@ pub enum ReceiveError {
     UnsupportedContentType,
     /// The transport failed while the body was being read.
     ///
-    /// Produced by `WebhookReceiver` (`http-body` feature) when a body frame is an
-    /// error rather than data or trailers: the connection dropped, the client
-    /// stopped sending. Never by [`Envelope::from_signed`], which is handed
-    /// the bytes already read; a transport that streams the body itself
-    /// constructs it for the same failure. The [`source`](std::error::Error::source)
-    /// is the transport's own error as text, a [`BodyError`].
+    /// Produced by `WebhookReceiver::receive` (`http-body` feature) when a
+    /// body frame is an error rather than data or trailers: the connection
+    /// dropped, the client stopped sending. Never by
+    /// [`Envelope::from_signed`] or `WebhookReceiver::receive_bytes`, which
+    /// are handed the bytes already read; a transport that streams the body
+    /// itself constructs it for the same failure. The
+    /// [`source`](std::error::Error::source) is the transport's own error as
+    /// text, a [`BodyError`].
     #[error("could not read the webhook body")]
     BodyRead(#[source] BodyError),
-    /// The transport stopped reading after the configured limit.
+    /// The body is over the configured limit.
+    ///
+    /// On `WebhookReceiver::receive` the read stopped at the limit, from the
+    /// body's size hint before the first frame or at the frame that crossed
+    /// it; on `receive_bytes`, and for a transport that constructs this
+    /// itself, the body was already in hand and its length was over.
     #[error("webhook body exceeds the configured {limit}-byte limit")]
     BodyTooLarge {
         /// The configured maximum body size.
@@ -410,23 +390,61 @@ impl ReceiveError {
     ///
     /// An absent or mismatched signature is the client failing to
     /// authenticate, `401 Unauthorized`; a signature that is not `sha256=`
-    /// and 64 hex digits, a missing required header, a body that is not JSON
-    /// and a body the transport could not read are malformed requests,
-    /// `400 Bad Request`; a body over the limit is `413 Payload Too Large`.
+    /// and 64 hex digits, a missing required header, a content type other
+    /// than `application/json` and a body the transport could not read are
+    /// malformed requests, `400 Bad Request`; a body over the limit is `413
+    /// Payload Too Large`. Payload bytes that are not valid JSON earn no
+    /// status here: the envelope is built around them and a handler over it
+    /// runs, so only an input that decodes them fails, as a handler failure.
     /// `WebhookReceiver` applies this itself; it is public so a transport
     /// built directly on [`Envelope::from_signed`] answers GitHub the same
     /// way, as its docs show.
     #[must_use]
     pub const fn status(&self) -> StatusCode {
+        self.refusal().status()
+    }
+
+    /// The class of this refusal: the one partition of the variants, which
+    /// the status and the receive span's `outcome` label are both read off.
+    ///
+    /// A variant this crate adds fails to compile here until it is placed,
+    /// and cannot be placed differently for the status and the label.
+    pub(crate) const fn refusal(&self) -> Refusal {
         match self {
             Self::Signature(SignatureError::Missing | SignatureError::Mismatch) => {
-                StatusCode::UNAUTHORIZED
+                Refusal::Unauthorized
             }
             Self::Signature(SignatureError::Malformed)
             | Self::MissingHeader { .. }
             | Self::UnsupportedContentType
-            | Self::BodyRead(_) => StatusCode::BAD_REQUEST,
-            Self::BodyTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+            | Self::BodyRead(_) => Refusal::BadRequest,
+            Self::BodyTooLarge { .. } => Refusal::PayloadTooLarge,
+        }
+    }
+}
+
+/// The three classes a request is refused in before any handler runs, each
+/// answered with one status, and each one `outcome` label on the receive
+/// span, which the receiver spells since the vocabulary is the span's.
+///
+/// Exhaustive on purpose: the receiver's label is a match over it, so the
+/// label and the status are read off one value and cannot disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Refusal {
+    /// The client failed to authenticate: `401`.
+    Unauthorized,
+    /// The request was malformed: `400`.
+    BadRequest,
+    /// The body was over the limit: `413`.
+    PayloadTooLarge,
+}
+
+impl Refusal {
+    pub(crate) const fn status(self) -> StatusCode {
+        match self {
+            Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::BadRequest => StatusCode::BAD_REQUEST,
+            Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
         }
     }
 }
@@ -454,12 +472,11 @@ impl BodyError {
 
 /// Why an envelope's payload could not be decoded.
 ///
-/// The one error type of every decode path: [`Envelope::decode`],
-/// [`Envelope::decode_payload`], and `Envelope::decode_event` (`octocrab`
-/// feature) return it, and the dispatcher reports it for a handler whose
-/// input could not be decoded. A single `From<DecodeError>` impl is therefore
-/// the only conversion of a decode failure an application error needs,
-/// whichever path decoded.
+/// The one error type of every decode path: [`Envelope::decode`] and every
+/// [`FromEnvelope`](crate::FromEnvelope) impl return it, and the dispatcher
+/// reports it for a handler whose input could not be decoded. A single
+/// `From<DecodeError>` impl is therefore the only conversion of a decode
+/// failure an application error needs, whichever input decoded.
 ///
 /// Three variants, each saying why: [`KindMismatch`](Self::KindMismatch),
 /// when a [`Payload`](crate::Payload) type's kind disagrees with the

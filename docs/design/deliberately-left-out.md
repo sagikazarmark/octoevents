@@ -73,9 +73,39 @@ would use them. The `header` constants stayed, as `HeaderName`s, for the two
 uses that exist: a streaming transport's pre-body signature check and a test's
 `http::Request::builder()`. Recorded on `from_signed` and on the `header`
 module. The feature that gated the crate and the receiver together is
-`http-body`, gating the receiver's body handling alone and named for what it
-turns on in dependency terms; `receiver`, named for what it provides, was the
-alternative and is deferred, not rejected.
+`http-body`, named for what it turns on in dependency terms; `receiver`,
+named for what it provides, was the alternative and is deferred, not
+rejected.
+
+## The receiver is in the core; `http-body` gates `receive` alone (reversed)
+
+For a while `http-body` gated the whole `receiver` module, so a build without
+it had `Envelope::from_signed` and `ReceiveError::status` and was told, in a
+45-line block on `from_signed`'s docs, to copy the rest: the header-only
+refusal, the body limit, the `ping` short-circuit, and the 204/500 mapping.
+Of the receiver's module only `read_body` and `receive<B: Body>` touch
+`http_body`; the header refusal, the limit, `from_signed`, `ping`, the handler
+call, the `on_error` observer, the failed-delivery event and the receive span
+are all over `&HeaderMap` and `Bytes`. So the copy block was the receiver's
+policy re-derived by hand, once per transport, each slightly differently, and
+silently without the observer and the event, which the block did not show;
+and it had to move in lockstep with `process`. The deletion test on the block
+came out the other way from the one on the module: delete the block and the
+same six steps reappear in every no-`http-body` transport, which is the
+argument for a function, not prose.
+
+Now `WebhookReceiver`, its builder and `receive_bytes(&HeaderMap, Bytes) ->
+impl Future<Output = StatusCode>`, awaited like `receive`, are in the core
+under every feature set, `http-body` gates `receive<B: Body>` and the
+`Response` it answers with, which is the body handling the feature's Cargo
+comment always said it gated, and the `tower` feature still implies it. The two paths share one `process` over a
+body future, so they differ only in how the bytes are produced: read from the
+transport within the limit, or checked against it by length. `from_signed`
+stays for a transport that wants the envelope and not the answer, to forward
+it over the wire format or persist it before any handler runs; its docs say
+what the receiver does around the call, in prose, with the one header check a
+streaming transport runs before buffering as code. Recorded on
+`WebhookReceiver` and `from_signed`.
 
 ## Kind from the header, not the payload's shape
 
@@ -369,14 +399,16 @@ same situation and nothing more. octocrab's per-kind structs keep their
 crate-private macro, which exists for the shared rustdoc on each impl.
 
 The attribute takes the kind as an expression, `#[payload(EventKind::..)]`,
-and also as `#[payload(kind = EventKind::..)]`. The positional form is the
-documented one, everywhere the attribute is shown or named in a diagnostic;
-the keyed form parses as the same thing and is not documented. It is there
-so that, should the attribute ever carry a second datum, the grammar has a
-place for it without the positional form having to go. `#[derive(FromEnvelope)]`
-stays declined: a cross-kind view's decode is one line of the consumer's,
-`envelope.decode()`, and a derive would have to guess it. Recorded on
-`Payload`.
+and nothing else. An undocumented `#[payload(kind = EventKind::..)]` alias
+was accepted for a while as a reservation: should the attribute ever carry a
+second datum, the grammar would have a keyed place for it. It was removed
+once the reservation was seen to reserve nothing: a keyed second argument
+can be added after the positional kind, `#[payload(EventKind::.., other =
+..)]`, with no break to the positional form, so the alias bought a parser
+branch, an error message for a grammar nobody was told about and two tests,
+and no future. `#[derive(FromEnvelope)]` stays declined: a cross-kind view's
+decode is one line of the consumer's, `envelope.decode()`, and a derive would
+have to guess it. Recorded on `Payload`.
 
 ## No generic no-kind-check input, no `Deref` on `Event`
 
@@ -713,8 +745,8 @@ forward) was 48 lines, 35 of code; a dispatcher with one action-routed
 registration was 25 lines, 19 of code, and buys the
 dispatch error (tier, handler name, registration site) and the outcome,
 which the adapter would have to reinvent. The third shape, a handler over
-`Envelope` that decodes its own view with `Envelope::decode_payload`, was
-22 lines, and is the shape `decode_payload`'s own docs and the `Handler`
+`Envelope` that decodes its own view with `View::from_envelope(&envelope)`,
+was 22 lines, and is the shape the `FromEnvelope` docs and the `Handler`
 docs point the one-kind case at.
 What the adapter would save, the dispatcher already saves, in fewer lines
 and saying more.
@@ -726,4 +758,4 @@ on `wasm32` with the crate's own "is not a handler over `Envelope`". The
 wants the adapter writes it as first written, on both targets. Reopens if a
 run finds the one-route dispatcher itself the friction, now that the bound
 no longer is. The `Handler` docs point the one-kind case at
-`Envelope::decode_payload`.
+`View::from_envelope`.

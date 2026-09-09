@@ -13,8 +13,8 @@
 //! The recording functions exist under every feature set, as no-ops without
 //! `tracing`, so their call sites carry no `cfg`. The two bounds,
 //! [`TracedError`] and [`BoxedError`], are the receiver's alone and exist
-//! only when it does, with `http-body` and `tracing` together; `boxed_error`
-//! says why they sit here rather than with the receiver.
+//! with `tracing`, as the settings that ask them do; `boxed_error` says why
+//! they sit here rather than with the receiver.
 //!
 //! The spans this crate opens (`octoevents.verify`, `octoevents.receive`,
 //! `octoevents.dispatch`) declare their late-bound fields empty and fill them
@@ -37,14 +37,14 @@
 //! holds that invariant; `tests/tracing_outcome.rs` holds the one above, and
 //! `tests/tracing_failed_delivery.rs` the ERROR event's.
 
-#[cfg(all(feature = "http-body", feature = "tracing"))]
+#[cfg(feature = "tracing")]
 mod boxed_error;
-#[cfg(all(feature = "http-body", feature = "tracing"))]
+#[cfg(feature = "tracing")]
 mod traced_error;
 
-#[cfg(all(feature = "http-body", feature = "tracing"))]
+#[cfg(feature = "tracing")]
 pub use boxed_error::BoxedError;
-#[cfg(all(feature = "http-body", feature = "tracing"))]
+#[cfg(feature = "tracing")]
 pub use traced_error::TracedError;
 
 /// Records `value` into the named field of the current span.

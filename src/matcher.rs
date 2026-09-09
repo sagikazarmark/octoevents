@@ -31,6 +31,9 @@ use crate::{Action, EventKind, Payload};
 /// ]);
 /// // Any mix, combined.
 /// let _ = EventMatcher::from(EventKind::Push).or((EventKind::Release, Action::Published));
+/// // Kinds or pairs read from configuration, however many.
+/// let kinds = vec![EventKind::Issues, EventKind::PullRequest];
+/// let _ = EventMatcher::from(kinds);
 /// ```
 ///
 /// There is deliberately no `|` operator: operator dispatch is on the left
@@ -56,11 +59,11 @@ impl EventMatcher {
 
 /// What `Dispatcher::on` accepts as the matcher for a handler over `I`.
 ///
-/// Two families implement it. Every shape that converts into an
-/// [`EventMatcher`] says its kinds and works for any input: a kind, several
-/// kinds, a kind with one action or several, kind/action pairs, or an
-/// `EventMatcher` built with [`or`](EventMatcher::or). The other family says
-/// actions alone and takes the kind from the input, so it is implemented
+/// Two families implement it. An *absolute* matcher says its kinds and works
+/// for any input: every shape that converts into an [`EventMatcher`], a kind,
+/// several kinds, a kind with one action or several, kind/action pairs, or an
+/// `EventMatcher` built with [`or`](EventMatcher::or). A *relative* matcher
+/// says actions alone and takes the kind from the input, so it is implemented
 /// only where `I` is a [`Payload`]: one [`Action`], an array of them, or
 /// [`AnyAction`] for every action of the declared kind. With those the kind
 /// is said once, on the payload type, and the handler cannot be registered
@@ -267,6 +270,29 @@ impl<const N: usize> From<[(EventKind, Action); N]> for EventMatcher {
     }
 }
 
+// The `Vec` forms, for a route table whose size is known at run time. An
+// `IntoIterator` blanket would cover arrays and vectors alike but overlaps the
+// tuple impls above in coherence, since a tuple could implement `IntoIterator`
+// upstream, so the two collection shapes are spelled out.
+impl From<Vec<EventKind>> for EventMatcher {
+    fn from(kinds: Vec<EventKind>) -> Self {
+        Self {
+            slots: kinds.into_iter().map(Slot::any_action).collect(),
+        }
+    }
+}
+
+impl From<Vec<(EventKind, Action)>> for EventMatcher {
+    fn from(pairs: Vec<(EventKind, Action)>) -> Self {
+        Self {
+            slots: pairs
+                .into_iter()
+                .map(|(kind, action)| Slot::action(kind, action))
+                .collect(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{AnyAction, EventMatcher, IntoMatcher, Slot};
@@ -380,6 +406,27 @@ mod tests {
                 any_action(EventKind::IssueComment),
             ]
         );
+    }
+
+    #[test]
+    fn vectors_expand_as_the_arrays_of_the_same_shape_do() {
+        // The run-time-sized forms, for a route table read from
+        // configuration: the same slots as the array of the same elements.
+        assert_eq!(
+            absolute(vec![EventKind::Issues, EventKind::PullRequest]),
+            absolute([EventKind::Issues, EventKind::PullRequest])
+        );
+        assert_eq!(
+            absolute(vec![
+                (EventKind::PullRequest, Action::Opened),
+                (EventKind::Issues, Action::Closed),
+            ]),
+            absolute([
+                (EventKind::PullRequest, Action::Opened),
+                (EventKind::Issues, Action::Closed),
+            ])
+        );
+        assert_eq!(absolute(Vec::<EventKind>::new()), []);
     }
 
     #[test]

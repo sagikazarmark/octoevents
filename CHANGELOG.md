@@ -24,14 +24,16 @@ reads the "Changed" and "Removed" lists first.
   refuse anything that is not `sha256=` and 64 hex digits as
   `SignatureError::Malformed`, `Display` renders the header value back and
   `From<Signature> for http::HeaderValue` puts it on a request, marked
-  sensitive, `Debug` is redacted, and the only comparison is
-  `subtle::ConstantTimeEq`: no `PartialEq`, so no `==`.
+  sensitive, `Debug` is redacted, and it has no comparison: no `PartialEq`
+  and no `ConstantTimeEq`, so `verifier.sign(body) == signature` and
+  `.ct_eq(..)` do not compile and `Verifier::verify`, over every configured
+  secret, is the verification path the crate offers. `subtle` is no longer
+  part of the public API.
 - `Verifier::sign`: the `Signature` GitHub would send for a body, which goes
   on a request's header as it is, so a test drives the receiver it built
   with no HMAC code of its own.
 - `Envelope::new`: an unverified envelope for a test, its meta read from the
   same bytes the receiver would read.
-- `Envelope::decode_payload`: a kind-checked decode into any `Payload`.
 - `Handler<I>`: one handler trait over any `FromEnvelope` input: the
   `Envelope`, the `EventMeta`, a `Payload` view or `Event<P>` for the meta
   beside the payload. Implemented by `async fn` items, structs, closures and
@@ -63,12 +65,25 @@ reads the "Changed" and "Removed" lists first.
   `http::HeaderName` constants, for a transport's pre-body signature check
   and a test's `http::Request::builder()`. `CONTENT_TYPE` is
   `http::header::CONTENT_TYPE` re-exported, the others are GitHub's own.
-- `EventMeta::new`, `RepositoryRef::new` and `AccountRef::new` constructors.
-- `AccountRef`: the compact account reference `EventMeta::organization` and
+- `EventMeta::new`, `RepositoryMeta::new` and `AccountMeta::new` constructors.
+- `AccountMeta`: the account's meta `EventMeta::organization` and
   `EventMeta::sender` hold, the numeric `id` beside the `login`, with
   `Display` as the login.
-- `From<&str>` on `EventKind`, `Action` and `TargetType`; `Display` on
-  `TargetType` and `Match`; `Hash` on `EventMeta` and `RepositoryRef`.
+- `From<&str>` and `From<String>` on `EventKind`, `Action` and `TargetType`;
+  `Display` on `TargetType` and `Match`; `Hash` on `Envelope`, `EventMeta`
+  and `RepositoryMeta`.
+- `TryFrom<Vec<u8>>` and `TryFrom<&[u8]>` on `WebhookSecret`: the fallible
+  constructors for a secret that is bytes rather than a string, one read
+  from a file or a secret manager, refusing empty bytes as
+  `WebhookSecretError::Empty` the way `str::parse` does. `WebhookSecret::new`
+  stays the panicking form for a deployment that reads its secret at startup.
+- `From<WebhookSecret>` and `Extend<WebhookSecret>` on `Verifier`: `new` as a
+  conversion, for a builder taking `impl Into<Verifier>`, and `also` over an
+  iterator, for a rotation window read from configuration as a list.
+- `From<Vec<EventKind>>` and `From<Vec<(EventKind, Action)>>` on
+  `EventMatcher`, for a route table whose size is known at run time.
+- `WebhookReceiverBuilder::trace_errors` and `trace_boxed_errors` are `const
+  fn`, as `body_limit` and `handle_ping` are.
 - `Bytes` re-exported from the `bytes` crate.
 - `ReceiveError::BodyRead` and `BodyError`: a body frame the transport could
   not produce is a receive error like every other pre-handler failure,
@@ -79,6 +94,16 @@ reads the "Changed" and "Removed" lists first.
   receive failure with, on the error itself, so a transport built on
   `Envelope::from_signed` answers GitHub as the receiver does. It replaces
   `ResponseStatus::for_receive_error`; see Removed.
+- `WebhookReceiver::receive_bytes`: the receiver over the request's
+  `http::HeaderMap` and its body as `Bytes` already read, answering with the
+  `http::StatusCode`, for a transport with no `http_body::Body`, which is what
+  every surveyed serverless runtime hands over. The whole contract `receive`
+  applies (the header-only refusal, the body limit, `ping`, the handler, the
+  `on_error` observer, the failed-delivery event and the receive span) over
+  the two arguments `Envelope::from_signed` takes, in the core under every
+  feature set. What `from_signed`'s docs showed as 45 lines of code to copy is
+  this one call; `from_signed` stays for a transport that wants the envelope
+  and not the answer.
 - `tracing` feature: the `octoevents.dispatch` span records the tier,
   handler and registration site of a failure; a failed delivery emits one
   event at ERROR, `handler failed`, with the delivery's identifying fields
@@ -104,19 +129,32 @@ reads the "Changed" and "Removed" lists first.
 - **Breaking:** `Common` is `EventMeta`, which also carries the delivery ID,
   kind, action and target.
 - **Breaking:** `EventMeta::organization` and `EventMeta::sender` are
-  `Option<AccountRef>`, the account's numeric `id` beside its `login`, where
+  `Option<AccountMeta>`, the account's numeric `id` beside its `login`, where
   they were the login alone. The ID is the identity a policy keys on (a
   tenant table, a bot allow-list); the login can be renamed under it, and a
-  bare `String` could never grow a field, where `AccountRef` is
-  `#[non_exhaustive]` and can. `repository` already kept its `id`. On the
+  bare `String` could never grow a field. `repository` already kept its
+  `id`. On the
   wire the two are objects with `id` and `login`, and an account object
   without an `id` reads as absent, as a `repository` without `full_name`
-  does. `Display` on `AccountRef` is the login, so a `{sender}` in a format
+  does. `Display` on `AccountMeta` is the login, so a `{sender}` in a format
   string reads as before; `meta.sender.unwrap_or_default()` becomes
   `meta.sender.map(|s| s.login).unwrap_or_default()`.
+- **Breaking:** `RepositoryRef` is `RepositoryMeta`, and the account type
+  is `AccountMeta`: the meta of the repository or the account, the fields the
+  probe keeps, beside `EventMeta`, which holds them. "Ref" is a Rust word
+  (`&`, `std::cell::Ref`) and a GitHub word (`ref`, `ref_type`,
+  `refs/heads/..` in `push`, `create` and `delete` payloads), and neither is
+  what the type is. Neither is `#[non_exhaustive]`: they are the four and
+  two fields they are, a test builds one as a literal, and a field GitHub
+  adds is a breaking change here as it would be to the literal.
 - **Breaking:** `Envelope::parse` is `Envelope::decode` and returns
-  `DecodeError`; `Envelope::parse_typed` (`octocrab` feature) is
-  `Envelope::decode_event`.
+  `DecodeError`, the kind-free decode a consumer's own `FromEnvelope` impl
+  calls. `Envelope::parse_typed` (`octocrab` feature) is gone; octocrab's
+  `WebhookEvent` decodes as every other input does,
+  `WebhookEvent::from_envelope(&envelope)`. There is one way to decode an
+  input, `FromEnvelope::from_envelope`, and no inherent method beside it: a
+  `decode_payload` and a `decode_event` existed on the way here and each was
+  called from nowhere but the `FromEnvelope` impl two lines above it.
 - **Breaking:** `WebhookHandler<E>` is `Handler<I>`, with the error as the
   associated type `Error` and the input as the type parameter. A handler
   over the envelope is `Handler<Envelope>`.
@@ -155,14 +193,18 @@ reads the "Changed" and "Removed" lists first.
   `SignatureError::Malformed` (400), and any other header with such a value
   reads as absent.
 - **Breaking:** The `http` feature is `http-body`, named for what it turns
-  on: `WebhookReceiver`, its builder and `receive` over an `http_body::Body`.
-  `features = ["http"]` becomes `["http-body"]`; `tower` implies it, and the
-  default features are `http-body` and `derive`. The `http` crate itself is
-  no longer optional: `from_signed` reads its `HeaderMap`, the `header`
-  constants are its `HeaderName`s, and `ReceiveError::status` is its
-  `StatusCode`. Every surveyed Rust runtime already depends on it
-  non-optionally (`docs/research/header-abstractions.md`), and it adds one
-  entry to the no-default dependency tree.
+  on: `WebhookReceiver::receive` over an `http_body::Body`, answering an
+  `http::Response`. `features = ["http"]` becomes `["http-body"]`; `tower`
+  implies it, and the default features are `http-body` and `derive`. The
+  receiver itself, `WebhookReceiverBuilder` and `receive_bytes` are in the
+  core under every feature set, as are `TracedError` and `BoxedError` under
+  `tracing` alone, since only the body reading touches `http_body`. The
+  `http` crate itself is no longer optional: `from_signed` reads its
+  `HeaderMap`, the `header` constants are its `HeaderName`s, and
+  `ReceiveError::status` is its `StatusCode`. Every surveyed Rust runtime
+  already depends on it non-optionally
+  (`docs/research/header-abstractions.md`), and it adds one entry to the
+  no-default dependency tree.
 - **Breaking:** `Secret` is `WebhookSecret`: GitHub's term in full, beside
   `WebhookReceiver`, and no longer a collision with `secrecy::Secret` in a
   consumer's imports. `VerifyError` is `SignatureError`, named for its
@@ -222,8 +264,8 @@ reads the "Changed" and "Removed" lists first.
   runtime builds an `http::Response`. `ResponseStatus::for_receive_error(&e)`
   becomes `e.status()`, `NoContent` becomes `StatusCode::NO_CONTENT`, and
   `InternalServerError` becomes `StatusCode::INTERNAL_SERVER_ERROR`.
-- **Breaking:** `Default` on `RepositoryRef` and on the former `Common`; use
-  the `new` constructors.
+- **Breaking:** `Default` on `RepositoryMeta` (then `RepositoryRef`) and on
+  the former `Common`; use the `new` constructors or a literal.
 
 ## [0.1.0] - 2026-09-02
 

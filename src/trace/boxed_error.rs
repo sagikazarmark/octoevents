@@ -1,10 +1,9 @@
 //! The bound `WebhookReceiverBuilder::trace_boxed_errors` places on the
 //! handler's error: an error behind a pointer, or a `DispatchError` over one.
 //!
-//! The receiver is its only consumer and the receiver exists with `http-body`,
-//! so the module and the export exist with `http-body` and `tracing` together; a
-//! `tracing`-only build has nothing that could use it and does not compile
-//! it. It sits under `trace` rather than in the receiver because the impl for
+//! The receiver is its only consumer, and the bound exists with `tracing`,
+//! as the setting that asks it does. It sits under `trace` rather than in the
+//! receiver because the impl for
 //! [`DispatchError`] names the dispatcher's error type, and the receiver
 //! imports nothing from `dispatch`: it knows a dispatcher only as a
 //! `Handler<Envelope>`, which is what makes the policy seam true.

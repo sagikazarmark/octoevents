@@ -89,7 +89,7 @@ fn an_envelope_of_the_kind_decodes_into_the_view() {
         br#"{"action":"opened","issue":{"number":7,"title":"unread"}}"#,
     );
 
-    let view: IssueNumber = envelope.decode_payload().unwrap();
+    let view = IssueNumber::from_envelope(&envelope).unwrap();
     assert_eq!(view.issue.number, 7);
 
     let event = Event::<IssueNumber>::from_envelope(&envelope).unwrap();
@@ -105,7 +105,7 @@ fn an_envelope_of_another_kind_is_a_kind_mismatch() {
         br#"{"issue":{"number":7}}"#,
     );
 
-    let Err(error) = envelope.decode_payload::<IssueNumber>() else {
+    let Err(error) = IssueNumber::from_envelope(&envelope) else {
         panic!("a pull_request envelope decoded as an issues view");
     };
     assert!(
@@ -126,14 +126,14 @@ fn a_generic_view_decodes_as_each_type_its_field_deserializes_as() {
         br#"{"action":"opened","pull_request":{"number":7}}"#,
     );
 
-    let numbered: PullRequest<Number> = envelope.decode_payload().unwrap();
+    let numbered = PullRequest::<Number>::from_envelope(&envelope).unwrap();
     assert_eq!(numbered.pull_request, Number { number: 7 });
 
-    let raw: PullRequest<serde_json::Value> = envelope.decode_payload().unwrap();
-    assert_eq!(raw.pull_request["number"], 7);
+    let untyped = PullRequest::<serde_json::Value>::from_envelope(&envelope).unwrap();
+    assert_eq!(untyped.pull_request["number"], 7);
 
     let push = Envelope::new("delivery", EventKind::Push, br#"{"ref":"refs/heads/main"}"#);
-    let named: Ref<String> = push.decode_payload().unwrap();
+    let named = Ref::<String>::from_envelope(&push).unwrap();
     assert_eq!(named.r#ref, "refs/heads/main");
 }
 
@@ -144,7 +144,7 @@ fn a_handler_over_a_generic_view_is_registered_by_the_views_kind() {
         Ok(())
     }
 
-    async fn raw(
+    async fn untyped(
         Event { payload, .. }: Event<PullRequest<serde_json::Value>>,
     ) -> Result<(), Infallible> {
         println!("{}", payload.pull_request);
@@ -153,6 +153,6 @@ fn a_handler_over_a_generic_view_is_registered_by_the_views_kind() {
 
     let _dispatcher = Dispatcher::<AppError>::builder()
         .on(AnyAction, number)
-        .on(AnyAction, raw)
+        .on(AnyAction, untyped)
         .build();
 }

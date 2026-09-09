@@ -16,8 +16,8 @@
 #![cfg(all(feature = "http-body", not(target_arch = "wasm32")))]
 
 use octoevents::{
-    AccountRef, Action, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, Match, Verifier,
-    WebhookReceiverBuilder, WebhookSecret, header,
+    AccountMeta, Action, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, Match,
+    Verifier, WebhookReceiverBuilder, WebhookSecret, header,
 };
 
 /// The quickstart's application error: no error enum, `?` converts anything.
@@ -152,7 +152,7 @@ fn an_envelope_reads_its_meta_from_the_bytes() {
     assert_eq!(meta.sender, None);
     assert_eq!(probed.meta.action, Some(Action::Opened));
     assert_eq!(probed.meta.installation_id, Some(42));
-    assert_eq!(probed.meta.sender, Some(AccountRef::new(1, "octocat")));
+    assert_eq!(probed.meta.sender, Some(AccountMeta::new(1, "octocat")));
 }
 
 /// The Outcome table's first unmatched row: the kind is registered, the

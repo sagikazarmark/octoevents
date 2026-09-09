@@ -53,6 +53,17 @@ macro_rules! string_enum {
             }
         }
 
+        impl ::std::convert::From<::std::string::String> for $name {
+            /// As `From<&str>`, keeping the string for [`Unknown`](Self::Unknown)
+            /// instead of copying it.
+            fn from(value: ::std::string::String) -> Self {
+                match value.as_str() {
+                    $($wire => Self::$variant,)*
+                    _ => Self::Unknown(value),
+                }
+            }
+        }
+
         impl ::std::str::FromStr for $name {
             type Err = ::std::convert::Infallible;
 
@@ -82,7 +93,7 @@ macro_rules! string_enum {
                 D: ::serde::Deserializer<'de>,
             {
                 <::std::string::String as ::serde::Deserialize>::deserialize(deserializer)
-                    .map(|value| Self::from(value.as_str()))
+                    .map(Self::from)
             }
         }
     };
@@ -92,7 +103,7 @@ pub(crate) use string_enum;
 
 // Known GitHub webhook event names. Keep existing variants for API compatibility.
 string_enum! {
-    /// The event name from `X-GitHub-Event`.
+    /// The event kind, parsed from the `X-GitHub-Event` event name.
     ///
     /// The kind is always taken from that header, never inferred from the
     /// payload's shape. Kinds share shapes (an `issues` and an `issue_comment`
@@ -317,11 +328,12 @@ mod tests {
     /// and serializes as it quoted.
     fn round_trips<T>(values: &[T])
     where
-        T: fmt::Debug + fmt::Display + PartialEq + Serialize + for<'a> From<&'a str>,
+        T: fmt::Debug + fmt::Display + PartialEq + Serialize + for<'a> From<&'a str> + From<String>,
     {
         for value in values {
             let wire = value.to_string();
             assert_eq!(&T::from(wire.as_str()), value);
+            assert_eq!(&T::from(wire.clone()), value);
             assert_eq!(
                 serde_json::to_string(value).unwrap(),
                 format!("\"{wire}\""),
@@ -360,10 +372,12 @@ mod tests {
     fn unknown_values_are_lossless() {
         let event: EventKind = serde_json::from_str("\"future_event\"").unwrap();
         let action = Action::from("future_action");
+        let owned = Action::from(String::from("future_action"));
         let target_type: TargetType = "enterprise".parse().unwrap();
 
         assert_eq!(event, EventKind::Unknown("future_event".into()));
         assert_eq!(action, Action::Unknown("future_action".into()));
+        assert_eq!(owned, action);
         assert_eq!(target_type, TargetType::Unknown("enterprise".into()));
         assert_eq!(serde_json::to_string(&event).unwrap(), "\"future_event\"");
         assert_eq!(target_type.to_string(), "enterprise");

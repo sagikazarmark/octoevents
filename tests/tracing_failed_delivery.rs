@@ -92,7 +92,7 @@ fn assert_identifies_the_delivery(fields: &Fields) {
 }
 
 #[test]
-fn a_failed_delivery_emits_one_error_event_with_its_event_meta() {
+fn a_failed_delivery_emits_one_failed_delivery_event_with_its_event_meta() {
     let receiver = receiver(|_: Envelope| async { Err::<(), _>("handler failed") });
 
     let (recording, response) = common::traced(receiver.receive(request("pull_request")));
@@ -135,7 +135,7 @@ fn the_event_places_no_bound_on_the_handlers_error_type() {
 }
 
 #[test]
-fn a_successful_delivery_emits_no_error_event() {
+fn a_successful_delivery_emits_no_failed_delivery_event() {
     let receiver = receiver(|_: Envelope| async { Ok::<_, ()>(()) });
 
     let (recording, response) = common::traced(receiver.receive(request("pull_request")));
@@ -144,7 +144,7 @@ fn a_successful_delivery_emits_no_error_event() {
 }
 
 #[test]
-fn a_request_refused_before_any_handler_ran_emits_no_error_event() {
+fn a_request_refused_before_any_handler_ran_emits_no_failed_delivery_event() {
     // The handler would fail, but the signature was made under another
     // secret, so it never runs: the refusal is a status and a span field.
     let receiver = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("another secret")))
@@ -156,7 +156,7 @@ fn a_request_refused_before_any_handler_ran_emits_no_error_event() {
 }
 
 #[test]
-fn a_short_circuited_ping_emits_no_error_event() {
+fn a_short_circuited_ping_emits_no_failed_delivery_event() {
     let receiver = receiver(|_: Envelope| async { Err::<(), _>("handler failed") });
 
     let (recording, response) = common::traced(receiver.receive(request("ping")));

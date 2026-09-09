@@ -1,28 +1,38 @@
 //! The receiver's tests, beside the production code so they see the
 //! module's private items and share the crate's fixtures. Grouped by
-//! concern: receiving a request, the error observer, the Tower service
-//! impl, the `Debug` output, and the response contract.
+//! concern: receiving a request, receiving the headers and the body already
+//! read, the error observer, the Tower service impl, the `Debug` output, and
+//! the response contract. The request path and its body shapes exist with
+//! `http-body`; the bytes path and the `Debug` tests run under every feature
+//! set.
 //!
 //! Every request here is signed by [`verifier`], the verifier each receiver
 //! is built with, so a test that wants a refusal says which header it
 //! tampers with.
 
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+#[cfg(feature = "http-body")]
 use std::{
     collections::VecDeque,
     pin::Pin,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
     task::{Context, Poll},
 };
 
+#[cfg(feature = "http-body")]
 use bytes::Bytes;
+#[cfg(feature = "http-body")]
 use http::Request;
+#[cfg(feature = "http-body")]
 use http_body::Frame;
+#[cfg(feature = "http-body")]
 use http_body_util::Full;
 
-use crate::{DecodeError, Envelope, EventKind, Handler, Payload, Verifier, WebhookSecret};
+#[cfg(feature = "http-body")]
+use crate::{DecodeError, EventKind, FromEnvelope, Payload};
+use crate::{Envelope, Handler, Verifier, WebhookSecret};
 
 /// A production-shaped handler: dependencies as fields, borrowed through
 /// `&self`, and deliberately not `Clone`.
@@ -43,35 +53,40 @@ impl Handler<Envelope> for Recorder {
 
 /// A consumer-defined view of an `issues` payload: three fields, no
 /// octocrab dependency, bound to its kind by its `Payload` impl.
+#[cfg(feature = "http-body")]
 #[derive(serde::Deserialize)]
 struct IssueView {
     action: String,
     issue: IssueNumber,
 }
 
+#[cfg(feature = "http-body")]
 #[derive(serde::Deserialize)]
 struct IssueNumber {
     number: u64,
 }
 
+#[cfg(feature = "http-body")]
 impl Payload for IssueView {
     const KIND: EventKind = EventKind::Issues;
 }
 
 /// The single-handler path: a handler over the envelope that decodes one
-/// kind's view itself with `decode_payload`. What a kind mismatch or a
-/// payload that does not fit the view does is `decode_payload`'s own
+/// kind's view itself with `from_envelope`. What a kind mismatch or a
+/// payload that does not fit the view does is the `Payload` impl's own
 /// test; here it is one handler the receiver hands the envelope to.
+#[cfg(feature = "http-body")]
 struct IssueRecorder {
     seen: Arc<std::sync::Mutex<Vec<(String, String, u64)>>>,
 }
 
+#[cfg(feature = "http-body")]
 impl Handler<Envelope> for IssueRecorder {
     type Error = DecodeError;
 
     #[expect(clippy::unused_async_trait_impl)]
     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
-        let payload = envelope.decode_payload::<IssueView>()?;
+        let payload = IssueView::from_envelope(&envelope)?;
         self.seen.lock().unwrap().push((
             envelope.meta.delivery_id,
             payload.action,
@@ -81,6 +96,7 @@ impl Handler<Envelope> for IssueRecorder {
     }
 }
 
+#[cfg(feature = "http-body")]
 /// A body as it arrives over a real connection: one frame per poll and
 /// the default size hint, so the receiver has no total to check up front
 /// and must count as it reads. `polls` says how far it read, which tells
@@ -91,6 +107,7 @@ struct Frames {
     polls: Arc<AtomicUsize>,
 }
 
+#[cfg(feature = "http-body")]
 impl Frames {
     fn new(frames: impl IntoIterator<Item = Frame<Bytes>>) -> Self {
         Self {
@@ -113,6 +130,7 @@ impl Frames {
     }
 }
 
+#[cfg(feature = "http-body")]
 impl http_body::Body for Frames {
     type Data = Bytes;
     type Error = std::convert::Infallible;
@@ -126,6 +144,7 @@ impl http_body::Body for Frames {
     }
 }
 
+#[cfg(feature = "http-body")]
 /// A body that cannot be moved once pinned: `PhantomPinned` makes it
 /// `!Unpin`, and the frames sit behind a `Mutex` so `poll_frame` reads
 /// them through the pin without projecting. A request over it compiles
@@ -135,6 +154,7 @@ struct Pinned {
     _pinned: std::marker::PhantomPinned,
 }
 
+#[cfg(feature = "http-body")]
 impl Pinned {
     /// One data frame holding `payload`.
     fn data(payload: &'static [u8]) -> Self {
@@ -147,6 +167,7 @@ impl Pinned {
     }
 }
 
+#[cfg(feature = "http-body")]
 impl http_body::Body for Pinned {
     type Data = Bytes;
     type Error = std::convert::Infallible;
@@ -159,12 +180,14 @@ impl http_body::Body for Pinned {
     }
 }
 
+#[cfg(feature = "http-body")]
 /// A body whose transport fails on the first poll with the given text,
 /// as a dropped connection does: the receiver sees no data frame, only
 /// the error. The error type is a bare `&str`, `Display` and nothing
 /// more, which is all the receiver asks of a body's error.
 struct FailingBody(&'static str);
 
+#[cfg(feature = "http-body")]
 impl http_body::Body for FailingBody {
     type Data = Bytes;
     type Error = &'static str;
@@ -177,6 +200,7 @@ impl http_body::Body for FailingBody {
     }
 }
 
+#[cfg(feature = "http-body")]
 /// The request the receivers here accept: `body` under `event`, signed by
 /// [`verifier`], with the headers a well-formed delivery carries.
 fn request(body: &'static [u8], event: &str) -> Request<Full<Bytes>> {
@@ -187,6 +211,7 @@ fn request(body: &'static [u8], event: &str) -> Request<Full<Bytes>> {
     )
 }
 
+#[cfg(feature = "http-body")]
 /// A request over a body the test shapes itself, carrying `signature` as
 /// its signature header: `verifier().sign(..)` over the bytes the body
 /// yields, rendered, authenticates, anything else does not.
@@ -200,6 +225,7 @@ fn request_over<B>(body: B, event: &str, signature: &str) -> Request<B> {
         .unwrap()
 }
 
+#[cfg(feature = "http-body")]
 /// A signed request with one header replaced: the tampering the receiver
 /// must refuse.
 fn with_header(
@@ -213,6 +239,7 @@ fn with_header(
     request
 }
 
+#[cfg(feature = "http-body")]
 /// A signed request with one header removed.
 fn without_header(body: &'static [u8], event: &str, name: &str) -> Request<Full<Bytes>> {
     let mut request = request(body, event);
@@ -232,6 +259,7 @@ fn verifier() -> Verifier {
 /// Receiving a request: the handler forms `build` accepts, what the handler
 /// is handed, the ping short circuit, the body limit and where it stands
 /// against authentication, and the bare status a failure answers with.
+#[cfg(feature = "http-body")]
 mod receive {
     use std::sync::{
         Arc,
@@ -621,6 +649,224 @@ mod receive {
 
 /// The error observer: what it receives, the error types it accepts, and
 /// that it runs only for a handler's failure.
+/// Receiving the headers and the body already read, the path a transport
+/// with no `http_body::Body` takes: the same contract as a request, answered
+/// as the status, under every feature set.
+mod receive_bytes {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use bytes::Bytes;
+    use http::{HeaderMap, StatusCode};
+
+    use super::{Recorder, WRONG_SIGNATURE, verifier};
+    use crate::{
+        DispatchError, Dispatcher, Envelope, EventMeta, WebhookReceiverBuilder, header,
+        test_support::AppError,
+    };
+
+    /// The headers a well-formed delivery of `event` carries, signing `body`
+    /// with [`verifier`].
+    fn headers(body: &[u8], event: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+        headers.insert(header::DELIVERY_ID, "delivery".parse().unwrap());
+        headers.insert(header::EVENT_NAME, event.parse().unwrap());
+        headers.insert(header::SIGNATURE, verifier().sign(body).into());
+        headers
+    }
+
+    fn recorder() -> (Recorder, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        (
+            Recorder {
+                calls: Arc::clone(&calls),
+            },
+            calls,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_signed_delivery_reaches_the_handler_and_is_answered_204() {
+        let (handler, calls) = recorder();
+        let receiver = WebhookReceiverBuilder::new(verifier()).build(handler);
+        let body = br#"{"action":"opened"}"#;
+
+        let status = receiver
+            .receive_bytes(&headers(body, "issues"), Bytes::from_static(body))
+            .await;
+
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn the_handler_is_handed_the_envelope_the_receiver_read() {
+        // The bytes path builds the same envelope the request path does:
+        // the meta from the headers and the probe, the payload verbatim.
+        let seen: Arc<std::sync::Mutex<Option<Envelope>>> = Arc::default();
+        let handler_seen = Arc::clone(&seen);
+        let receiver = WebhookReceiverBuilder::new(verifier()).build(move |envelope: Envelope| {
+            let seen = Arc::clone(&handler_seen);
+            async move {
+                *seen.lock().unwrap() = Some(envelope);
+                Ok::<(), AppError>(())
+            }
+        });
+        let body = br#"{"action":"opened","installation":{"id":42}}"#;
+
+        let status = receiver
+            .receive_bytes(&headers(body, "issues"), Bytes::from_static(body))
+            .await;
+
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let envelope = seen.lock().unwrap().take().unwrap();
+        assert_eq!(envelope.meta.delivery_id, "delivery");
+        assert_eq!(envelope.meta.installation_id, Some(42));
+        assert_eq!(envelope.raw_payload, Bytes::from_static(body));
+    }
+
+    #[tokio::test]
+    async fn an_unsigned_or_missigned_delivery_is_refused_before_the_handler() {
+        let (handler, calls) = recorder();
+        let receiver = WebhookReceiverBuilder::new(verifier()).build(handler);
+        let body = br#"{"action":"opened"}"#;
+
+        let mut missing = headers(body, "issues");
+        missing.remove(header::SIGNATURE);
+        let mut malformed = headers(body, "issues");
+        malformed.insert(header::SIGNATURE, "sha1=abc".parse().unwrap());
+        let mut wrong = headers(body, "issues");
+        wrong.insert(header::SIGNATURE, WRONG_SIGNATURE.parse().unwrap());
+
+        let statuses = [
+            receiver
+                .receive_bytes(&missing, Bytes::from_static(body))
+                .await,
+            receiver
+                .receive_bytes(&malformed, Bytes::from_static(body))
+                .await,
+            receiver
+                .receive_bytes(&wrong, Bytes::from_static(body))
+                .await,
+        ];
+
+        assert_eq!(
+            statuses,
+            [
+                StatusCode::UNAUTHORIZED,
+                StatusCode::BAD_REQUEST,
+                StatusCode::UNAUTHORIZED
+            ]
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn a_body_over_the_limit_is_413_and_one_at_the_limit_is_received() {
+        // The limit is checked on the length of the bytes in hand, since
+        // there is no read to stop; at the limit passes, one over does not,
+        // and the refusal comes after authentication, as the request path's
+        // size-hint refusal does, so an unsigned oversized body is 401.
+        let (handler, calls) = recorder();
+        let body = br#"{"action":"opened"}"#;
+        let receiver = WebhookReceiverBuilder::new(verifier())
+            .body_limit(body.len())
+            .build(handler);
+
+        let at_limit = receiver
+            .receive_bytes(&headers(body, "issues"), Bytes::from_static(body))
+            .await;
+        let over = br#"{"action":"opened" }"#;
+        let over_limit = receiver
+            .receive_bytes(&headers(over, "issues"), Bytes::from_static(over))
+            .await;
+        let mut unsigned = headers(over, "issues");
+        unsigned.remove(header::SIGNATURE);
+        let unsigned_over_limit = receiver
+            .receive_bytes(&unsigned, Bytes::from_static(over))
+            .await;
+
+        assert_eq!(at_limit, StatusCode::NO_CONTENT);
+        assert_eq!(over_limit, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(unsigned_over_limit, StatusCode::UNAUTHORIZED);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn a_verified_ping_is_answered_without_a_handler_unless_asked() {
+        let (handler, calls) = recorder();
+        let receiver = WebhookReceiverBuilder::new(verifier()).build(handler);
+        let body = br#"{"zen":"Keep it logically awesome."}"#;
+
+        let status = receiver
+            .receive_bytes(&headers(body, "ping"), Bytes::from_static(body))
+            .await;
+
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+
+        let (handler, calls) = recorder();
+        let receiver = WebhookReceiverBuilder::new(verifier())
+            .handle_ping(true)
+            .build(handler);
+
+        let status = receiver
+            .receive_bytes(&headers(body, "ping"), Bytes::from_static(body))
+            .await;
+
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_handler_is_500_after_the_observer() {
+        // The observer and the failed-delivery event are the receiver's, not
+        // the request path's: a transport on this path loses neither.
+        let seen: Arc<std::sync::Mutex<Vec<(String, AppError)>>> = Arc::default();
+        let observer_seen = Arc::clone(&seen);
+        let dispatcher = Dispatcher::<AppError>::builder()
+            .always(|_: Envelope| async { Err::<(), _>("audit") })
+            .build();
+        let receiver = WebhookReceiverBuilder::new(verifier())
+            .on_error(move |meta: &EventMeta, error: &DispatchError<AppError>| {
+                observer_seen
+                    .lock()
+                    .unwrap()
+                    .push((meta.delivery_id.clone(), error.clone().into_source()));
+            })
+            .build(dispatcher);
+        let body = br#"{"action":"opened"}"#;
+
+        let status = receiver
+            .receive_bytes(&headers(body, "issues"), Bytes::from_static(body))
+            .await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [("delivery".to_owned(), AppError::Handler("audit"))]
+        );
+    }
+
+    #[test]
+    fn the_future_is_send_for_a_dispatcher_over_a_boxed_error() {
+        // The same proof `receive` makes: the future is `Send` whenever the
+        // handler is, promised on the return type rather than left to
+        // auto-trait leakage, which fails for this dispatcher.
+        fn assert_send<T: Send>(_: T) {}
+
+        let dispatcher = Dispatcher::<Box<dyn std::error::Error + Send + Sync>>::builder().build();
+        let receiver = WebhookReceiverBuilder::new(verifier()).build(dispatcher);
+        let headers = HeaderMap::new();
+
+        assert_send(receiver.receive_bytes(&headers, Bytes::new()));
+    }
+}
+
+#[cfg(feature = "http-body")]
 mod observer {
     use std::sync::{
         Arc,
@@ -933,16 +1179,16 @@ mod debug {
 /// the status, and the outcome label each refusal is recorded under on the
 /// receive span.
 mod respond {
-    use http::StatusCode;
-    use http_body::Body as _;
+    use crate::{BodyError, ReceiveError, SignatureError, header, receiver::refusal_label};
 
-    use crate::{
-        BodyError, ReceiveError, SignatureError, header,
-        receiver::{empty_response, refusal_label},
-    };
-
+    #[cfg(feature = "http-body")]
     #[test]
     fn response_contract_uses_empty_bodies() {
+        use http::StatusCode;
+        use http_body::Body as _;
+
+        use crate::receiver::empty_response;
+
         let response = empty_response(StatusCode::BAD_REQUEST);
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(response.body().size_hint().exact(), Some(0));
@@ -950,13 +1196,13 @@ mod respond {
 
     #[test]
     fn labels_every_refusal_with_the_outcome_the_receive_span_records() {
-        // The whole table, one row per `ReceiveError` shape the match has an
-        // arm for. The labels are the front page's vocabulary for the receive
-        // span's `outcome`, and a dashboard filters on them verbatim, so each
-        // is a literal here, not derived from the status. Which status each
-        // refusal is answered with is `ReceiveError::status`'s test; that
-        // the receiver records label and code together on the span is
-        // `tests/tracing_outcome.rs`'s.
+        // The whole table, one row per `ReceiveError` shape the partition
+        // has an arm for. The labels are the front page's vocabulary for the
+        // receive span's `outcome`, and a dashboard filters on them verbatim,
+        // so each is a literal here, not derived from the status. Which
+        // status each refusal is answered with is `ReceiveError::status`'s
+        // test; that the receiver records label and code together on the
+        // span is `tests/tracing_outcome.rs`'s.
         let table = [
             (
                 ReceiveError::Signature(SignatureError::Missing),
@@ -985,7 +1231,7 @@ mod respond {
         ];
 
         for (error, label) in table {
-            assert_eq!(refusal_label(&error), label, "{error:?}");
+            assert_eq!(refusal_label(error.refusal()), label, "{error:?}");
         }
     }
 }
