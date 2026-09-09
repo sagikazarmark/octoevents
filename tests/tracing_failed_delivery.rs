@@ -2,10 +2,11 @@
 //!
 //! When a handler fails and the receiver answers 500, it emits one `tracing`
 //! event at ERROR carrying the event meta's identifying fields (`delivery_id`,
-//! `event`, and `action` and `installation_id` when the delivery has them)
-//! and the `status` answered. Nothing else emits it: a successful delivery, a
-//! request refused before any handler ran, and a short-circuited `ping` are
-//! span fields only. By default the event carries no text of the error, so it
+//! `event`, and `action` and `installation_id` when the delivery has them);
+//! the 500 is the receive span's `status`, not a field of the event, since a
+//! handler failure is answered nothing else. Nothing else emits it: a
+//! successful delivery, a request refused before any handler ran, and a
+//! short-circuited `ping` are span fields only. By default the event carries no text of the error, so it
 //! places no bound on the handler's error type; `trace_errors` and
 //! `trace_boxed_errors` on the receiver builder put the error's text and its
 //! source chain on the same event, never a second one.
@@ -73,8 +74,8 @@ fn failed_delivery_event(recording: &Recording) -> &Fields {
 }
 
 /// Asserts the event identifies the delivery [`request`] sends: the meta's
-/// fields in the form every span records them, strings and integers, and the
-/// status answered.
+/// fields in the form every span records them, strings and integers, and no
+/// `status`, which is the receive span's.
 #[track_caller]
 fn assert_identifies_the_delivery(fields: &Fields) {
     assert_eq!(
@@ -87,11 +88,11 @@ fn assert_identifies_the_delivery(fields: &Fields) {
     );
     assert_eq!(fields.get("action"), Some(&Value::Str("opened".into())));
     assert_eq!(fields.get("installation_id"), Some(&Value::U64(42)));
-    assert_eq!(fields.get("status"), Some(&Value::U64(500)));
+    assert_eq!(fields.get("status"), None, "{fields:?}");
 }
 
 #[test]
-fn a_failed_delivery_emits_one_error_event_with_its_event_meta_and_status() {
+fn a_failed_delivery_emits_one_error_event_with_its_event_meta() {
     let receiver = receiver(|_: Envelope| async { Err::<(), _>("handler failed") });
 
     let (recording, response) = common::traced(receiver.receive(request("pull_request")));
@@ -116,7 +117,6 @@ fn the_event_omits_the_action_and_installation_id_a_delivery_does_not_have() {
     assert_eq!(fields.str("event"), Some("push"));
     assert_eq!(fields.get("action"), None, "{fields:?}");
     assert_eq!(fields.get("installation_id"), None, "{fields:?}");
-    assert_eq!(fields.get("status"), Some(&Value::U64(500)));
 }
 
 /// A handler error nothing can be done with: no `Debug`, `Display` or

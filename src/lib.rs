@@ -145,21 +145,23 @@
 //!
 //! A field recorded in more than one place is recorded in one form
 //! everywhere: `delivery_id`, `event` and `action` as strings,
-//! `installation_id` and `status` as integers, `outcome` as a string label
-//! with its own vocabulary per span, and `error`, on the receive span for a
-//! refusal and on the failed-delivery event for a handler failure, as the
-//! error's text. The one value two vocabularies share, `handler_error`,
-//! partitions differently: on the receive span it is every delivery a handler
-//! failed, since any handler error is a 500; on the dispatch span it is a
-//! matched delivery a handler failed, and an unmatched delivery failed by its
-//! `always` or `fallback` tier is `unmatched_error`. A receive
-//! `handler_error` is a dispatch `handler_error` or `unmatched_error`.
+//! `installation_id` as an integer, `outcome` as a string label with its own
+//! vocabulary per span, and `error`, on the receive span for a refusal and on
+//! the failed-delivery event for a handler failure, as the error's text. The
+//! one value two vocabularies share, `handler_error`, partitions differently:
+//! on the receive span it is every delivery a handler failed, since any
+//! handler error is a 500; on the dispatch span it is a matched delivery a
+//! handler failed, and an unmatched delivery failed by its `always` or
+//! `fallback` tier is `unmatched_error`. A receive `handler_error` is a
+//! dispatch `handler_error` or `unmatched_error`.
 //!
 //! A failed delivery also emits one event at ERROR, `handler failed`, with
-//! `delivery_id`, `event`, `status`, and `action` and `installation_id` when
-//! the delivery has them, so a subscriber filtering at ERROR sees every
-//! failed delivery without an observer. A successful delivery, a request
-//! refused before any handler ran and a short-circuited `ping` emit no event.
+//! `delivery_id`, `event`, and `action` and `installation_id` when the
+//! delivery has them, so a subscriber filtering at ERROR sees every failed
+//! delivery without an observer; the 500 it is answered with is the receive
+//! span's `status`, since a handler failure is answered nothing else. A
+//! successful delivery, a request refused before any handler ran and a
+//! short-circuited `ping` emit no event.
 //! By default the event carries no text of the error, since the receiver
 //! places no bound on the handler's error type. The text is a setting on the
 //! receiver builder, and it goes on the same event, never a second one:

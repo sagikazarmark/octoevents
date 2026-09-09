@@ -77,7 +77,10 @@ reads the "Changed" and "Removed" lists first.
   `ResponseStatus::for_receive_error`; see Removed.
 - `tracing` feature: the `octoevents.dispatch` span records the tier,
   handler and registration site of a failure; a failed delivery emits one
-  event at ERROR, `handler failed`.
+  event at ERROR, `handler failed`, with the delivery's identifying fields
+  (`delivery_id`, `event`, and `action` and `installation_id` when it has
+  them). The 500 it is answered with is the receive span's `status`, not a
+  field of the event: a handler failure is answered nothing else.
 - `tracing` feature: the `octoevents.receive` span records the text of the
   `ReceiveError` that refused a request as `error`, so a `bad_request` says
   which refusal it was. The error's source, for a body that could not be

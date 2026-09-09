@@ -562,7 +562,7 @@ where
                 // delivery ended.
                 let status = record_outcome("handler_error", StatusCode::INTERNAL_SERVER_ERROR);
                 if let Some(meta) = &meta {
-                    error_fields.handler_failed(meta, &error, status.as_u16());
+                    error_fields.handler_failed(meta, &error);
                     if let Some(observer) = observer {
                         observer(meta, &error);
                     }
@@ -758,9 +758,9 @@ const fn refusal_label(error: &ReceiveError) -> &'static str {
 /// Which fields of the handler's error the failed-delivery event carries:
 /// the receiver's setting, made on the builder.
 ///
-/// The event always carries the event meta's identifying fields and the
-/// status. Recording the error's text and source as well needs a bound on
-/// the handler's error type, which the receiver itself does not place, so
+/// The event always carries the event meta's identifying fields. Recording
+/// the error's text and source as well needs a bound on the handler's error
+/// type, which the receiver itself does not place, so
 /// the default, [`none`](Self::none), records neither, and `trace_errors` or
 /// `trace_boxed_errors` swaps in a function that reads the error through the
 /// bound it asked for. A function pointer rather than a trait object: the
@@ -774,7 +774,7 @@ const fn refusal_label(error: &ReceiveError) -> &'static str {
 /// methods are no-ops, so the receiver calls them without a `cfg`.
 struct ErrorFields<E> {
     #[cfg(feature = "tracing")]
-    emit: Option<fn(&EventMeta, &E, u16)>,
+    emit: Option<fn(&EventMeta, &E)>,
     // `fn(&E)` rather than `E`: the receiver's `Send` and `Sync` must not
     // depend on the error type, and neither must this type's.
     error: PhantomData<fn(&E)>,
@@ -791,8 +791,7 @@ impl<E> Clone for ErrorFields<E> {
 impl<E> Copy for ErrorFields<E> {}
 
 impl<E> ErrorFields<E> {
-    /// The default: the identifying fields and the status, nothing of the
-    /// error.
+    /// The default: the identifying fields, nothing of the error.
     const fn none() -> Self {
         Self {
             #[cfg(feature = "tracing")]
@@ -806,10 +805,10 @@ impl<E> ErrorFields<E> {
 impl<E> ErrorFields<E> {
     /// Emits the event for a failed delivery, with the fields this setting
     /// asks for.
-    fn handler_failed(self, meta: &EventMeta, error: &E, status: u16) {
+    fn handler_failed(self, meta: &EventMeta, error: &E) {
         match self.emit {
-            Some(emit) => emit(meta, error, status),
-            None => handler_failed(meta, status, None, None),
+            Some(emit) => emit(meta, error),
+            None => handler_failed(meta, None, None),
         }
     }
 
@@ -827,8 +826,8 @@ impl<E> ErrorFields<E> {
         E: TracedError,
     {
         Self {
-            emit: Some(|meta, error, status| {
-                handler_failed(meta, status, Some(error), error.source());
+            emit: Some(|meta, error| {
+                handler_failed(meta, Some(error), error.source());
             }),
             error: PhantomData,
         }
@@ -842,8 +841,8 @@ impl<E> ErrorFields<E> {
         E: BoxedError,
     {
         Self {
-            emit: Some(|meta, error, status| {
-                handler_failed(meta, status, Some(error.text()), error.source());
+            emit: Some(|meta, error| {
+                handler_failed(meta, Some(error.text()), error.source());
             }),
             error: PhantomData,
         }
@@ -856,7 +855,7 @@ impl<E> ErrorFields<E> {
 #[expect(clippy::unused_self)]
 impl<E> ErrorFields<E> {
     /// Emits nothing: the `tracing` feature is disabled.
-    fn handler_failed(self, _meta: &EventMeta, _error: &E, _status: u16) {}
+    fn handler_failed(self, _meta: &EventMeta, _error: &E) {}
 
     /// Never: the `tracing` feature is disabled.
     fn is_some(self) -> bool {
@@ -874,12 +873,15 @@ impl<E> ErrorFields<E> {
 /// [`DispatchError`](crate::DispatchError) over a boxed error, is no `Error`:
 /// its text and its source are all it can offer, so every shape offers the
 /// same two. The fields it shares with the spans (`delivery_id`, `event`,
-/// `action`, `installation_id`, `status`) are recorded in the forms `trace`
-/// fixes for them.
+/// `action`, `installation_id`) are recorded in the forms `trace` fixes for
+/// them.
+///
+/// No `status`: a handler failure is always answered 500, so the field
+/// would say what the event's name already does, and the code is on the
+/// receive span the event is emitted inside, beside `outcome`.
 #[cfg(feature = "tracing")]
 fn handler_failed(
     meta: &EventMeta,
-    status: u16,
     error: Option<&dyn std::fmt::Display>,
     source: Option<&(dyn std::error::Error + 'static)>,
 ) {
@@ -888,7 +890,6 @@ fn handler_failed(
         event = meta.kind.as_str(),
         action = meta.action.as_ref().map(Action::as_str),
         installation_id = meta.installation_id,
-        status,
         error = error.map(tracing::field::display),
         source,
         "handler failed"
