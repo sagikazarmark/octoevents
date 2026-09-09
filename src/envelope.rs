@@ -371,7 +371,12 @@ pub enum ReceiveError {
     /// text, a [`BodyError`].
     #[error("could not read the webhook body")]
     BodyRead(#[source] BodyError),
-    /// The transport stopped reading after the configured limit.
+    /// The body is over the configured limit.
+    ///
+    /// On `WebhookReceiver::receive` the read stopped at the limit, from the
+    /// body's size hint before the first frame or at the frame that crossed
+    /// it; on `receive_bytes`, and for a transport that constructs this
+    /// itself, the body was already in hand and its length was over.
     #[error("webhook body exceeds the configured {limit}-byte limit")]
     BodyTooLarge {
         /// The configured maximum body size.

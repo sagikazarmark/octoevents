@@ -299,9 +299,11 @@ in full: the type is `WebhookSecret`, beside `WebhookReceiver`, so the
 crate's name for the thing GitHub calls the webhook secret says which
 secret, and so it does not collide with `secrecy::Secret` in a consumer's
 imports. Never empty: an empty one is the unset-environment-variable failure
-mode, not a configuration, and both constructors refuse it, `new` by
-panicking and `str::parse` with a `WebhookSecretError`, so the verifier has
-nothing left to check. In prose, "secret" alone is fine once the webhook is
+mode, not a configuration, and every constructor refuses it, `new` by
+panicking, for a deployment that reads its secret at startup, and
+`str::parse`, `TryFrom<Vec<u8>>` and `TryFrom<&[u8]>` with a
+`WebhookSecretError`, for one that reads it per request or as bytes, so the
+verifier has nothing left to check. In prose, "secret" alone is fine once the webhook is
 in context.
 _Avoid_: Token, `Key` or `SigningKey` as the type (it is a secret to GitHub and to the crate; "HMAC key" in prose, for what the bytes are to the MAC, is fine), `Secret` as the type (the former name; generic at the root and a live collision), signing secret (Stripe's and Svix's term; the crate's is GitHub's)
 

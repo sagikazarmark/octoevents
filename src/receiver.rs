@@ -110,11 +110,17 @@ impl<E> WebhookReceiverBuilder<E> {
         }
     }
 
-    /// Sets the maximum bytes read from an unauthenticated request.
+    /// Sets the maximum body size, in bytes, of a request the receiver
+    /// accepts.
     ///
-    /// GitHub never sends payloads above [`DEFAULT_BODY_LIMIT`]. Lower values
-    /// reduce memory exposure when an application's real events are smaller;
-    /// raising the limit does not enable larger GitHub deliveries.
+    /// On `receive` it is the most the receiver reads from the transport:
+    /// the read stops at the limit, so an authenticated request never
+    /// occupies more. On `receive_bytes` the body is the caller's already,
+    /// and the limit is checked against its length. Either way a body over
+    /// it is [`ReceiveError::BodyTooLarge`](crate::ReceiveError::BodyTooLarge),
+    /// 413. GitHub never sends payloads above [`DEFAULT_BODY_LIMIT`]. Lower
+    /// values reduce memory exposure when an application's real events are
+    /// smaller; raising the limit does not enable larger GitHub deliveries.
     #[must_use]
     pub const fn body_limit(mut self, limit: usize) -> Self {
         self.config.body_limit = limit;

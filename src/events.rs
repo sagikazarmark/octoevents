@@ -53,10 +53,10 @@ macro_rules! string_enum {
             }
         }
 
-        impl ::std::convert::From<String> for $name {
+        impl ::std::convert::From<::std::string::String> for $name {
             /// As `From<&str>`, keeping the string for [`Unknown`](Self::Unknown)
             /// instead of copying it.
-            fn from(value: String) -> Self {
+            fn from(value: ::std::string::String) -> Self {
                 match value.as_str() {
                     $($wire => Self::$variant,)*
                     _ => Self::Unknown(value),
