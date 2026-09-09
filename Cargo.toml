@@ -22,6 +22,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/octoevents"
 keywords = ["github", "webhook", "tower", "cloudflare", "wasm"]
 categories = ["web-programming", "cryptography"]
 # What the published crate ships: the sources, the examples, the tests with

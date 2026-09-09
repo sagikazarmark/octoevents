@@ -31,6 +31,9 @@ use crate::{Action, EventKind, Payload};
 /// ]);
 /// // Any mix, combined.
 /// let _ = EventMatcher::from(EventKind::Push).or((EventKind::Release, Action::Published));
+/// // Kinds or pairs read from configuration, however many.
+/// let kinds = vec![EventKind::Issues, EventKind::PullRequest];
+/// let _ = EventMatcher::from(kinds);
 /// ```
 ///
 /// There is deliberately no `|` operator: operator dispatch is on the left
@@ -267,6 +270,29 @@ impl<const N: usize> From<[(EventKind, Action); N]> for EventMatcher {
     }
 }
 
+// The `Vec` forms, for a route table whose size is known at run time. An
+// `IntoIterator` blanket would cover arrays and vectors alike but overlaps the
+// tuple impls above in coherence, since a tuple could implement `IntoIterator`
+// upstream, so the two collection shapes are spelled out.
+impl From<Vec<EventKind>> for EventMatcher {
+    fn from(kinds: Vec<EventKind>) -> Self {
+        Self {
+            slots: kinds.into_iter().map(Slot::any_action).collect(),
+        }
+    }
+}
+
+impl From<Vec<(EventKind, Action)>> for EventMatcher {
+    fn from(pairs: Vec<(EventKind, Action)>) -> Self {
+        Self {
+            slots: pairs
+                .into_iter()
+                .map(|(kind, action)| Slot::action(kind, action))
+                .collect(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{AnyAction, EventMatcher, IntoMatcher, Slot};
@@ -380,6 +406,27 @@ mod tests {
                 any_action(EventKind::IssueComment),
             ]
         );
+    }
+
+    #[test]
+    fn vectors_expand_as_the_arrays_of_the_same_shape_do() {
+        // The run-time-sized forms, for a route table read from
+        // configuration: the same slots as the array of the same elements.
+        assert_eq!(
+            absolute(vec![EventKind::Issues, EventKind::PullRequest]),
+            absolute([EventKind::Issues, EventKind::PullRequest])
+        );
+        assert_eq!(
+            absolute(vec![
+                (EventKind::PullRequest, Action::Opened),
+                (EventKind::Issues, Action::Closed),
+            ]),
+            absolute([
+                (EventKind::PullRequest, Action::Opened),
+                (EventKind::Issues, Action::Closed),
+            ])
+        );
+        assert_eq!(absolute(Vec::<EventKind>::new()), []);
     }
 
     #[test]

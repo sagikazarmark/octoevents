@@ -129,7 +129,7 @@ impl EventMeta {
             action: probe
                 .action
                 .and_then(parse_probe::<String>)
-                .map(|action| Action::from(action.as_str())),
+                .map(Action::from),
             installation_id: probe
                 .installation
                 .and_then(parse_probe::<IdOnly>)

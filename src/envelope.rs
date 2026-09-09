@@ -122,7 +122,7 @@ use crate::{EventKind, EventMeta, SignatureError, TargetType, Verifier, header};
 /// omitted rather than written as `null`. Unknown fields are ignored, so a
 /// producer may annotate the document for its own transport, and a producer
 /// on a newer version of this crate does not break an older consumer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Envelope {
     /// The routing metadata extracted from the headers and the payload probe.

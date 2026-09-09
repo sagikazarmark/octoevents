@@ -272,7 +272,7 @@ impl<E> WebhookReceiverBuilder<E> {
     /// [`TracedError`]: crate::TracedError
     #[cfg(feature = "tracing")]
     #[must_use]
-    pub fn trace_errors(mut self) -> Self
+    pub const fn trace_errors(mut self) -> Self
     where
         E: TracedError,
     {
@@ -313,7 +313,7 @@ impl<E> WebhookReceiverBuilder<E> {
     /// [`BoxedError`]: crate::BoxedError
     #[cfg(feature = "tracing")]
     #[must_use]
-    pub fn trace_boxed_errors(mut self) -> Self
+    pub const fn trace_boxed_errors(mut self) -> Self
     where
         E: BoxedError,
     {

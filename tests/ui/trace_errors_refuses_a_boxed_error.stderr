@@ -9,8 +9,8 @@ error[E0277]: `DispatchError<Box<(dyn std::error::Error + Send + Sync + 'static)
 note: required by a bound in `WebhookReceiverBuilder::<E>::trace_errors`
   --> src/receiver.rs
    |
-   |     pub fn trace_errors(mut self) -> Self
-   |            ------------ required by a bound in this associated function
+   |     pub const fn trace_errors(mut self) -> Self
+   |                  ------------ required by a bound in this associated function
    |     where
    |         E: TracedError,
    |            ^^^^^^^^^^^ required by this bound in `WebhookReceiverBuilder::<E>::trace_errors`

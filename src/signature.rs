@@ -41,8 +41,10 @@ pub enum WebhookSecretError {
 ///
 /// A secret is never empty: an empty one is the unset- or
 /// mistyped-environment-variable failure mode, and verifying against it would
-/// accept any sender who guessed the key. Both constructors refuse one, so a
-/// [`Verifier`] cannot be handed one and has nothing left to check.
+/// accept any sender who guessed the key. Every constructor refuses one,
+/// [`WebhookSecret::new`] by panicking and [`str::parse`], `TryFrom<Vec<u8>>`
+/// and `TryFrom<&[u8]>` with a [`WebhookSecretError`], so a [`Verifier`]
+/// cannot be handed one and has nothing left to check.
 ///
 /// `Display` is deliberately not implemented: interpolating a secret into a
 /// format string is a compile error rather than silently redacted output.
@@ -51,14 +53,15 @@ pub enum WebhookSecretError {
 /// Each clone owns and independently zeroizes its own copy. The HMAC
 /// implementation necessarily keeps derived key material outside this value;
 /// that internal state is not guaranteed to be zeroized by the `hmac` crate.
+#[derive(Clone)]
 pub struct WebhookSecret(Zeroizing<Vec<u8>>);
 
 impl WebhookSecret {
     /// Creates a secret from raw bytes.
     ///
     /// For a deployment that reads its secret at startup, where an empty one
-    /// should stop the process. [`str::parse`] reports the same failure as a
-    /// value, for one that reads it per request.
+    /// should stop the process. [`str::parse`] and `TryFrom<Vec<u8>>` report
+    /// the same failure as a value, for one that reads it per request.
     ///
     /// # Panics
     ///
@@ -96,13 +99,6 @@ impl WebhookSecret {
     }
 }
 
-impl Clone for WebhookSecret {
-    fn clone(&self) -> Self {
-        // The bytes were checked when `self` was made.
-        Self(Zeroizing::new(self.0.to_vec()))
-    }
-}
-
 /// Reads a secret from a string, refusing an empty one as a value.
 ///
 /// The fallible counterpart of [`WebhookSecret::new`], for a deployment that
@@ -124,6 +120,38 @@ impl FromStr for WebhookSecret {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         Self::try_new(value.as_bytes().to_vec())
+    }
+}
+
+/// Reads a secret from owned bytes, refusing empty ones as a value.
+///
+/// The fallible counterpart of [`WebhookSecret::new`] for a secret that is
+/// not a string: one read from a file or a secret manager as bytes. The
+/// vector is taken as it is, no copy, and zeroed when the secret drops.
+///
+/// ```
+/// use octoevents::{WebhookSecret, WebhookSecretError};
+///
+/// let secret = WebhookSecret::try_from(b"current secret".to_vec())?;
+/// # let _ = secret;
+///
+/// assert_eq!(WebhookSecret::try_from(Vec::new()).unwrap_err(), WebhookSecretError::Empty);
+/// # Ok::<(), WebhookSecretError>(())
+/// ```
+impl TryFrom<Vec<u8>> for WebhookSecret {
+    type Error = WebhookSecretError;
+
+    fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
+        Self::try_new(bytes)
+    }
+}
+
+/// Reads a secret from borrowed bytes, copying them; see `TryFrom<Vec<u8>>`.
+impl TryFrom<&[u8]> for WebhookSecret {
+    type Error = WebhookSecretError;
+
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        Self::try_new(bytes.to_vec())
     }
 }
 
@@ -453,6 +481,32 @@ impl Verifier {
     pub fn sign(&self, body: &[u8]) -> Signature {
         // `new` puts one secret in and nothing takes one out.
         self.secrets[0].sign(body)
+    }
+}
+
+/// A verifier over one secret, [`Verifier::new`] as a conversion, for a
+/// builder or a config type that takes `impl Into<Verifier>`.
+impl From<WebhookSecret> for Verifier {
+    fn from(secret: WebhookSecret) -> Self {
+        Self::new(secret)
+    }
+}
+
+/// Accepts further secrets, [`Verifier::also`] over an iterator, for a
+/// rotation window read from configuration as a list.
+///
+/// ```
+/// use octoevents::{Verifier, WebhookSecret};
+///
+/// let previous = ["previous secret", "older secret"];
+///
+/// let mut verifier = Verifier::new(WebhookSecret::new("current secret"));
+/// verifier.extend(previous.map(WebhookSecret::new));
+/// # let _ = verifier;
+/// ```
+impl Extend<WebhookSecret> for Verifier {
+    fn extend<T: IntoIterator<Item = WebhookSecret>>(&mut self, secrets: T) {
+        Arc::make_mut(&mut self.secrets).extend(secrets);
     }
 }
 

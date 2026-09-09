@@ -68,8 +68,21 @@ reads the "Changed" and "Removed" lists first.
 - `AccountRef`: the compact account reference `EventMeta::organization` and
   `EventMeta::sender` hold, the numeric `id` beside the `login`, with
   `Display` as the login.
-- `From<&str>` on `EventKind`, `Action` and `TargetType`; `Display` on
-  `TargetType` and `Match`; `Hash` on `EventMeta` and `RepositoryRef`.
+- `From<&str>` and `From<String>` on `EventKind`, `Action` and `TargetType`;
+  `Display` on `TargetType` and `Match`; `Hash` on `Envelope`, `EventMeta`
+  and `RepositoryRef`.
+- `TryFrom<Vec<u8>>` and `TryFrom<&[u8]>` on `WebhookSecret`: the fallible
+  constructors for a secret that is bytes rather than a string, one read
+  from a file or a secret manager, refusing empty bytes as
+  `WebhookSecretError::Empty` the way `str::parse` does. `WebhookSecret::new`
+  stays the panicking form for a deployment that reads its secret at startup.
+- `From<WebhookSecret>` and `Extend<WebhookSecret>` on `Verifier`: `new` as a
+  conversion, for a builder taking `impl Into<Verifier>`, and `also` over an
+  iterator, for a rotation window read from configuration as a list.
+- `From<Vec<EventKind>>` and `From<Vec<(EventKind, Action)>>` on
+  `EventMatcher`, for a route table whose size is known at run time.
+- `WebhookReceiverBuilder::trace_errors` and `trace_boxed_errors` are `const
+  fn`, as `body_limit` and `handle_ping` are.
 - `Bytes` re-exported from the `bytes` crate.
 - `ReceiveError::BodyRead` and `BodyError`: a body frame the transport could
   not produce is a receive error like every other pre-handler failure,
