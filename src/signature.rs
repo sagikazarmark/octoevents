@@ -192,8 +192,9 @@ pub enum SignatureError {
 /// `From<Signature> for HeaderValue` is the same text as the header a test
 /// puts on its synthetic request; both are the inverse of parsing. `Debug`
 /// is redacted: the value is secret-derived, and the crate records nothing
-/// computed from the secret. Equality is [`subtle::ConstantTimeEq`], the
-/// comparison the verifier folds over its secrets.
+/// computed from the secret. The only comparison is [`subtle::ConstantTimeEq`],
+/// the one the verifier folds over its secrets; there is no `PartialEq`, so
+/// two signatures cannot be compared with `==` by accident.
 ///
 /// ```
 /// use http::HeaderValue;

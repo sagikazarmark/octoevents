@@ -24,7 +24,8 @@ reads the "Changed" and "Removed" lists first.
   refuse anything that is not `sha256=` and 64 hex digits as
   `SignatureError::Malformed`, `Display` renders the header value back and
   `From<Signature> for http::HeaderValue` puts it on a request, marked
-  sensitive, `Debug` is redacted, and equality is `subtle::ConstantTimeEq`.
+  sensitive, `Debug` is redacted, and the only comparison is
+  `subtle::ConstantTimeEq`: no `PartialEq`, so no `==`.
 - `Verifier::sign`: the `Signature` GitHub would send for a body, which goes
   on a request's header as it is, so a test drives the receiver it built
   with no HMAC code of its own.
