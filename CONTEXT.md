@@ -105,7 +105,7 @@ The handler over the envelope that wraps `Dispatcher::dispatch` and holds
 the policy the tiers cannot express: persist first, answer a redelivery of a
 stored delivery ID with success without dispatching, read the outcome to
 dead-letter or forward an unmatched delivery. Where deduplication and
-dead-lettering live; the dispatcher only routes. The `dispatcher` example
+dead-lettering live; the dispatcher only routes. The `policy_seam` example
 shows one.
 _Avoid_: Middleware, interceptor, wrapper as the term (prose for what the seam is, fine), pre-dispatch hook
 

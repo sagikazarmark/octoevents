@@ -55,9 +55,10 @@ rustdoc:
   RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --no-default-features
   RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --all-features
 
-# Everything the suite has, under one feature set.
+# Everything the suite has, under one feature set; the examples' tests need asking for.
 full:
   cargo test --workspace --all-features
+  cargo test --workspace --all-features --examples
 
 # The suite at the three feature extremes, rustdoc, and each feature alone with cargo hack.
 matrix: full rustdoc

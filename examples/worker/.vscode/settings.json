@@ -1,0 +1,5 @@
+{
+  // The handler's future awaits a JavaScript promise, which is `!Send`: fine
+  // on the target the build uses, an error on the host target. See README.md.
+  "rust-analyzer.cargo.target": "wasm32-unknown-unknown"
+}

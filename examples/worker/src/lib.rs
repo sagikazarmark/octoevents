@@ -1,21 +1,46 @@
-//! A Cloudflare Worker that forwards every verified envelope to a Restate
-//! virtual object from the dispatcher's `always` tier, then routes it.
+//! The receiver on Cloudflare Workers: `WebhookReceiver::receive` over the
+//! `http::Request` the `worker` crate hands over, built for
+//! `wasm32-unknown-unknown`. `README.md` beside this file says how to build,
+//! run and configure it; it is a package of its own, outside the repository's
+//! workspace.
 //!
-//! Built without the `octocrab` feature (which is never on by default), so
-//! the routed handler decodes a consumer-defined view of the `installation`
-//! payload rather than octocrab's model.
+//! The receiver is the same as on a native server. What differs is the
+//! target: the crate's `MaybeSend` and `MaybeSync` bounds are empty on
+//! `wasm32`, so a handler's future may await a JavaScript promise and its
+//! error may hold a `JsValue`, and the crate's `BoxError` there is
+//! `Box<dyn Error>`. The secret is read per request from the Worker's
+//! bindings, so an empty one is reported as a value through
+//! `str::parse::<WebhookSecret>` rather than the panic `WebhookSecret::new`
+//! would raise, which would trap the wasm instance.
 //!
-//! Built for `wasm32-unknown-unknown`, the target `worker-build` selects. A
-//! native `cargo check`, or rust-analyzer left on the host target, reports
+//! Two handlers, in a dispatcher built without the `octocrab` feature (never
+//! on by default):
+//!
+//! - [`InstallationLog`], routed with `on`, is a handler over
+//!   `Event<InstallationView>`: the meta beside a consumer-defined view of
+//!   the `installation` payload. The view declares its kind with
+//!   `#[derive(Payload)]`, so the matcher, `AnyAction`, says only that every
+//!   action of that kind is wanted.
+//! - [`Forward`], in the `always` tier, is the part specific to this
+//!   deployment: it serializes each verified envelope as the crate's
+//!   [wire format](https://docs.rs/octoevents/latest/octoevents/struct.Envelope.html#wire-format),
+//!   the flat JSON document `serde_json::to_string(&envelope)` produces, and
+//!   POSTs it to a [Restate](https://restate.dev) virtual object keyed by
+//!   installation ID, which another service reads back through serde. A
+//!   forwarder to any internal service has the same shape; only the URL and
+//!   the key are Restate's.
+//!
+//! A native `cargo check`, or rust-analyzer left on the host target, reports
 //! `Forward::handle`'s future as not `MaybeSend`, naming the `JsFuture`
 //! inside the fetch: `MaybeSend` is `Send` on native targets and empty on
 //! `wasm32`, and a JavaScript promise is `!Send`. Point the editor at the
-//! target the build uses, `"rust-analyzer.cargo.target":
-//! "wasm32-unknown-unknown"` in the workspace settings, and the diagnostic
-//! goes away; there is nothing to fix in the handler.
+//! target the build uses, as `.vscode/settings.json` in this directory does
+//! (`"rust-analyzer.cargo.target": "wasm32-unknown-unknown"`), and the
+//! diagnostic goes away; there is nothing to fix in the handler.
 
-// The handlers here log instead of awaiting a database or the GitHub API,
-// which is what a real `async fn handle` would do.
+// `InstallationLog::handle` logs where a real one would await a database or
+// the GitHub API. The lint expectation says so; delete it once every handler
+// body has an `.await`.
 #![expect(clippy::unused_async_trait_impl)]
 
 use std::convert::Infallible;
@@ -58,6 +83,9 @@ impl Handler<Envelope> for Forward {
             "{}/{installation_id}/receive",
             self.object_url.trim_end_matches('/')
         );
+        // The wire format: one flat JSON object, the meta's fields at the top
+        // level beside `raw_payload` as base64, which the service on the
+        // other end reads back into an `Envelope` through serde.
         let body = serde_json::to_string(&envelope)?;
         let mut init = RequestInit::new();
         init.with_method(Method::Post)

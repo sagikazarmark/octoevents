@@ -204,7 +204,7 @@ expressed, with the outcome in hand, by a handler over the envelope that wraps
 `dispatch`: it persists first, returns `Ok(())` for a duplicate without
 calling `dispatch`, and reads `Outcome::matched` to dead-letter or forward an
 unmatched delivery. That wrapper is the policy seam; the dispatcher only
-routes. The `dispatcher` example shows it. Recorded on `Dispatcher`.
+routes. The `policy_seam` example shows it. Recorded on `Dispatcher`.
 
 ## No raw tier and no meta handler
 

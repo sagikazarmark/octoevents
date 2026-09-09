@@ -126,8 +126,16 @@ reads the "Changed" and "Removed" lists first.
   which refusal it was. The error's source, for a body that could not be
   read the transport's own text, is not recorded.
 - A `CHANGELOG.md`, and an `include` list so the published crate ships the
-  sources, the `axum` and `dispatcher` examples, the tests with their
-  fixtures, the README and the licences, and nothing else.
+  sources, the examples, the tests with their fixtures, the README and the
+  licences, and nothing else.
+- Examples in the order to read them, each with `#[cfg(test)]` tests that
+  drive it without GitHub (`cargo test --examples`): `quickstart`, the
+  README's program verbatim; `axum`, a receiver with no dispatcher;
+  `dispatcher`, every tier and a handler over every input, the receiver's
+  knobs set; and `policy_seam`, the former `dispatcher` example, whose store
+  now holds the envelopes it claims to, so a redelivery after a handler
+  failure is recoverable. The Cloudflare Worker example gained a README, a
+  `[vars]` block and an editor hint for the wasm target.
 
 ### Changed
 
