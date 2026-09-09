@@ -255,8 +255,8 @@ pub enum SignatureError {
 /// # Ok::<(), SignatureError>(())
 /// ```
 ///
-/// Neither `==` nor `ct_eq` compiles on two signatures; the check is
-/// [`Verifier::verify`]:
+/// Neither `==` nor `ct_eq` compiles on two signatures, the trait in scope
+/// or not; the check is [`Verifier::verify`]:
 ///
 /// ```compile_fail,E0369
 /// use octoevents::{Verifier, WebhookSecret};
@@ -267,6 +267,7 @@ pub enum SignatureError {
 ///
 /// ```compile_fail,E0599
 /// use octoevents::{Verifier, WebhookSecret};
+/// use subtle::ConstantTimeEq;
 ///
 /// let verifier = Verifier::new(WebhookSecret::new("secret"));
 /// let _ = verifier.sign(b"a").ct_eq(&verifier.sign(b"a"));
