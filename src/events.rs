@@ -93,7 +93,7 @@ macro_rules! string_enum {
                 D: ::serde::Deserializer<'de>,
             {
                 <::std::string::String as ::serde::Deserialize>::deserialize(deserializer)
-                    .map(|value| Self::from(value.as_str()))
+                    .map(Self::from)
             }
         }
     };
