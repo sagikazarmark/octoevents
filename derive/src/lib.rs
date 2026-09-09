@@ -9,7 +9,7 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
-use syn::{DeriveInput, Error, Expr, Ident, Meta, Result, Token, parse_macro_input, parse_quote};
+use syn::{DeriveInput, Error, Expr, Meta, Result, parse_macro_input, parse_quote};
 
 /// Declares which `EventKind` a serde type is the payload of.
 ///
@@ -21,7 +21,6 @@ use syn::{DeriveInput, Error, Expr, Ident, Meta, Result, Token, parse_macro_inpu
 /// generic view `View<T>` is a payload wherever `View<T>` deserializes, with
 /// nothing said about `T` beyond what the type itself declares. A misspelled
 /// variant is reported by rustc at the literal, as any expression would be.
-/// `kind = EventKind::..` is accepted as the same thing spelled with a key.
 ///
 /// The bound names `::serde`, so the crate is expected under that name, as it
 /// is wherever `serde::Deserialize` is derived.
@@ -113,8 +112,12 @@ fn declared_kind(input: &DeriveInput) -> Result<Expr> {
     })
 }
 
-/// The contents of `#[payload(..)]`: a kind expression, bare or after
-/// `kind =`.
+/// The contents of `#[payload(..)]`: the kind expression.
+///
+/// Positional and nothing else. Should the attribute ever carry a second
+/// datum, a keyed one can be added after the kind (`#[payload(EventKind::..,
+/// other = ..)]`) without this form having to go, so no keyed spelling is
+/// reserved for the kind itself.
 struct KindArg(Expr);
 
 impl Parse for KindArg {
@@ -124,18 +127,6 @@ impl Parse for KindArg {
                 input.span(),
                 "`#[payload(..)]` is empty: it takes the event kind, `#[payload(EventKind::..)]`",
             ));
-        }
-        if input.peek(Ident) && input.peek2(Token![=]) && !input.peek2(Token![==]) {
-            let key = input.parse::<Ident>()?;
-            if key != "kind" {
-                return Err(Error::new(
-                    key.span(),
-                    format!(
-                        "unknown key `{key}`: `#[payload(..)]` takes the event kind, `#[payload(EventKind::..)]`"
-                    ),
-                ));
-            }
-            input.parse::<Token![=]>()?;
         }
         Ok(Self(input.parse()?))
     }
@@ -176,22 +167,6 @@ mod tests {
             }
             .to_string()
         );
-    }
-
-    #[test]
-    fn named_kind_is_the_same_impl() {
-        let positional = expand(&parse_quote! {
-            #[payload(EventKind::Issues)]
-            struct IssueOpened;
-        })
-        .unwrap();
-        let named = expand(&parse_quote! {
-            #[payload(kind = EventKind::Issues)]
-            struct IssueOpened;
-        })
-        .unwrap();
-
-        assert_eq!(positional, named);
     }
 
     #[test]
@@ -349,20 +324,6 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "`#[payload(..)]` is empty: it takes the event kind, `#[payload(EventKind::..)]`"
-        );
-    }
-
-    #[test]
-    fn unknown_key_is_named() {
-        let err = expand(&parse_quote! {
-            #[payload(kinds = EventKind::Issues)]
-            struct IssueOpened;
-        })
-        .unwrap_err();
-
-        assert_eq!(
-            err.to_string(),
-            "unknown key `kinds`: `#[payload(..)]` takes the event kind, `#[payload(EventKind::..)]`"
         );
     }
 

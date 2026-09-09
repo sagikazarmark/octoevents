@@ -369,14 +369,16 @@ same situation and nothing more. octocrab's per-kind structs keep their
 crate-private macro, which exists for the shared rustdoc on each impl.
 
 The attribute takes the kind as an expression, `#[payload(EventKind::..)]`,
-and also as `#[payload(kind = EventKind::..)]`. The positional form is the
-documented one, everywhere the attribute is shown or named in a diagnostic;
-the keyed form parses as the same thing and is not documented. It is there
-so that, should the attribute ever carry a second datum, the grammar has a
-place for it without the positional form having to go. `#[derive(FromEnvelope)]`
-stays declined: a cross-kind view's decode is one line of the consumer's,
-`envelope.decode()`, and a derive would have to guess it. Recorded on
-`Payload`.
+and nothing else. An undocumented `#[payload(kind = EventKind::..)]` alias
+was accepted for a while as a reservation: should the attribute ever carry a
+second datum, the grammar would have a keyed place for it. It was removed
+once the reservation was seen to reserve nothing: a keyed second argument
+can be added after the positional kind, `#[payload(EventKind::.., other =
+..)]`, with no break to the positional form, so the alias bought a parser
+branch, an error message for a grammar nobody was told about and two tests,
+and no future. `#[derive(FromEnvelope)]` stays declined: a cross-kind view's
+decode is one line of the consumer's, `envelope.decode()`, and a derive would
+have to guess it. Recorded on `Payload`.
 
 ## No generic no-kind-check input, no `Deref` on `Event`
 
