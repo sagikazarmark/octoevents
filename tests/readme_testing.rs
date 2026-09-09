@@ -69,14 +69,13 @@ async fn accepts_a_signed_delivery() {
     let webhook = WebhookReceiverBuilder::new(verifier.clone()).build(dispatcher);
 
     let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
-    let signature = verifier.sign(body.as_bytes());
     let request = http::Request::builder()
         .method("POST")
         .uri("/webhook")
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::DELIVERY_ID, "delivery-1")
         .header(header::EVENT_NAME, "issues")
-        .header(header::SIGNATURE, signature.to_string())
+        .header(header::SIGNATURE, verifier.sign(body.as_bytes()))
         .body(body.to_string())
         .unwrap();
 
@@ -90,14 +89,13 @@ async fn accepts_a_signed_delivery() {
 /// after that test to put through receivers built over other secrets.
 fn the_readme_request(verifier: &Verifier) -> http::Request<String> {
     let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
-    let signature = verifier.sign(body.as_bytes());
     http::Request::builder()
         .method("POST")
         .uri("/webhook")
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::DELIVERY_ID, "delivery-1")
         .header(header::EVENT_NAME, "issues")
-        .header(header::SIGNATURE, signature.to_string())
+        .header(header::SIGNATURE, verifier.sign(body.as_bytes()))
         .body(body.to_string())
         .unwrap()
 }

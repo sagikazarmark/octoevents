@@ -512,8 +512,8 @@ cannot be paired with a payload that says something else. The target type and
 ID come from headers, so they stay `None` unless assigned.
 
 The receiver is tested with a signed synthetic request. `Verifier::sign`
-gives the `Signature` GitHub would send for a body, whose `to_string()` is
-the `X-Hub-Signature-256` value, so the test signs with the verifier the
+gives the `Signature` GitHub would send for a body, which goes on the request
+as the `X-Hub-Signature-256` value, so the test signs with the verifier the
 receiver is built with; a request needs four headers, whose names
 `octoevents::header` spells. `receive` takes any `http_body::Body` over
 `Bytes`, and `String` is one, so the test needs no axum. With `http = "1"` as
@@ -531,14 +531,13 @@ async fn accepts_a_signed_delivery() {
     let webhook = WebhookReceiverBuilder::new(verifier.clone()).build(dispatcher);
 
     let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
-    let signature = verifier.sign(body.as_bytes());
     let request = http::Request::builder()
         .method("POST")
         .uri("/webhook")
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::DELIVERY_ID, "delivery-1")
         .header(header::EVENT_NAME, "issues")
-        .header(header::SIGNATURE, signature.to_string())
+        .header(header::SIGNATURE, verifier.sign(body.as_bytes()))
         .body(body.to_string())
         .unwrap();
 

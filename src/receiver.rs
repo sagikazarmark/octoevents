@@ -415,8 +415,9 @@ where
     /// axum's, a Cloudflare Worker's, or a `String` in a test, which drives
     /// the receiver with a signed synthetic request and no server.
     /// [`Verifier::sign`] gives the [`Signature`](crate::Signature) GitHub
-    /// would send for the body, whose `to_string()` is the header value, and
-    /// a request needs the four headers [`header`](crate::header) names:
+    /// would send for the body, which goes on the request as its header
+    /// value, and a request needs the four headers [`header`](crate::header)
+    /// names:
     ///
     /// ```
     /// use octoevents::{Dispatcher, Verifier, WebhookReceiverBuilder, WebhookSecret, header};
@@ -429,14 +430,13 @@ where
     /// let webhook = WebhookReceiverBuilder::new(verifier.clone()).build(dispatcher);
     ///
     /// let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
-    /// let signature = verifier.sign(body.as_bytes());
     /// let request = http::Request::builder()
     ///     .method("POST")
     ///     .uri("/webhook")
     ///     .header(header::CONTENT_TYPE, "application/json")
     ///     .header(header::DELIVERY_ID, "delivery-1")
     ///     .header(header::EVENT_NAME, "issues")
-    ///     .header(header::SIGNATURE, signature.to_string())
+    ///     .header(header::SIGNATURE, verifier.sign(body.as_bytes()))
     ///     .body(body.to_string())
     ///     .unwrap();
     ///

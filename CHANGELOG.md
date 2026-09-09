@@ -20,12 +20,13 @@ reads the "Changed" and "Removed" lists first.
   an empty secret, for a deployment that reads its secret per request and
   answers instead of panicking.
 - `Signature`: the `X-Hub-Signature-256` value parsed once, as the 32 MAC
-  bytes. `str::parse` and `TryFrom<&[u8]>` refuse anything that is not
-  `sha256=` and 64 hex digits as `SignatureError::Malformed`, `Display`
-  renders the header value back, `Debug` is redacted, and equality is
-  `subtle::ConstantTimeEq`.
-- `Verifier::sign`: the `Signature` GitHub would send for a body, whose
-  `to_string()` is the header value, so a test drives the receiver it built
+  bytes. `TryFrom<&http::HeaderValue>`, `TryFrom<&[u8]>` and `str::parse`
+  refuse anything that is not `sha256=` and 64 hex digits as
+  `SignatureError::Malformed`, `Display` renders the header value back and
+  `From<Signature> for http::HeaderValue` puts it on a request, marked
+  sensitive, `Debug` is redacted, and equality is `subtle::ConstantTimeEq`.
+- `Verifier::sign`: the `Signature` GitHub would send for a body, which goes
+  on a request's header as it is, so a test drives the receiver it built
   with no HMAC code of its own.
 - `Envelope::new`: an unverified envelope for a test, its meta read from the
   same bytes the receiver would read.

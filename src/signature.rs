@@ -6,6 +6,7 @@
 use std::{fmt, str::FromStr, sync::Arc};
 
 use hmac::{Hmac, KeyInit, Mac};
+use http::HeaderValue;
 use sha2::Sha256;
 use subtle::{Choice, ConstantTimeEq};
 use thiserror::Error;
@@ -158,10 +159,11 @@ pub enum SignatureError {
     /// hexadecimal digits.
     ///
     /// Decided by parsing the header into a [`Signature`], through
-    /// [`str::parse`] or `TryFrom<&[u8]>`, and nowhere else: bytes that are
-    /// not visible ASCII, another algorithm's prefix, an uppercase prefix
-    /// and a wrong length are all this variant. [`Verifier::verify`] cannot
-    /// produce it, since a [`Signature`] has already parsed.
+    /// `TryFrom<&HeaderValue>`, `TryFrom<&[u8]>` or [`str::parse`], and
+    /// nowhere else: bytes that are not visible ASCII, another algorithm's
+    /// prefix, an uppercase prefix and a wrong length are all this variant.
+    /// [`Verifier::verify`] cannot produce it, since a [`Signature`] has
+    /// already parsed.
     #[error("malformed X-Hub-Signature-256 header")]
     Malformed,
     /// None of the configured secrets produced the signature for the body.
@@ -174,23 +176,27 @@ pub enum SignatureError {
 /// A parsed `X-Hub-Signature-256` value: the 32 MAC bytes.
 ///
 /// The one form a signature takes once it has left the wire. A header value
-/// becomes one through [`str::parse`], or `TryFrom<&[u8]>` for a transport
-/// that has the header's bytes and no string (an `http::HeaderValue` need
-/// not be one), and either refuses anything that is not `sha256=` followed
-/// by 64 hexadecimal digits as [`SignatureError::Malformed`]; the digits are
-/// read in either case, the prefix in lowercase only, as GitHub sends it.
-/// [`Verifier::sign`] produces one, and [`Verifier::verify`] takes one, so
-/// what reaches the verifier has a settled format and the verifier's one
-/// failure is a mismatch.
+/// becomes one through `TryFrom<&http::HeaderValue>`, the header as a
+/// `HeaderMap` holds it, through `TryFrom<&[u8]>` for a transport that has
+/// the header's bytes in another shape, or through [`str::parse`] for a
+/// string, and each refuses anything that is not `sha256=` followed by 64
+/// hexadecimal digits as [`SignatureError::Malformed`]; the digits are read
+/// in either case, the prefix in lowercase only, as GitHub sends it. A
+/// `HeaderValue` is parsed from its bytes, since it need not be a string, so
+/// one that is not visible ASCII is malformed like any other. [`Verifier::sign`]
+/// produces one, and [`Verifier::verify`] takes one, so what reaches the
+/// verifier has a settled format and the verifier's one failure is a
+/// mismatch.
 ///
-/// `Display` renders the header value back, `sha256=` and lowercase hex:
-/// what a test puts on its synthetic request, and the inverse of parsing.
-/// `Debug` is redacted: the value is secret-derived, and the crate records
-/// nothing computed from the secret. Equality is
-/// [`subtle::ConstantTimeEq`], the comparison the verifier folds over its
-/// secrets.
+/// `Display` renders the header value back, `sha256=` and lowercase hex, and
+/// `From<Signature> for HeaderValue` is the same text as the header a test
+/// puts on its synthetic request; both are the inverse of parsing. `Debug`
+/// is redacted: the value is secret-derived, and the crate records nothing
+/// computed from the secret. Equality is [`subtle::ConstantTimeEq`], the
+/// comparison the verifier folds over its secrets.
 ///
 /// ```
+/// use http::HeaderValue;
 /// use octoevents::{Signature, SignatureError};
 ///
 /// let signature: Signature =
@@ -200,6 +206,10 @@ pub enum SignatureError {
 ///     "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17"
 /// );
 /// assert_eq!(format!("{signature:?}"), "Signature([REDACTED])");
+///
+/// let header = HeaderValue::from(signature);
+/// assert_eq!(header, "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17");
+/// assert!(Signature::try_from(&header).is_ok());
 ///
 /// assert_eq!(
 ///     "sha1=757107ea0eb2509fc211221cce984b8a37570b6d".parse::<Signature>().unwrap_err(),
@@ -226,6 +236,22 @@ impl TryFrom<&[u8]> for Signature {
     }
 }
 
+/// Parses the header value as an `http::HeaderMap` holds it, from its bytes:
+/// a `HeaderValue` need not be visible ASCII, and one that is not is a
+/// present header that is not a signature.
+///
+/// # Errors
+///
+/// Returns [`SignatureError::Malformed`] for anything that is not `sha256=`
+/// followed by 64 hexadecimal digits.
+impl TryFrom<&HeaderValue> for Signature {
+    type Error = SignatureError;
+
+    fn try_from(value: &HeaderValue) -> Result<Self, Self::Error> {
+        Self::try_from(value.as_bytes())
+    }
+}
+
 /// Parses the header value.
 ///
 /// # Errors
@@ -248,6 +274,18 @@ impl fmt::Display for Signature {
             write!(formatter, "{byte:02x}")?;
         }
         Ok(())
+    }
+}
+
+/// The header value as an `http::HeaderValue`, the text `Display` renders:
+/// what `.header(header::SIGNATURE, signature)` puts on a request. Marked
+/// sensitive, so `http`'s own `Debug` redacts it as this type's does.
+impl From<Signature> for HeaderValue {
+    fn from(signature: Signature) -> Self {
+        let mut value = Self::try_from(signature.to_string())
+            .expect("`sha256=` and 64 hex digits are visible ASCII, which is a header value");
+        value.set_sensitive(true);
+        value
     }
 }
 
@@ -374,16 +412,16 @@ impl Verifier {
     }
 
     /// The signature GitHub would send for `body`: its HMAC-SHA256 under the
-    /// first configured secret, as a [`Signature`] whose `Display` is the
-    /// `X-Hub-Signature-256` header value, `sha256=` followed by lowercase
-    /// hex.
+    /// first configured secret, as a [`Signature`], which converts into the
+    /// `X-Hub-Signature-256` header value with `HeaderValue::from` and
+    /// renders it with `Display`, `sha256=` followed by lowercase hex.
     ///
     /// A test aid for the receiving side. A test drives the receiver with a
     /// synthetic request, and that request needs the signature GitHub would
     /// have put on it, so the test signs the body with the verifier the
-    /// receiver was built with and puts `.to_string()` of the result on the
-    /// header. The crate sends nothing; the method exists so the test needs
-    /// no HMAC code of its own.
+    /// receiver was built with and puts the result on the header:
+    /// `.header(header::SIGNATURE, verifier.sign(body))`. The crate sends
+    /// nothing; the method exists so the test needs no HMAC code of its own.
     ///
     /// A rotated verifier ([`Verifier::also`]) signs under its first secret,
     /// the one [`Verifier::new`] received. To sign under a secret it was

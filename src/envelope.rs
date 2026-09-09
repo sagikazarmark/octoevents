@@ -149,10 +149,10 @@ impl RepositoryRef {
 /// unsigned or malformed request before reading the body, and `from_signed`
 /// uses it so both paths agree on which failure a header earns.
 pub(crate) fn require_signature(headers: &HeaderMap) -> Result<Signature, SignatureError> {
-    let value = headers
+    headers
         .get(&header::SIGNATURE)
-        .ok_or(SignatureError::Missing)?;
-    Signature::try_from(value.as_bytes())
+        .ok_or(SignatureError::Missing)
+        .and_then(Signature::try_from)
 }
 
 /// A GitHub webhook and its routing metadata.
@@ -356,7 +356,7 @@ impl Envelope {
     ///     let signature = headers
     ///         .get(&header::SIGNATURE)
     ///         .ok_or(SignatureError::Missing)
-    ///         .and_then(|value| Signature::try_from(value.as_bytes()));
+    ///         .and_then(Signature::try_from);
     ///     if let Err(error) = signature {
     ///         return ReceiveError::from(error).status();
     ///     }

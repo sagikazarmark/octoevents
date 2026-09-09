@@ -13,12 +13,13 @@
 //! let signature = headers
 //!     .get(&header::SIGNATURE)
 //!     .ok_or(SignatureError::Missing)
-//!     .and_then(|value| Signature::try_from(value.as_bytes()));
+//!     .and_then(Signature::try_from);
 //! # assert_eq!(signature.unwrap_err(), SignatureError::Malformed);
 //! ```
 //!
 //! And a test forges a delivery with `http::Request::builder()`, the idiom
-//! every hyper test already uses:
+//! every hyper test already uses; the signature [`Verifier::sign`] gives goes
+//! on as it is:
 //!
 //! ```
 //! use octoevents::{Verifier, WebhookSecret, header};
@@ -29,13 +30,14 @@
 //!     .header(header::CONTENT_TYPE, "application/json")
 //!     .header(header::DELIVERY_ID, "72d3162e-cc78-11e3-81ab-4c9367dc0958")
 //!     .header(header::EVENT_NAME, "issues")
-//!     .header(header::SIGNATURE, verifier.sign(body.as_bytes()).to_string())
+//!     .header(header::SIGNATURE, verifier.sign(body.as_bytes()))
 //!     .body(body.to_string())
 //!     .unwrap();
 //! # let _ = request;
 //! ```
 //!
 //! [`Envelope::from_signed`]: crate::Envelope::from_signed
+//! [`Verifier::sign`]: crate::Verifier::sign
 
 use http::HeaderName;
 
