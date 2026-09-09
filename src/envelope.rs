@@ -4,134 +4,9 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, StatusCode};
 use serde::{Deserialize, Serialize, Serializer};
-use serde_json::value::RawValue;
 use thiserror::Error;
 
-use crate::{Action, EventKind, Signature, SignatureError, TargetType, Verifier, header};
-
-/// The routing metadata of a webhook: everything in an [`Envelope`] except
-/// the payload bytes.
-///
-/// A handler's input on its own, for one routed by kind and action that
-/// decodes nothing, and the first half of [`Event<P>`](crate::Event), so the
-/// delivery ID and installation ID travel beside a decoded payload without
-/// going back to the envelope.
-///
-/// The crate produces this view and consumers only read it, so it is
-/// `#[non_exhaustive]`: GitHub can add a stable routing field (an enterprise
-/// reference, for example) without that becoming a breaking change here.
-/// In a test, an envelope from [`Envelope::new`] carries the meta the
-/// receiver would have extracted from the same bytes; build a meta by itself
-/// with [`EventMeta::new`], for a handler over `EventMeta` alone, and assign
-/// the optional fields it reads.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct EventMeta {
-    /// The `X-GitHub-Delivery` value. Use it as a downstream idempotency key.
-    pub delivery_id: String,
-    /// The event kind parsed from `X-GitHub-Event`.
-    pub kind: EventKind,
-    /// The payload's top-level action, when available.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub action: Option<Action>,
-    /// The GitHub App installation ID, when present.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub installation_id: Option<u64>,
-    /// A compact repository reference, when present.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub repository: Option<RepositoryRef>,
-    /// The organization login, when present.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub organization: Option<String>,
-    /// The sender login, when present.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sender: Option<String>,
-    /// The webhook installation target type.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target_type: Option<TargetType>,
-    /// The webhook installation target ID.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target_id: Option<u64>,
-}
-
-impl EventMeta {
-    /// Creates metadata for one delivery of one kind, with every optional
-    /// field empty.
-    ///
-    /// This reads no bytes: the action, installation ID, repository,
-    /// organization and sender are whatever the caller assigns. For a meta
-    /// that agrees with a payload, build the envelope with [`Envelope::new`],
-    /// which reads those fields from the payload the way the receiver does.
-    /// This constructor is for a handler over `EventMeta` alone, or a test
-    /// that wants the meta and nothing else.
-    ///
-    /// ```
-    /// use octoevents::{Action, EventKind, EventMeta};
-    ///
-    /// let mut meta = EventMeta::new("72d3162e-cc78-11e3-81ab-4c9367dc0958", EventKind::Issues);
-    /// meta.action = Some(Action::Opened);
-    /// meta.installation_id = Some(42);
-    /// # let _ = meta;
-    /// ```
-    #[must_use]
-    pub fn new(delivery_id: impl Into<String>, kind: EventKind) -> Self {
-        Self {
-            delivery_id: delivery_id.into(),
-            kind,
-            action: None,
-            installation_id: None,
-            repository: None,
-            organization: None,
-            sender: None,
-            target_type: None,
-            target_id: None,
-        }
-    }
-}
-
-/// A compact repository reference extracted without parsing a full payload model.
-///
-/// `#[non_exhaustive]` for the same reason as [`EventMeta`]. Build one in tests
-/// with [`RepositoryRef::new`], which takes every field the crate probes.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct RepositoryRef {
-    /// GitHub's numeric repository ID.
-    pub id: u64,
-    /// The unqualified repository name.
-    pub name: String,
-    /// The owner-qualified repository name.
-    pub full_name: String,
-    /// The repository owner's login.
-    pub owner: String,
-}
-
-impl RepositoryRef {
-    /// Creates a reference from the fields GitHub sends in every payload's
-    /// `repository` object.
-    ///
-    /// ```
-    /// use octoevents::{EventKind, EventMeta, RepositoryRef};
-    ///
-    /// let mut meta = EventMeta::new("72d3162e-cc78-11e3-81ab-4c9367dc0958", EventKind::Push);
-    /// meta.repository = Some(RepositoryRef::new(1296269, "Hello-World", "octocat/Hello-World", "octocat"));
-    /// # let _ = meta;
-    /// ```
-    #[must_use]
-    pub fn new(
-        id: u64,
-        name: impl Into<String>,
-        full_name: impl Into<String>,
-        owner: impl Into<String>,
-    ) -> Self {
-        Self {
-            id,
-            name: name.into(),
-            full_name: full_name.into(),
-            owner: owner.into(),
-        }
-    }
-}
+use crate::{EventKind, EventMeta, Signature, SignatureError, TargetType, Verifier, header};
 
 /// The signature to verify, parsed from `headers`, or the header failure
 /// [`Envelope::from_signed`] reports for it: [`SignatureError::Missing`]
@@ -418,12 +293,15 @@ impl Envelope {
         let delivery_id = required_header(headers, header::DELIVERY_ID)?;
         let event_name = required_header(headers, header::EVENT_NAME)?;
 
-        let mut envelope = Self::probed(delivery_id, EventKind::from(event_name), body);
-        envelope.meta.target_type = header_str(headers, &header::TARGET_TYPE).map(TargetType::from);
-        envelope.meta.target_id =
+        let mut meta = EventMeta::probe(delivery_id, EventKind::from(event_name), &body);
+        meta.target_type = header_str(headers, &header::TARGET_TYPE).map(TargetType::from);
+        meta.target_id =
             header_str(headers, &header::TARGET_ID).and_then(|value| value.parse().ok());
 
-        Ok(envelope)
+        Ok(Self {
+            meta,
+            raw_payload: body,
+        })
     }
 
     /// Builds an envelope from the delivery ID, the kind and the payload
@@ -469,40 +347,11 @@ impl Envelope {
     /// ```
     #[must_use]
     pub fn new(delivery_id: impl Into<String>, kind: EventKind, payload: impl AsRef<[u8]>) -> Self {
-        Self::probed(delivery_id, kind, Bytes::copy_from_slice(payload.as_ref()))
-    }
-
-    /// The probe: the meta's payload-derived fields read from `raw_payload`,
-    /// with the header-derived target left empty. Both constructors come
-    /// through here, [`Envelope::new`] after copying a test's payload into
-    /// [`Bytes`] and [`Envelope::from_signed`] with the authenticated body as
-    /// it holds it.
-    fn probed(delivery_id: impl Into<String>, kind: EventKind, raw_payload: Bytes) -> Self {
-        let probe = serde_json::from_slice::<Probe<'_>>(&raw_payload).unwrap_or_default();
-
-        let mut meta = EventMeta::new(delivery_id, kind);
-        meta.action = probe
-            .action
-            .and_then(parse_probe::<String>)
-            .map(|action| Action::from(action.as_str()));
-        meta.installation_id = probe
-            .installation
-            .and_then(parse_probe::<IdOnly>)
-            .map(|installation| installation.id);
-        meta.repository = probe
-            .repository
-            .and_then(parse_probe::<RepoProbe>)
-            .map(RepositoryRef::from);
-        meta.organization = probe
-            .organization
-            .and_then(parse_probe::<LoginOnly>)
-            .map(|organization| organization.login);
-        meta.sender = probe
-            .sender
-            .and_then(parse_probe::<LoginOnly>)
-            .map(|sender| sender.login);
-
-        Self { meta, raw_payload }
+        let raw_payload = Bytes::copy_from_slice(payload.as_ref());
+        Self {
+            meta: EventMeta::probe(delivery_id, kind, &raw_payload),
+            raw_payload,
+        }
     }
 
     /// Decodes the exact payload into a caller-defined view, checking nothing
@@ -786,53 +635,6 @@ where
         .decode(encoded.as_bytes())
         .map(Bytes::from)
         .map_err(serde::de::Error::custom)
-}
-
-fn parse_probe<T: serde::de::DeserializeOwned>(value: &RawValue) -> Option<T> {
-    serde_json::from_str(value.get()).ok()
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct Probe<'a> {
-    #[serde(borrow)]
-    action: Option<&'a RawValue>,
-    #[serde(borrow)]
-    installation: Option<&'a RawValue>,
-    #[serde(borrow)]
-    repository: Option<&'a RawValue>,
-    #[serde(borrow)]
-    organization: Option<&'a RawValue>,
-    #[serde(borrow)]
-    sender: Option<&'a RawValue>,
-}
-
-#[derive(Debug, Deserialize)]
-struct IdOnly {
-    id: u64,
-}
-
-#[derive(Debug, Deserialize)]
-struct RepoProbe {
-    id: u64,
-    name: String,
-    full_name: String,
-    owner: LoginOnly,
-}
-
-impl From<RepoProbe> for RepositoryRef {
-    fn from(repository: RepoProbe) -> Self {
-        Self {
-            id: repository.id,
-            name: repository.name,
-            full_name: repository.full_name,
-            owner: repository.owner.login,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct LoginOnly {
-    login: String,
 }
 
 #[cfg(test)]
