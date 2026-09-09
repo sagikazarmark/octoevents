@@ -276,11 +276,11 @@ mod sign {
     }
 
     #[test]
-    fn a_verifier_from_a_secret_signs_under_it_and_extending_appends_after_it() {
-        // `From` is `new`, and `Extend` is `also` over an iterator: the first
-        // secret stays first, so `sign` still signs under it, and the
-        // extended-in secrets verify beside it.
-        let mut verifier = Verifier::from(WebhookSecret::new("It's a Secret to Everybody"));
+    fn extending_a_verifier_appends_after_its_first_secret() {
+        // `Extend` is `also` over an iterator: the first secret stays first,
+        // so `sign` still signs under it, and the extended-in secrets verify
+        // beside it.
+        let mut verifier = Verifier::new(WebhookSecret::new("It's a Secret to Everybody"));
         verifier.extend([WebhookSecret::new("previous"), WebhookSecret::new("older")]);
 
         assert_eq!(

@@ -108,10 +108,8 @@ where
 /// declare a delivery "not mine" so that a later handler takes it. The tiers
 /// plus registration order cover what a webhook receiver needs, and matching
 /// decided by handlers at run time would leave the route table unable to say
-/// what it routes; the designs this was weighed against are recorded in the
-/// repository's design notes, linked from the crate docs under
-/// [Design](crate#design). Whether a delivery is routed at all is not a
-/// tier's decision either; it is made outside the dispatcher, at
+/// what it routes. Whether a delivery is routed at all is not a tier's
+/// decision either; it is made outside the dispatcher, at
 /// [the policy seam](#the-policy-seam).
 ///
 /// [`dispatch`](Self::dispatch) reports an [`Outcome`]: whether the delivery
@@ -289,8 +287,11 @@ where
 /// tolerating an added action. What the wrapper answers before `dispatch`
 /// reaches no tier, `always` included. The dispatcher only routes.
 /// [`Outcome`]'s docs show a wrapper that dead-letters an unknown kind; the
-/// `policy_seam` example shows one that also persists and deduplicates. The
-/// [design notes](crate#design) record the short-circuit tier this replaces.
+/// `policy_seam` example shows one that also persists and deduplicates. A
+/// tier that could succeed and stop routing was considered for this and
+/// declined: it would make "matched" one handler's run-time decision rather
+/// than a property of the route table, so the outcome could no longer be
+/// trusted and a strict `fallback` could no longer say what it rejects.
 #[derive(Clone)]
 pub struct Dispatcher {
     routes: Arc<Routes>,

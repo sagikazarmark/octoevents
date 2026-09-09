@@ -118,11 +118,8 @@ mod receive {
 
         let envelope = Envelope::from_signed(&verifier(), &headers, body).unwrap();
 
-        assert_eq!(envelope.meta.kind, EventKind::Unknown("brand_new".into()));
-        assert_eq!(
-            envelope.meta.action,
-            Some(Action::Unknown("brand_new".into()))
-        );
+        assert_eq!(envelope.meta.kind, EventKind::from("brand_new"));
+        assert_eq!(envelope.meta.action, Some(Action::from("brand_new")));
     }
 
     #[test]
@@ -357,7 +354,7 @@ mod header_rules {
     fn an_empty_required_header_is_missing() {
         // A header sent with no value is as good as not sent: the error names
         // the header, so no envelope is built with an empty delivery ID or an
-        // event name that parses as `Unknown("")`.
+        // event name that parses as `Unknown { value: "" }`.
         let signature = verifier().sign(b"").to_string();
 
         let mut empty_delivery = headers(&signature);

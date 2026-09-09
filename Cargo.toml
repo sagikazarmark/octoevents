@@ -8,8 +8,6 @@ exclude = ["examples/worker"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-# 1.88 stabilised `<[T]>::as_chunks`, which `signature` reads the signature's
-# hex pairs with; `just msrv` checks the claim on that toolchain.
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/sagikazarmark/octoevents"
@@ -17,7 +15,7 @@ repository = "https://github.com/sagikazarmark/octoevents"
 [package]
 name = "octoevents"
 version.workspace = true
-description = "Receive and verify GitHub webhook events."
+description = "Receive and verify GitHub webhook events"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -42,12 +40,6 @@ include = [
 [features]
 default = ["http-body", "derive"]
 derive = ["dep:octoevents-derive"]
-# The receiver's body handling: `WebhookReceiver::receive` over an
-# `http_body::Body`, answering an `http::Response`. The receiver itself, its
-# builder and `receive_bytes` over the headers and the body already read are in
-# the core, and the `http` crate is not optional: every surveyed Rust runtime
-# hands over an `http::HeaderMap`; the survey and the feature's name are under
-# "No header view" in `docs/design/deliberately-left-out.md`.
 http-body = ["dep:http-body", "dep:http-body-util"]
 octocrab = ["dep:octocrab"]
 tower = ["http-body", "dep:tower-service"]
@@ -85,21 +77,6 @@ tracing-subscriber = { version = "0.3.20", features = ["registry"] }
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
-
-# `cargo release` turns the Unreleased section of CHANGELOG.md into the
-# version's and opens a new one, and pins the README's dependency snippet to
-# the version being released. On this package alone: the workspace's two
-# crates share one version and one changelog, and a workspace-level entry
-# would run the replacements once per crate.
-[package.metadata.release]
-pre-release-replacements = [
-  { file = "CHANGELOG.md", search = "Unreleased", replace = "{{version}}", min = 1 },
-  { file = "CHANGELOG.md", search = "\\.\\.\\.HEAD", replace = "...{{tag_name}}", exactly = 1 },
-  { file = "CHANGELOG.md", search = "ReleaseDate", replace = "{{date}}", min = 1 },
-  { file = "CHANGELOG.md", search = "<!-- next-header -->", replace = "<!-- next-header -->\n\n## [Unreleased] - ReleaseDate", exactly = 1 },
-  { file = "CHANGELOG.md", search = "<!-- next-url -->", replace = "<!-- next-url -->\n[Unreleased]: https://github.com/sagikazarmark/octoevents/compare/{{tag_name}}...HEAD", exactly = 1 },
-  { file = "README.md", search = "octoevents = \\{ version = \"[^\"]+\"", replace = "octoevents = { version = \"{{version}}\"", exactly = 1 },
-]
 
 # The examples, in the order to read them: the README's quickstart, a receiver
 # with no dispatcher, a dispatcher with every tier, and the policy seam around
@@ -146,9 +123,9 @@ pedantic = "warn"
 [profile.dev]
 debug = "line-tables-only"
 
-# The two crates carry one version: `octoevents` pins `octoevents-derive`
-# exactly, so a release bumps and publishes both.
 [workspace.metadata.release]
-shared-version = true
 sign-commit = true
 sign-tag = true
+shared-version = true
+tag-message = "Release {{version}}"
+tag-name = "v{{version}}"

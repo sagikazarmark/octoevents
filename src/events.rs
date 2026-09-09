@@ -1,5 +1,5 @@
 /// An enum over one GitHub wire vocabulary: a variant per known string, an
-/// `Unknown(String)` for the rest, and the conversions every such enum
+/// `Unknown { value: Cow<'static, str> }` for the rest, and the conversions every such enum
 /// needs: `as_str`, `From<&str>`, an infallible `FromStr`, `Display` as the
 /// wire string, and serde as a bare string. The three wire vocabularies the
 /// crate parses are generated with it: [`EventKind`] and [`Action`] here,
@@ -23,21 +23,49 @@ macro_rules! string_enum {
                 $variant,
             )*
             /// A wire value unknown to this version of the crate.
-            Unknown(::std::string::String),
+            ///
+            /// Build values with `From<&str>`, `From<String>`, or
+            /// [`from_static`](Self::from_static), so a known string becomes
+            /// its named variant. Match this variant with `Unknown { value, .. }`;
+            /// its payload is a borrowed or owned wire string.
+            #[non_exhaustive]
+            Unknown {
+                /// The wire string, kept verbatim.
+                value: ::std::borrow::Cow<'static, str>,
+            },
         }
 
         impl $name {
+            /// The variant for a static wire string, without allocating.
+            ///
+            /// Like `From<&str>`, this normalizes known strings to their named
+            /// variants. An unknown string is borrowed; if a later crate version
+            /// recognizes it, the same source constructs the named variant.
+            /// This constructor also works in constants, including
+            /// [`Payload::KIND`](crate::Payload::KIND).
+            #[must_use]
+            pub const fn from_static(value: &'static str) -> Self {
+                $(
+                    if $crate::events::wire_eq(value, $wire) {
+                        return Self::$variant;
+                    }
+                )*
+                Self::Unknown { value: ::std::borrow::Cow::Borrowed(value) }
+            }
+
             /// Returns the original GitHub wire value.
             #[must_use]
             pub fn as_str(&self) -> &str {
                 match self {
                     $(Self::$variant => $wire,)*
-                    Self::Unknown(value) => value,
+                    Self::Unknown { value, .. } => value,
                 }
             }
 
             #[cfg(test)]
             pub(crate) fn known_values() -> &'static [Self] {
+                const PARSED: &[$name] = &[$($name::from_static($wire),)*];
+                assert_eq!(PARSED, &[$(Self::$variant,)*]);
                 &[$(Self::$variant,)*]
             }
         }
@@ -48,7 +76,7 @@ macro_rules! string_enum {
             fn from(value: &str) -> Self {
                 match value {
                     $($wire => Self::$variant,)*
-                    value => Self::Unknown(value.to_owned()),
+                    value => Self::Unknown { value: value.to_owned().into() },
                 }
             }
         }
@@ -59,7 +87,7 @@ macro_rules! string_enum {
             fn from(value: ::std::string::String) -> Self {
                 match value.as_str() {
                     $($wire => Self::$variant,)*
-                    _ => Self::Unknown(value),
+                    _ => Self::Unknown { value: value.into() },
                 }
             }
         }
@@ -101,6 +129,24 @@ macro_rules! string_enum {
 
 pub(crate) use string_enum;
 
+// String equality is not const on the MSRV. Compare UTF-8 bytes exactly, as
+// the runtime string match does; no case folding or normalization of the wire.
+pub(crate) const fn wire_eq(left: &str, right: &str) -> bool {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
 // Known GitHub webhook event names. Keep existing variants for API compatibility.
 string_enum! {
     /// The event kind, parsed from the `X-GitHub-Event` event name.
@@ -131,8 +177,18 @@ string_enum! {
     ///
     /// // A name this version does not know is kept, not refused.
     /// let future = EventKind::from("future_event");
-    /// assert_eq!(future, EventKind::Unknown("future_event".into()));
     /// assert_eq!(future.as_str(), "future_event");
+    /// const FUTURE: EventKind = EventKind::from_static("future_event");
+    /// assert_eq!(future, FUTURE);
+    /// assert!(matches!(future, EventKind::Unknown { value, .. } if value == "future_event"));
+    /// ```
+    ///
+    /// Construct through a conversion or `from_static`, rather than an
+    /// `Unknown` literal, so recognized names always use their named variant:
+    ///
+    /// ```compile_fail,E0639
+    /// use octoevents::EventKind;
+    /// let kind = EventKind::Unknown { value: "issues".into() };
     /// ```
     pub enum EventKind {
         BranchProtectionConfiguration => "branch_protection_configuration",
@@ -246,7 +302,7 @@ string_enum! {
     ///
     /// assert_eq!(Action::from("ready_for_review"), Action::ReadyForReview);
     /// assert_eq!(Action::ReadyForReview.as_str(), "ready_for_review");
-    /// assert_eq!(Action::from("future_action"), Action::Unknown("future_action".into()));
+    /// assert_eq!(Action::from("future_action").as_str(), "future_action");
     ///
     /// // What the envelope reads off the payload.
     /// let opened = Envelope::new("delivery-1", EventKind::Issues, br#"{"action":"opened"}"#);
@@ -435,15 +491,42 @@ mod tests {
         let owned = Action::from(String::from("future_action"));
         let target_type: TargetType = "enterprise".parse().unwrap();
 
-        assert_eq!(event, EventKind::Unknown("future_event".into()));
-        assert_eq!(action, Action::Unknown("future_action".into()));
+        assert_eq!(event.as_str(), "future_event");
+        assert_eq!(action.as_str(), "future_action");
         assert_eq!(owned, action);
-        assert_eq!(target_type, TargetType::Unknown("enterprise".into()));
+        assert_eq!(target_type.as_str(), "enterprise");
         assert_eq!(serde_json::to_string(&event).unwrap(), "\"future_event\"");
         assert_eq!(target_type.to_string(), "enterprise");
         assert_eq!(
             serde_json::from_str::<TargetType>(r#""enterprise""#).unwrap(),
             target_type
         );
+    }
+
+    #[test]
+    fn static_unknowns_agree_with_owned_values_and_hashes() {
+        use std::{
+            collections::hash_map::DefaultHasher,
+            hash::{Hash, Hasher},
+        };
+
+        fn hash(value: &impl Hash) -> u64 {
+            let mut hasher = DefaultHasher::new();
+            value.hash(&mut hasher);
+            hasher.finish()
+        }
+
+        const KIND: EventKind = EventKind::from_static("future_event");
+        const ACTION: Action = Action::from_static("future_action");
+        const TARGET: TargetType = TargetType::from_static("enterprise");
+        assert_eq!(KIND, EventKind::from("future_event"));
+        assert_eq!(ACTION, Action::from("future_action"));
+        assert_eq!(TARGET, TargetType::from("enterprise"));
+        assert_eq!(hash(&KIND), hash(&EventKind::from("future_event")));
+        assert_eq!(hash(&ACTION), hash(&Action::from("future_action")));
+        assert_eq!(hash(&TARGET), hash(&TargetType::from("enterprise")));
+        for wire in ["", "Issues", "issues_extra", "issue", "évent", "issues\0"] {
+            assert_eq!(EventKind::from_static(wire), EventKind::from(wire));
+        }
     }
 }

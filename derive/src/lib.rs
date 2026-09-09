@@ -1,10 +1,4 @@
 //! Derive macros for [`octoevents`](https://docs.rs/octoevents).
-//!
-//! Reached through `octoevents`'s `derive` feature, on by default, which
-//! re-exports everything here; there is no reason to depend on this crate
-//! directly. The two crates are released together and `octoevents` pins this
-//! one exactly, because what the derive expands to is an `impl` of an
-//! `octoevents` trait.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -18,17 +12,20 @@ use syn::{DeriveInput, Error, Expr, Meta, Result, parse_macro_input, parse_quote
 /// carrying the type's own generics and bounds and adding one:
 /// `Self: serde::de::DeserializeOwned`. Nothing else is generated: the serde
 /// derive stays yours, and so does every field. The added bound is what
-/// makes a serde type a `FromEnvelope`, which `Payload` requires, so a
-/// generic view `View<T>` is a payload wherever `View<T>` deserializes, with
-/// nothing said about `T` beyond what the type itself declares. A misspelled
-/// variant is reported by rustc at the path, as any expression would be.
+/// makes a serde type a `FromEnvelope`, which `Payload` requires, so the
+/// `PullRequest<T>` below is a payload wherever `PullRequest<T>` deserializes,
+/// with nothing said about `T` beyond what the type itself declares. A
+/// misspelled variant is reported by rustc at the path, as any expression
+/// would be.
 ///
 /// The attribute is required, exactly once, and takes the kind
 /// positionally: `#[payload]` and `#[payload = ".."]` are refused with the
 /// parenthesized form, `#[payload()]` as empty, a second attribute as a
 /// duplicate, and a second argument as an unexpected token. The kind is any
 /// expression of type `EventKind`, a path (`EventKind::Issues`,
-/// `octoevents::EventKind::Issues`) or a constant of your own.
+/// `octoevents::EventKind::Issues`), a constant of your own, or
+/// `EventKind::from_static("future_event")` for a kind the crate does not yet
+/// know. The expression must be valid in an associated constant.
 ///
 /// The expansion names `::serde` and `::octoevents`, so both crates are
 /// expected under those names, as they are wherever `serde::Deserialize` is
@@ -40,15 +37,23 @@ use syn::{DeriveInput, Error, Expr, Meta, Result, parse_macro_input, parse_quote
 /// #[derive(serde::Deserialize, Payload)]
 /// #[payload(EventKind::Issues)]
 /// struct IssueOpened {
-///     issue: Issue,
+///     issue: Number,
+/// }
+///
+/// /// Generic over the shape of one field, with no bound on `T`.
+/// #[derive(serde::Deserialize, Payload)]
+/// #[payload(EventKind::PullRequest)]
+/// struct PullRequest<T> {
+///     pull_request: T,
 /// }
 ///
 /// #[derive(serde::Deserialize)]
-/// struct Issue {
+/// struct Number {
 ///     number: u64,
 /// }
 ///
 /// assert_eq!(IssueOpened::KIND, EventKind::Issues);
+/// assert_eq!(<PullRequest<Number>>::KIND, EventKind::PullRequest);
 /// ```
 #[proc_macro_derive(Payload, attributes(payload))]
 pub fn derive_payload(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -63,10 +68,11 @@ pub fn derive_payload(input: proc_macro::TokenStream) -> proc_macro::TokenStream
 /// The impl carries the type's own generics and bounds, plus `Self:
 /// DeserializeOwned`. `Payload` requires `FromEnvelope`, which a serde type
 /// has through the blanket impl over `Payload + DeserializeOwned`; without
-/// the bound spelled on the impl, a generic view `View<T>` would owe
-/// `FromEnvelope` for every `T`, including the ones that do not deserialize,
-/// and the impl would be refused. With it, `View<T>` is a payload wherever
-/// `View<T>` deserializes, and nothing further is said about `T`.
+/// the bound spelled on the impl, a generic view such as the `PullRequest<T>`
+/// in the derive's docs would owe `FromEnvelope` for every `T`, including
+/// the ones that do not deserialize, and the impl would be refused. With it,
+/// `PullRequest<T>` is a payload wherever `PullRequest<T>` deserializes, and
+/// nothing further is said about `T`.
 fn expand_payload(input: &DeriveInput) -> Result<TokenStream> {
     let kind = declared_kind(input)?;
     let ident = &input.ident;
@@ -144,7 +150,6 @@ impl Parse for KindArg {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use syn::parse_quote;
 
     /// The expansion rendered through `TokenStream::to_string`, the same
     /// path an expected stream written with `quote!` is rendered through, so
@@ -204,8 +209,8 @@ mod tests {
     #[test]
     fn generics_are_carried_onto_the_impl_beside_the_serde_bound() {
         let tokens = expand(&parse_quote! {
-            #[payload(EventKind::Issues)]
-            struct View<T: Clone> where T: Send { inner: T }
+            #[payload(EventKind::PullRequest)]
+            struct PullRequest<T: Clone> where T: Send { pull_request: T }
         })
         .unwrap();
 
@@ -213,12 +218,12 @@ mod tests {
             tokens,
             quote! {
                 #[automatically_derived]
-                impl<T: Clone> ::octoevents::Payload for View<T>
+                impl<T: Clone> ::octoevents::Payload for PullRequest<T>
                 where
                     T: Send,
-                    View<T>: ::serde::de::DeserializeOwned
+                    PullRequest<T>: ::serde::de::DeserializeOwned
                 {
-                    const KIND: ::octoevents::EventKind = EventKind::Issues;
+                    const KIND: ::octoevents::EventKind = EventKind::PullRequest;
                 }
             }
             .to_string()
@@ -228,8 +233,8 @@ mod tests {
     #[test]
     fn a_type_without_a_where_clause_gets_one_for_the_serde_bound() {
         let tokens = expand(&parse_quote! {
-            #[payload(EventKind::Issues)]
-            struct View<T> { inner: T }
+            #[payload(EventKind::PullRequest)]
+            struct PullRequest<T> { pull_request: T }
         })
         .unwrap();
 
@@ -237,11 +242,11 @@ mod tests {
             tokens,
             quote! {
                 #[automatically_derived]
-                impl<T> ::octoevents::Payload for View<T>
+                impl<T> ::octoevents::Payload for PullRequest<T>
                 where
-                    View<T>: ::serde::de::DeserializeOwned
+                    PullRequest<T>: ::serde::de::DeserializeOwned
                 {
-                    const KIND: ::octoevents::EventKind = EventKind::Issues;
+                    const KIND: ::octoevents::EventKind = EventKind::PullRequest;
                 }
             }
             .to_string()

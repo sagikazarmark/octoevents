@@ -6,7 +6,7 @@ use http::{HeaderMap, HeaderName, StatusCode};
 use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
 
-use crate::{EventKind, EventMeta, SignatureError, TargetType, Verifier, header};
+use crate::{BoxError, EventKind, EventMeta, SignatureError, TargetType, Verifier, header};
 
 /// The verified unit of receipt: the exact payload bytes and their metadata.
 ///
@@ -119,8 +119,15 @@ use crate::{EventKind, EventMeta, SignatureError, TargetType, Verifier, header};
 /// every other field is optional, and a field that is absent reads the same
 /// as one that is `null`. On serialize, an optional field with no value is
 /// omitted rather than written as `null`. Unknown fields are ignored, so a
-/// producer may annotate the document for its own transport, and a producer
-/// on a newer version of this crate does not break an older consumer.
+/// producer may annotate the document for its own transport.
+///
+/// The wire format follows the crate's versioning, with no separate version
+/// field. Adding optional fields is wire-compatible. Removing or renaming
+/// existing fields, making optional fields required, or changing existing
+/// fields' encodings or meanings is treated as a breaking change and
+/// documented in release notes. Before 1.0, a minor release may include such
+/// changes; producers and consumers crossing that boundary must migrate
+/// together or use a transport adapter.
 ///
 /// The meta is read back as forwarded: nothing is verified, and the payload
 /// is not probed again, so a document whose `action` disagrees with the
@@ -584,13 +591,22 @@ pub enum DecodeError {
     /// [`DecodeError::input`] or [`DecodeError::input_with_source`]. Named
     /// for what reports the reason, as `KindMismatch` and `Json` are named
     /// for what went wrong.
+    ///
+    /// The variant is non-exhaustive: use the constructors and match with
+    /// `Input { message, source, .. }` so fields can be added later.
+    ///
+    /// ```compile_fail,E0639
+    /// use octoevents::DecodeError;
+    /// let error = DecodeError::Input { message: "invalid input".into(), source: None };
+    /// ```
     #[error("{message}")]
+    #[non_exhaustive]
     Input {
         /// The consumer's own reason, as `Display` shows it.
         message: Cow<'static, str>,
         /// The underlying error, when the consumer attached one.
         #[source]
-        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+        source: Option<BoxError>,
     },
 }
 
@@ -623,8 +639,9 @@ impl DecodeError {
     /// `source` as the underlying error.
     ///
     /// `Display` is the message; the source is one `source()` hop down, where
-    /// an observer that walks the chain finds it. Any `Error + Send + Sync`
-    /// is accepted, boxed or not. For a view that reads a field the payload
+    /// an observer that walks the chain finds it. Any error convertible to
+    /// [`BoxError`] is accepted, including non-`Send` errors on `wasm32`.
+    /// For a view that reads a field the payload
     /// carries as text and parses it further, the parse error is the source:
     ///
     /// ```
@@ -652,7 +669,7 @@ impl DecodeError {
     #[must_use]
     pub fn input_with_source(
         message: impl Into<Cow<'static, str>>,
-        source: impl Into<Box<dyn std::error::Error + Send + Sync>>,
+        source: impl Into<BoxError>,
     ) -> Self {
         Self::Input {
             message: message.into(),

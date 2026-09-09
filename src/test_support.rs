@@ -91,7 +91,7 @@ pub(crate) fn ping() -> Envelope {
 /// only difference from [`ping`].
 pub(crate) fn unknown() -> Envelope {
     envelope(
-        EventKind::Unknown("future_event".into()),
+        EventKind::from("future_event"),
         include_bytes!("../tests/fixtures/ping.json"),
     )
 }

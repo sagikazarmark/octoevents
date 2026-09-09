@@ -118,6 +118,17 @@ impl std::fmt::Display for JsError {
 
 impl std::error::Error for JsError {}
 
+/// A consumer's decode can retain a JavaScript-shaped source through dispatch.
+#[test]
+fn a_decode_error_can_keep_a_single_threaded_source() {
+    use octoevents::{BoxError, DecodeError};
+
+    let error = DecodeError::input_with_source("invalid input", JsError(Rc::new(Cell::new(7))));
+    let boxed: BoxError = error.into();
+    let source = boxed.source().unwrap().downcast_ref::<JsError>().unwrap();
+    assert_eq!(source.0.get(), 7);
+}
+
 /// The `on_error` observer is bounded like a handler, so a Worker can record
 /// failures into the same single-threaded state, JavaScript values included,
 /// and the handler's error may hold them too.

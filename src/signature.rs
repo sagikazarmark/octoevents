@@ -499,14 +499,6 @@ impl Verifier {
     }
 }
 
-/// A verifier over one secret, [`Verifier::new`] as a conversion, for a
-/// builder or a config type that takes `impl Into<Verifier>`.
-impl From<WebhookSecret> for Verifier {
-    fn from(secret: WebhookSecret) -> Self {
-        Self::new(secret)
-    }
-}
-
 /// Accepts further secrets, [`Verifier::also`] over an iterator, for a
 /// rotation window read from configuration as a list.
 ///

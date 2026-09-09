@@ -8,7 +8,7 @@
 //! beyond what the type itself declares. That last one is the point of the
 //! `Self: DeserializeOwned` bound the derive adds: `Payload` requires
 //! `FromEnvelope`, which a serde type has only through `DeserializeOwned`, so
-//! an unbounded `View<T>` would owe it for every `T` and be refused.
+//! an unbounded `PullRequest<T>` would owe it for every `T` and be refused.
 //!
 //! Gated on the feature that provides the derive; the rest of the suite
 //! writes its `impl Payload` by hand so `cargo test --no-default-features`
@@ -26,6 +26,89 @@ use octoevents::{
 #[payload(EventKind::Issues)]
 struct IssueNumber {
     issue: Issue,
+}
+
+#[derive(serde::Deserialize, Payload)]
+#[payload(EventKind::from_static("future_event"))]
+struct FutureEvent {
+    number: u64,
+}
+
+#[derive(serde::Deserialize, Payload)]
+#[payload(EventKind::from_static("issues"))]
+struct KnownFromStatic {
+    number: u64,
+}
+
+#[test]
+fn static_kinds_decode_both_unknown_and_recognized_names() {
+    let future = Envelope::new(
+        "future",
+        EventKind::from("future_event"),
+        br#"{"number":7}"#,
+    );
+    assert_eq!(FutureEvent::from_envelope(&future).unwrap().number, 7);
+    assert_eq!(<Event<FutureEvent>>::KIND, future.meta.kind);
+
+    let known = Envelope::new("known", EventKind::Issues, br#"{"number":8}"#);
+    assert_eq!(KnownFromStatic::KIND, EventKind::Issues);
+    assert_eq!(KnownFromStatic::from_envelope(&known).unwrap().number, 8);
+    assert!(matches!(
+        FutureEvent::from_envelope(&known),
+        Err(DecodeError::KindMismatch { .. })
+    ));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn static_kinds_and_actions_route_like_runtime_wire_values() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+
+    use octoevents::{Action, Match};
+
+    let total = Arc::new(AtomicU64::new(0));
+    let future_total = Arc::clone(&total);
+    let known_total = Arc::clone(&total);
+    let dispatcher = Dispatcher::builder()
+        .on(
+            Action::from_static("future_action"),
+            move |payload: FutureEvent| {
+                let total = Arc::clone(&future_total);
+                async move {
+                    total.fetch_add(payload.number, Ordering::Relaxed);
+                    Ok::<_, Infallible>(())
+                }
+            },
+        )
+        .on(
+            Action::from_static("opened"),
+            move |payload: KnownFromStatic| {
+                let total = Arc::clone(&known_total);
+                async move {
+                    total.fetch_add(payload.number, Ordering::Relaxed);
+                    Ok::<_, Infallible>(())
+                }
+            },
+        )
+        .build();
+
+    for (kind, bytes) in [
+        (
+            "future_event",
+            br#"{"action":"future_action","number":7}"#.as_slice(),
+        ),
+        ("issues", br#"{"action":"opened","number":8}"#.as_slice()),
+    ] {
+        let outcome = dispatcher
+            .dispatch(Envelope::new("delivery", EventKind::from(kind), bytes))
+            .await;
+        assert_eq!(outcome.matched, Match::Matched);
+        outcome.result.unwrap();
+    }
+    assert_eq!(total.load(Ordering::Relaxed), 15);
 }
 
 #[derive(serde::Deserialize)]

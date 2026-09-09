@@ -67,11 +67,6 @@ thiserror = "2"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
 ```
 
-> If the `version` above is not yet on crates.io, this README tracks `main`
-> and describes the next release; the docs.rs links below then point at
-> pages that do not exist yet, and `cargo doc --open --all-features` in a
-> checkout renders them.
-
 `serde` is for the payload views under [Handlers](#handlers) and `thiserror`
 for a handler's own error type under [Error handling](#error-handling); the
 quickstart itself reads the envelope's meta, returns the crate's `BoxError`,

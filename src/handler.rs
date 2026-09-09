@@ -150,7 +150,7 @@ use crate::{MaybeSend, MaybeSync};
 /// is for.
 ///
 /// For one kind and nothing else, no dispatcher is needed: a handler over the
-/// envelope decodes its own view with `View::from_envelope(&envelope)`, the
+/// envelope decodes its own view with `P::from_envelope(&envelope)`, the
 /// [`FromEnvelope`](crate::FromEnvelope) impl every [`Payload`](crate::Payload)
 /// has, whose kind check refuses a delivery of another kind at the kind, so
 /// a misconfigured webhook fails loudly rather than at a missing field.

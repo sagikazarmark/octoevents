@@ -1,5 +1,5 @@
-# The test suite in tiers, cheapest first; CONTRIBUTING.md says which to run
-# when and what a plain `cargo test` leaves out. The four test tiers pass
+# The test suite in tiers, cheapest first; `pr` is what a change should pass
+# and `core` the loop while editing. The four test tiers pass
 # `--all-features` so that nothing is skipped; rustdoc, matrix, wasm, msrv and
 # lint then vary the feature set, the target and the toolchain on purpose.
 #
@@ -19,16 +19,13 @@
 # then the Cloudflare Worker example. The lint tier runs clippy at both feature
 # extremes, with the workspace's pedantic lints as errors.
 #
-# The msrv tier needs a Rust 1.88 toolchain, which devenv (stable only) does not
-# ship. Either `rustup toolchain install 1.88`, which `cargo +1.88` then selects,
-# or put a 1.88 toolchain's `bin` first on PATH: a bare `cargo` drives whichever
-# `rustc` PATH finds, so the probe wants both. Without one the tier says so and
-# passes, and the probe does not let rustup install the toolchain on its own.
+# The msrv tier needs Rust 1.88.0, which devenv (stable only) does not ship.
+# Install it with `rustup toolchain install 1.88.0 --profile minimal`, or put
+# that toolchain's bin first on PATH. `rustup run` works even when devenv's
+# cargo precedes rustup's proxy. A missing toolchain fails the required tier.
 #
-# CI runs what the Dagger module in `dagger.toml` runs, not this file; the
-# "Continuous integration" section of CONTRIBUTING.md says which tiers it
-# should be aligned with. Every check here is a plain cargo command, so wiring
-# one is a line.
+# CI runs the checks provided by the Dagger Rust module in `dagger.toml`;
+# this file defines the local verification tiers.
 
 # List the tiers.
 default:
@@ -73,23 +70,26 @@ wasm:
   cargo check --tests --target wasm32-unknown-unknown --features octocrab,tower
   cargo check --manifest-path examples/worker/Cargo.toml --target wasm32-unknown-unknown
 
-# Rust 1.88, the declared minimum, at the three feature extremes; skipped without that toolchain.
+# Rust 1.88.0, the declared minimum, at the three feature extremes; required.
 msrv:
   #!/usr/bin/env sh
   set -eu
-  if RUSTUP_AUTO_INSTALL=0 cargo +1.88 --version >/dev/null 2>&1; then
-    cargo='cargo +1.88'
-  elif cargo --version | grep -q '^cargo 1\.88\.' && rustc --version | grep -q '^rustc 1\.88\.'; then
-    cargo=cargo
+  export RUSTUP_AUTO_INSTALL=0
+  if rustup run 1.88.0 cargo --version >/dev/null 2>&1; then
+    set -- rustup run 1.88.0 cargo
   else
-    echo 'msrv: skipped, no Rust 1.88 toolchain; `rustup toolchain install 1.88`, or put one first on PATH' >&2
-    exit 0
+    case "$(cargo --version) / $(rustc --version)" in
+      'cargo 1.88.0 '*'/ rustc 1.88.0 '*) set -- cargo ;;
+      *)
+        echo 'msrv: Rust 1.88.0 is required; run `rustup toolchain install 1.88.0 --profile minimal`, or put its bin first on PATH' >&2
+        exit 1
+        ;;
+    esac
   fi
-  # Unquoted on purpose: `cargo +1.88` is two words.
   set -x
-  $cargo check --workspace --all-targets --locked --all-features
-  $cargo check --workspace --all-targets --locked --no-default-features
-  $cargo check --workspace --all-targets --locked
+  "$@" check --workspace --all-targets --locked --all-features
+  "$@" check --workspace --all-targets --locked --no-default-features
+  "$@" check --workspace --all-targets --locked
 
 # Formatting, then clippy pedantic as errors under all and under no features.
 lint:

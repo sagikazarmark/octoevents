@@ -2,7 +2,7 @@
 //!
 //! `octoevents` is the receiving edge of a GitHub App: it turns an untrusted
 //! HTTP request into a verified [`Envelope`] and hands it to your handlers.
-//! The core is sans-I/O and wasm-safe; one receiver over `http` types serves
+//! The core is wasm-safe: one receiver over `http` types serves
 //! Axum, Cloudflare Workers, and anything else that can hand over a request.
 //!
 //! A receiver that thanks the author of every opened issue:
@@ -48,7 +48,7 @@
 //! transports, security, and a Probot migration table. This page maps the
 //! crate's concepts and states the contracts that belong to the API.
 //!
-//! [README]: https://github.com/sagikazarmark/octoevents#readme
+//! [README]: https://github.com/sagikazarmark/octoevents
 //!
 //! # Concepts
 //!
@@ -193,13 +193,6 @@
 //!
 //! Nothing secret-derived is recorded anywhere: not the secret, the
 //! signature header, nor a computed MAC.
-//!
-//! # Design
-//!
-//! What this crate declines on purpose, and why, is recorded in the
-//! repository under [`docs/design/deliberately-left-out.md`][left-out].
-//!
-//! [left-out]: https://github.com/sagikazarmark/octoevents/blob/main/docs/design/deliberately-left-out.md
 //!
 //! # Feature caveats
 //!

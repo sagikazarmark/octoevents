@@ -222,6 +222,13 @@ _Avoid_: Filter, selector, route (a route is what a matcher registers), wildcard
 
 **Kind**:
 The parsed identity of an event, as the `EventKind` enum.
+The three wire vocabularies (`EventKind`, `Action`, `TargetType`) are built
+through `From<&str>`, `From<String>`, or the const `from_static`, so recognized
+strings become named variants. `Unknown` holds `Cow<'static, str>` and is
+variant-level `#[non_exhaustive]`: consumers match `Unknown { value, .. }` but
+cannot construct it directly. `from_static` borrows an unknown name and lets
+a `Payload::KIND` declare a kind the crate does not yet know; upgrading to a
+version that knows it normalizes the same declaration to the named variant.
 _Avoid_: Category, type (the Rust keyword and GitHub's overloaded "event type")
 
 **Event name**:
@@ -273,6 +280,11 @@ The one flat JSON object a serialized `Envelope` becomes, the meta's fields
 at the top level beside `raw_payload` as base64, for a trusted internal hop
 to another service, which reads it back through serde, meta as forwarded and
 nothing verified or probed. Serialized by the crate, read by anything.
+Follows crate versioning, with no separate version field. Added optional
+fields are compatible; removed or renamed fields, newly required fields, or
+changed encodings or meanings are breaking changes documented in release
+notes. A producer and consumer crossing a breaking boundary migrate together
+or use a transport adapter.
 _Avoid_: Serialization format (the mechanism), envelope format, transport format, message
 
 **Verify**:
@@ -369,10 +381,7 @@ action, and the action is in the payload, so the probe cannot wait for a
 decode to ask for it. It is the one read of the payload before a decode, and
 the reason "decodes nothing" never means "the payload went unread". An
 implementation term for prose and internals, not an API: it runs inside both
-envelope constructors and no public name says "probe". No library or spec
-surveyed names this step (`docs/research/webhook-terminology.md`); the
-alternatives to running it at receipt are in
-`docs/design/deliberately-left-out.md`.
+envelope constructors and no public name says "probe".
 _Avoid_: Peek, sniff, extract (unqualified; "extracted" is fine in prose), decode (the full, fallible turn into a handler's input), parse (kept for the header-to-kind step), lazy or deferred meta (a shape considered and declined; the meta is complete when the envelope is)
 
 **Decode**:
@@ -385,7 +394,9 @@ consumer type implementing `FromEnvelope` itself decodes as it sees fit, a
 view over several kinds with the kind-free `Envelope::decode`, the one
 decoding primitive on the envelope. A decode failure
 is a `DecodeError` saying why (a kind mismatch, a JSON error, or the input's
-own reason, `DecodeError::Input`, the one a consumer's impl returns for a
+own reason, `DecodeError::Input`, a non-exhaustive variant built through
+`input` or `input_with_source`, its optional source a `BoxError` with the same
+platform bounds as handler errors, the one a consumer's impl returns for a
 failure that is neither) and fails the delivery at the position of the handler
 that needed it.
 _Avoid_: Parse (kept for the header-to-kind and probe steps), deserialize (the serde mechanism, not the concept), `decode_payload` and `decode_event` (removed inherent spellings of `from_envelope`)

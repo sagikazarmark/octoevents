@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn represents_unknown_event_kinds_as_generic_json() {
         let event = WebhookEvent::from_envelope(&envelope(
-            EventKind::Unknown("future_event".into()),
+            EventKind::from("future_event"),
             br#"{"future":true}"#,
         ))
         .unwrap();
