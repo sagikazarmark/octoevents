@@ -123,7 +123,8 @@
 //!
 //! With the `tracing` feature, a delivery runs in three spans:
 //!
-//! - `octoevents.receive`, at INFO, around [`WebhookReceiver::receive`]. It
+//! - `octoevents.receive`, at INFO, around [`WebhookReceiver::receive`] and
+//!   [`WebhookReceiver::receive_bytes`] alike, which share it. It
 //!   records `delivery_id` and `event` from the headers as soon as they are
 //!   read, before verification, and on the way out `outcome` and `status`,
 //!   the HTTP code answered. `outcome` is one of `ok`, `bad_request`,

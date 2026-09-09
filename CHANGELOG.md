@@ -24,9 +24,11 @@ reads the "Changed" and "Removed" lists first.
   refuse anything that is not `sha256=` and 64 hex digits as
   `SignatureError::Malformed`, `Display` renders the header value back and
   `From<Signature> for http::HeaderValue` puts it on a request, marked
-  sensitive, `Debug` is redacted, and the only comparison is
-  `subtle::ConstantTimeEq`: no `PartialEq`, so `Verifier::verify` is the one
-  verification path.
+  sensitive, `Debug` is redacted, and it has no comparison: no `PartialEq`
+  and no `ConstantTimeEq`, so `verifier.sign(body) == signature` and
+  `.ct_eq(..)` do not compile and `Verifier::verify`, over every configured
+  secret, is the verification path the crate offers. `subtle` is no longer
+  part of the public API.
 - `Verifier::sign`: the `Signature` GitHub would send for a body, which goes
   on a request's header as it is, so a test drives the receiver it built
   with no HMAC code of its own.

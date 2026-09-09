@@ -220,14 +220,17 @@ pub enum SignatureError {
 /// `From<Signature> for HeaderValue` is the same text as the header a test
 /// puts on its synthetic request; both are the inverse of parsing. `Debug`
 /// is redacted: the value is secret-derived, and the crate records nothing
-/// computed from the secret. The only comparison is [`subtle::ConstantTimeEq`],
-/// the one the verifier folds over its secrets; there is no `PartialEq`. Not
-/// for timing: a constant-time `==` is safe, and `digest::CtOutput`, the type
-/// the MAC is finalized as, has one. It is so that the one way to ask whether
-/// a body carries a valid signature is [`Verifier::verify`], over every
-/// configured secret with no early exit; `signature == verifier.sign(body)`
-/// would be a second verification path, checking one secret and skipping
-/// the verify span.
+/// computed from the secret. There is no comparison: no `PartialEq`, and no
+/// `ConstantTimeEq` either; the verifier compares the MAC bytes inside
+/// [`Verifier::verify`], in constant time over every configured secret with
+/// no early exit. Not for timing: a constant-time `==` would be safe, and
+/// `digest::CtOutput`, the type the MAC is finalized as, has one. It is so
+/// that the crate offers one verification path, `verify`, and
+/// `signature == verifier.sign(body)`, which would check one secret and skip
+/// the verify span, is not a second one it hands out. Rendering two
+/// signatures with `Display` and comparing the strings remains possible, as
+/// it must while the value is printable; it is a way around the crate's
+/// path, not a path the crate offers.
 ///
 /// ```
 /// use http::HeaderValue;
@@ -250,6 +253,23 @@ pub enum SignatureError {
 ///     SignatureError::Malformed
 /// );
 /// # Ok::<(), SignatureError>(())
+/// ```
+///
+/// Neither `==` nor `ct_eq` compiles on two signatures; the check is
+/// [`Verifier::verify`]:
+///
+/// ```compile_fail,E0369
+/// use octoevents::{Verifier, WebhookSecret};
+///
+/// let verifier = Verifier::new(WebhookSecret::new("secret"));
+/// let _ = verifier.sign(b"a") == verifier.sign(b"a");
+/// ```
+///
+/// ```compile_fail,E0599
+/// use octoevents::{Verifier, WebhookSecret};
+///
+/// let verifier = Verifier::new(WebhookSecret::new("secret"));
+/// let _ = verifier.sign(b"a").ct_eq(&verifier.sign(b"a"));
 /// ```
 #[derive(Clone)]
 pub struct Signature([u8; SHA256_BYTES]);
@@ -331,12 +351,6 @@ impl fmt::Debug for Signature {
 }
 
 /// Constant-time comparison of the MAC bytes.
-impl ConstantTimeEq for Signature {
-    fn ct_eq(&self, other: &Self) -> Choice {
-        self.0.ct_eq(&other.0)
-    }
-}
-
 /// The configured secrets, and the HMAC comparison they authenticate with.
 ///
 /// A verifier is required to receive a webhook: it is constructed from one
@@ -433,7 +447,7 @@ impl Verifier {
     pub fn verify(&self, signature: &Signature, body: &[u8]) -> Result<(), SignatureError> {
         let mut matched = Choice::from(0);
         for secret in self.secrets.iter() {
-            matched |= secret.sign(body).ct_eq(signature);
+            matched |= secret.sign(body).0.ct_eq(&signature.0);
         }
 
         if bool::from(matched) {

@@ -82,9 +82,8 @@ mod secret {
 
 mod signature {
     use http::HeaderValue;
-    use subtle::ConstantTimeEq as _;
 
-    use super::{DOCUMENTED_SIGNATURE, EMPTY_BODY_SIGNATURE, Signature, SignatureError};
+    use super::{DOCUMENTED_SIGNATURE, Signature, SignatureError};
 
     #[test]
     fn parses_githubs_documented_test_vector_and_renders_it_back() {
@@ -188,19 +187,6 @@ mod signature {
         let debug = format!("{signature:?}");
         assert_eq!(debug, "Signature([REDACTED])");
         assert!(!debug.contains("757107ea"));
-    }
-
-    #[test]
-    fn constant_time_equality_tells_signatures_apart() {
-        // The comparison the verifier folds over its secrets: equal MACs are
-        // equal, different ones are not. That it runs in constant time is
-        // `subtle`'s promise, not something a test can time.
-        let signature: Signature = DOCUMENTED_SIGNATURE.parse().unwrap();
-        let same: Signature = DOCUMENTED_SIGNATURE.parse().unwrap();
-        let other: Signature = EMPTY_BODY_SIGNATURE.parse().unwrap();
-
-        assert!(bool::from(signature.ct_eq(&same)));
-        assert!(!bool::from(signature.ct_eq(&other)));
     }
 }
 

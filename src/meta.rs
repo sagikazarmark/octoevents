@@ -151,7 +151,7 @@ impl EventMeta {
 /// `repository` object, read without decoding a full payload model.
 ///
 /// What [`EventMeta::repository`] holds. Named as the meta of the repository,
-/// not as the repository: it is the four fields routing and a policy read,
+/// not as the repository: it is the four fields that routing and a policy read,
 /// where octocrab's `Repository` is the whole object, and a consumer with
 /// both in scope should not confuse them. It is a plain struct: a test builds
 /// one as a literal or with [`RepositoryMeta::new`], and a field GitHub adds

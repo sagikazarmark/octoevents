@@ -33,7 +33,7 @@ The fields the probe keeps of one payload object, as the types
 `EventMeta::repository`, `organization` and `sender` hold: a repository's
 `id`, `name`, `full_name` and `owner`; an account's (a user's, an
 organization's or an app's) `id` and `login`. The rule the names follow: *X
-Meta* is the meta of X, the projection routing and a policy read, never the
+Meta* is the meta of X, the projection that routing and a policy read, never the
 object GitHub sends, which a decoded payload holds. The ID is the identity a
 policy keys on; the name or login can change under it. Plain structs, built
 as literals or with `new`.
@@ -226,10 +226,13 @@ _Avoid_: Hook target, installation (the App installation, `installation_id`, is 
 A request answered before any handler ran, as a `ReceiveError` and the status
 `ReceiveError::status` maps it to: unauthorized (401) for a signature that is
 absent or does not match, bad request (400) for one that is malformed, a
-missing required header, a body that is not JSON or one the transport could
-not read, payload too large (413) for a body over the limit. The receive
-span's `outcome` names the class and its `error` the refusal's text; the
-error observer never sees one.
+missing required header, a content type other than `application/json` or a
+body the transport could not read, payload too large (413) for a body over
+the limit. Payload bytes that are not valid JSON are not a refusal: the probe
+is best-effort, the envelope is built, and a handler over it runs; only an
+input that decodes them fails, as a handler failure. The receive span's
+`outcome` names the class and its `error` the refusal's text; the error
+observer never sees one.
 _Avoid_: Rejection, denial, failure (kept for a handler's), receive error as the concept (the type's name)
 
 **View**:
@@ -264,11 +267,13 @@ take, `TryFrom<&[u8]>` for the bytes in another shape, or `str::parse`, for a
 consumer parsing a string in a test or their own early-out, and that parse is
 the one origin of `Malformed`; `Display` renders the header value back and
 `From<Signature> for HeaderValue` puts it on a request, `Debug` is redacted,
-and the only comparison is `subtle::ConstantTimeEq`: there is no `PartialEq`,
-so the one way to ask whether a body carries a valid signature is
-`Verifier::verify`, over every configured secret; a constant-time `==` would
-be safe (`digest::CtOutput` has one) but would open a second verification
-path beside the verifier's. What
+and it has no comparison, neither `PartialEq` nor `ConstantTimeEq`: the MAC
+bytes are compared inside `Verifier::verify`, over every configured secret,
+and that is the verification path the crate offers. A constant-time `==`
+would be safe (`digest::CtOutput` has one) but would hand out a second path,
+one secret and no verify span; comparing two rendered signatures as strings
+stays possible, as it must for a printable value, and is a way around the
+path, not one the crate offers. What
 `Verifier::sign` produces and
 `Verifier::verify` takes, so the verifier is handed a settled format and can
 only mismatch. In prose, "signature" alone names the value once the header is
