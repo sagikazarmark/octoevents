@@ -97,10 +97,12 @@ use octoevents::{
 /// delivery IDs an operator has to look at.
 ///
 /// A real store keeps the envelope, not the ID alone: a delivery whose
-/// handler failed is answered 500, GitHub redelivers it under the same ID,
-/// and [`Inbox`] answers that redelivery with success without routing it. The
-/// stored envelope is what makes that safe; with the ID alone the delivery
-/// would be lost while GitHub shows green.
+/// handler failed is answered 500 and shows as failed in GitHub, and when an
+/// operator or the app's own automation asks GitHub to redeliver it (GitHub
+/// never does on its own), the redelivery carries the same ID and [`Inbox`]
+/// answers it with success without routing it. The stored envelope is what
+/// makes that safe; with the ID alone the delivery would be lost while GitHub
+/// shows green.
 #[derive(Default)]
 struct Store {
     envelopes: Mutex<HashMap<String, Envelope>>,
@@ -418,10 +420,12 @@ mod tests {
         assert_eq!(counter.count(), 1);
     }
 
-    /// The case the store exists for: a handler fails, GitHub redelivers, and
-    /// the redelivery is answered with success without routing. The delivery
-    /// is not lost, because the envelope was stored, bytes included, before
-    /// the handler ran; recovery re-dispatches it from the store.
+    /// The case the store exists for: a handler fails, the delivery is
+    /// redelivered under the same ID (at an operator's or a script's request;
+    /// GitHub never redelivers on its own), and the redelivery is answered
+    /// with success without routing. The delivery is not lost, because the
+    /// envelope was stored, bytes included, before the handler ran; recovery
+    /// re-dispatches it from the store.
     #[tokio::test]
     async fn a_redelivery_after_a_handler_failure_is_recoverable_from_the_store() {
         #[derive(Debug, thiserror::Error)]

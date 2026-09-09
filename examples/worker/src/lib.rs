@@ -30,9 +30,11 @@
 //!   installation ID, which another service reads back through serde. The
 //!   key is what makes this an App's receiver: a delivery with no
 //!   installation ID (a repository webhook's, or an App's
-//!   `github_app_authorization`) has no object to go to and fails, so GitHub
-//!   redelivers it, and a deployment that wants those keeps them under
-//!   another key. The `ping` GitHub sends on creating the webhook never
+//!   `github_app_authorization`) has no object to go to and fails, so it
+//!   shows as failed in GitHub for an operator to redeliver or discard
+//!   (GitHub never redelivers on its own), and a deployment that wants
+//!   those keeps them under another key. The `ping` GitHub sends on
+//!   creating the webhook never
 //!   reaches this tier: the receiver answers it itself under the default
 //!   `handle_ping(false)`. A forwarder to any internal service has the same
 //!   shape; only the URL and the key are Restate's.

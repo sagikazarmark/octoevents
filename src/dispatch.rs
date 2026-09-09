@@ -95,8 +95,9 @@ where
 /// handler over a [`Payload`](crate::Payload) may give actions alone and take
 /// the kind from its type. The `fallback` chain runs only if neither
 /// routed chain matched, and receives the envelope as `always` does.
-/// Handlers run one at a time, in registration order across the tiers, and
-/// the first error ends the dispatch: a failing `always` handler keeps every
+/// Handlers run one at a time: the chains in the order just given, whichever
+/// handler was registered first, and within a chain in registration order.
+/// The first error ends the dispatch: a failing `always` handler keeps every
 /// route from running, and a failing action-specific handler keeps the
 /// kind-wide chain from running. `always` and `fallback` never count as a
 /// match, and an empty fallback chain succeeds, so unmatched kinds are green

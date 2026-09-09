@@ -347,11 +347,12 @@ three tiers in order:
 | Route | The handlers matching the kind and action, then those matching the kind | Any input | `on` |
 | Fallback | Only when no route matched | `Envelope` | `fallback` |
 
-Within a tier, handlers run in registration order, and the first error fails
-the delivery and ends the dispatch. There are no priorities and no
-propagation control. The registrations from `on`, keyed by kind and then by
-action, are the *route table*: a kind is known to it when any route is
-registered for it.
+Within a chain, handlers run in registration order; the route tier is two
+chains, the action-specific one and then the kind-wide one, whichever was
+registered first. The first error fails the delivery and ends the dispatch.
+There are no priorities and no propagation control. The registrations from
+`on`, keyed by kind and then by action, are the *route table*: a kind is
+known to it when any route is registered for it.
 
 ### Routing
 

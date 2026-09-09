@@ -58,9 +58,15 @@ npx wrangler deploy --var RESTATE_OBJECT_URL:https://<restate-ingress>/GitHubIns
 (or an `[env.<name>.vars]` block in `wrangler.toml` and `wrangler deploy
 --env <name>`).
 
-With `wrangler dev` listening on `http://localhost:8787`, a synthetic
-`installation.created` delivery, signed the way GitHub signs, exercises both
-handlers; `openssl` computes the HMAC the crate's `Verifier::sign` would:
+With `wrangler dev` listening on `http://localhost:8787` and a Restate
+server at the `[vars]` URL with a `GitHubInstallation` virtual object whose
+`receive` handler accepts the POST, a synthetic `installation.created`
+delivery, signed the way GitHub signs, exercises both handlers and is
+answered 204; `openssl` computes the HMAC the crate's `Verifier::sign`
+would. Without the Restate server the same request is answered 500: the
+fetch in `Forward` fails, and since the first error ends the dispatch,
+`InstallationLog` never runs. That 500 is the forwarder working as
+documented, not the Worker running end to end.
 
 ```console
 body='{"action":"created","installation":{"id":42,"account":{"login":"octocat"}},"sender":{"id":1,"login":"octocat"}}'

@@ -118,7 +118,8 @@ _Avoid_: Routing table (network vocabulary), registry, handler map
 
 **Redelivery**:
 GitHub's second attempt at a delivery, carrying the same delivery ID, sent
-when the first was not answered 2xx or when an operator asks for one. The one
+when an operator or the app's own automation asks for one, usually because
+the first was not answered 2xx; GitHub never sends one on its own. The one
 sending-side word this side needs: a receiver observes one and the policy
 seam answers it, with success for a delivery it has stored, and the crate
 itself never asks for one.
