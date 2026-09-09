@@ -18,7 +18,7 @@ use crate::runtime::BoxFuture;
 use crate::{Action, BoxedError, TracedError};
 use crate::{
     BodyError, DEFAULT_BODY_LIMIT, Envelope, EventKind, EventMeta, Handler, MaybeSend, MaybeSync,
-    ReceiveError, SignatureError, Verifier, header, trace,
+    ReceiveError, Verifier, envelope::Refusal, header, trace,
 };
 
 type ReceiveResponse = Response<Empty<Bytes>>;
@@ -699,14 +699,31 @@ fn record_outcome(outcome: &'static str, status: StatusCode) -> StatusCode {
 }
 
 /// Answers a request refused before any handler ran: the status the contract
-/// maps `error` to, recorded as the span's outcome, and the error's text as
-/// the span's `error`, so the span says which refusal it was where `outcome`
-/// says only its class. Every pre-handler failure is an error value and goes
-/// through here, so none selects a status on its own.
+/// maps `error` to, recorded as the span's outcome under the refusal's
+/// label, and the error's text as the span's `error`, so the span says which
+/// refusal it was where `outcome` says only its class. Every pre-handler
+/// failure is an error value and goes through here, so none selects a status
+/// on its own; the label and the status are read off the one `Refusal` the
+/// error partitions into, so a dashboard's `outcome` and the code cannot
+/// drift apart.
 fn refuse(error: &ReceiveError) -> StatusCode {
-    let status = record_outcome(refusal_label(error), error.status());
+    let refusal = error.refusal();
+    let status = record_outcome(refusal_label(refusal), refusal.status());
     record_refusal(error);
     status
+}
+
+/// The `outcome` the receive span records for a refusal: the front page's
+/// vocabulary, which a dashboard filters on verbatim, so each is a literal
+/// here and not derived from the status. One label per class, over the
+/// exhaustive `Refusal`, so a class this crate adds fails to compile here
+/// until it has a label.
+const fn refusal_label(refusal: Refusal) -> &'static str {
+    match refusal {
+        Refusal::Unauthorized => "unauthorized",
+        Refusal::BadRequest => "bad_request",
+        Refusal::PayloadTooLarge => "payload_too_large",
+    }
 }
 
 /// Records the refusal's text on the receive span as `error`, through
@@ -727,31 +744,6 @@ fn record_refusal(error: &ReceiveError) {
 /// Records nothing: the `tracing` feature is disabled.
 #[cfg(not(feature = "tracing"))]
 fn record_refusal(_error: &ReceiveError) {}
-
-/// The `outcome` the receive span records for a request refused with `error`:
-/// the front page's vocabulary for the refusals.
-///
-/// Read off the refusal, not off the status it is answered with, so the
-/// label comes from the reason and a `ReceiveError` variant this crate adds
-/// fails to compile here until it has one, as it does in
-/// [`ReceiveError::status`] until it has a code; the two matches partition
-/// the variants alike because the vocabulary names one label per code. A
-/// label rather than the code, so `outcome` is a string on every span the
-/// crate opens; the code is the span's `status` field. The vocabulary is the
-/// receive span's own, which is why it lives with the receiver and not on
-/// `ReceiveError`.
-const fn refusal_label(error: &ReceiveError) -> &'static str {
-    match error {
-        ReceiveError::Signature(SignatureError::Missing | SignatureError::Mismatch) => {
-            "unauthorized"
-        }
-        ReceiveError::Signature(SignatureError::Malformed)
-        | ReceiveError::MissingHeader { .. }
-        | ReceiveError::UnsupportedContentType
-        | ReceiveError::BodyRead(_) => "bad_request",
-        ReceiveError::BodyTooLarge { .. } => "payload_too_large",
-    }
-}
 
 /// Which fields of the handler's error the failed-delivery event carries:
 /// the receiver's setting, made on the builder.

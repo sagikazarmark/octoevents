@@ -950,13 +950,13 @@ mod respond {
 
     #[test]
     fn labels_every_refusal_with_the_outcome_the_receive_span_records() {
-        // The whole table, one row per `ReceiveError` shape the match has an
-        // arm for. The labels are the front page's vocabulary for the receive
-        // span's `outcome`, and a dashboard filters on them verbatim, so each
-        // is a literal here, not derived from the status. Which status each
-        // refusal is answered with is `ReceiveError::status`'s test; that
-        // the receiver records label and code together on the span is
-        // `tests/tracing_outcome.rs`'s.
+        // The whole table, one row per `ReceiveError` shape the partition
+        // has an arm for. The labels are the front page's vocabulary for the
+        // receive span's `outcome`, and a dashboard filters on them verbatim,
+        // so each is a literal here, not derived from the status. Which
+        // status each refusal is answered with is `ReceiveError::status`'s
+        // test; that the receiver records label and code together on the
+        // span is `tests/tracing_outcome.rs`'s.
         let table = [
             (
                 ReceiveError::Signature(SignatureError::Missing),
@@ -985,7 +985,7 @@ mod respond {
         ];
 
         for (error, label) in table {
-            assert_eq!(refusal_label(&error), label, "{error:?}");
+            assert_eq!(refusal_label(error.refusal()), label, "{error:?}");
         }
     }
 }

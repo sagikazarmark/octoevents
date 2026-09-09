@@ -418,15 +418,50 @@ impl ReceiveError {
     /// way, as its docs show.
     #[must_use]
     pub const fn status(&self) -> StatusCode {
+        self.refusal().status()
+    }
+
+    /// The class of this refusal: the one partition of the variants, which
+    /// the status and the receive span's `outcome` label are both read off.
+    ///
+    /// A variant this crate adds fails to compile here until it is placed,
+    /// and cannot be placed differently for the status and the label.
+    pub(crate) const fn refusal(&self) -> Refusal {
         match self {
             Self::Signature(SignatureError::Missing | SignatureError::Mismatch) => {
-                StatusCode::UNAUTHORIZED
+                Refusal::Unauthorized
             }
             Self::Signature(SignatureError::Malformed)
             | Self::MissingHeader { .. }
             | Self::UnsupportedContentType
-            | Self::BodyRead(_) => StatusCode::BAD_REQUEST,
-            Self::BodyTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+            | Self::BodyRead(_) => Refusal::BadRequest,
+            Self::BodyTooLarge { .. } => Refusal::PayloadTooLarge,
+        }
+    }
+}
+
+/// The three classes a request is refused in before any handler runs, each
+/// answered with one status, and each one `outcome` label on the receive
+/// span, which the receiver spells since the vocabulary is the span's.
+///
+/// Exhaustive on purpose: the receiver's label is a match over it, so the
+/// label and the status are read off one value and cannot disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Refusal {
+    /// The client failed to authenticate: `401`.
+    Unauthorized,
+    /// The request was malformed: `400`.
+    BadRequest,
+    /// The body was over the limit: `413`.
+    PayloadTooLarge,
+}
+
+impl Refusal {
+    pub(crate) const fn status(self) -> StatusCode {
+        match self {
+            Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::BadRequest => StatusCode::BAD_REQUEST,
+            Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
         }
     }
 }
