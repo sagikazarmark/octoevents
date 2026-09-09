@@ -6,7 +6,7 @@ use std::{
 use std::{fmt, future::Future, marker::PhantomData, pin::pin, sync::Arc};
 
 use bytes::{Bytes, BytesMut};
-use http::{HeaderMap, Request, Response};
+use http::{HeaderMap, Request, Response, StatusCode};
 use http_body::Body;
 use http_body_util::{BodyExt as _, Empty};
 #[cfg(feature = "tower")]
@@ -18,7 +18,7 @@ use crate::runtime::BoxFuture;
 use crate::{Action, BoxedError, TracedError};
 use crate::{
     BodyError, DEFAULT_BODY_LIMIT, Envelope, EventKind, EventMeta, Handler, MaybeSend, MaybeSync,
-    ReceiveError, ResponseStatus, Verifier,
+    ReceiveError, SignatureError, Verifier,
     envelope::{header_str, require_signature},
     header, trace,
 };
@@ -507,7 +507,7 @@ where
             )
         )
     )]
-    async fn process<B>(&self, request: Request<B>) -> ResponseStatus
+    async fn process<B>(&self, request: Request<B>) -> StatusCode
     where
         B: Body<Data = Bytes>,
         B::Error: fmt::Display,
@@ -545,7 +545,7 @@ where
         };
 
         if !handle_ping && matches!(envelope.meta.kind, EventKind::Ping) {
-            return record_outcome(ResponseStatus::NoContent);
+            return record_outcome("ok", StatusCode::NO_CONTENT);
         }
 
         // The handler takes the envelope by value, so the meta a failure is
@@ -555,12 +555,12 @@ where
         let reporting = observer.is_some() || cfg!(feature = "tracing");
         let meta = reporting.then(|| envelope.meta.clone());
         match self.handler.handle(envelope).await {
-            Ok(()) => record_outcome(ResponseStatus::NoContent),
+            Ok(()) => record_outcome("ok", StatusCode::NO_CONTENT),
             Err(error) => {
                 // The outcome goes on the span first, so the event and the
                 // observer run inside a span that already says how the
                 // delivery ended.
-                let status = record_outcome(ResponseStatus::InternalServerError);
+                let status = record_outcome("handler_error", StatusCode::INTERNAL_SERVER_ERROR);
                 if let Some(meta) = &meta {
                     error_fields.handler_failed(meta, &error, status.as_u16());
                     if let Some(observer) = observer {
@@ -626,9 +626,9 @@ where
     }
 }
 
-fn empty_response(status: ResponseStatus) -> ReceiveResponse {
+fn empty_response(status: StatusCode) -> ReceiveResponse {
     Response::builder()
-        .status(http::StatusCode::from(status))
+        .status(status)
         .body(Empty::new())
         .expect("an empty response with a fixed status always builds")
 }
@@ -689,8 +689,13 @@ fn record_headers(headers: &HeaderMap) {
     }
 }
 
-fn record_outcome(status: ResponseStatus) -> ResponseStatus {
-    trace::record("outcome", outcome_label(status));
+/// Records how the delivery ended on the receive span: `outcome`, the label
+/// the front page's vocabulary gives that ending, and `status`, the HTTP code
+/// it is answered with. The two are chosen together at the site that knows
+/// why the delivery ended, and neither is derived from the other: the label
+/// says the reason, the code what the reason is answered with.
+fn record_outcome(outcome: &'static str, status: StatusCode) -> StatusCode {
+    trace::record("outcome", outcome);
     trace::record("status", status.as_u16());
     status
 }
@@ -700,8 +705,8 @@ fn record_outcome(status: ResponseStatus) -> ResponseStatus {
 /// the span's `error`, so the span says which refusal it was where `outcome`
 /// says only its class. Every pre-handler failure is an error value and goes
 /// through here, so none selects a status on its own.
-fn refuse(error: &ReceiveError) -> ResponseStatus {
-    let status = record_outcome(ResponseStatus::for_receive_error(error));
+fn refuse(error: &ReceiveError) -> StatusCode {
+    let status = record_outcome(refusal_label(error), error.status());
     record_refusal(error);
     status
 }
@@ -725,19 +730,28 @@ fn record_refusal(error: &ReceiveError) {
 #[cfg(not(feature = "tracing"))]
 fn record_refusal(_error: &ReceiveError) {}
 
-/// The value the `octoevents.receive` span records as `outcome`.
+/// The `outcome` the receive span records for a request refused with `error`:
+/// the front page's vocabulary for the refusals.
 ///
-/// A label rather than the code, so `outcome` is a string on every span the
+/// Read off the refusal, not off the status it is answered with, so the
+/// label comes from the reason and a `ReceiveError` variant this crate adds
+/// fails to compile here until it has one, as it does in
+/// [`ReceiveError::status`] until it has a code; the two matches partition
+/// the variants alike because the vocabulary names one label per code. A
+/// label rather than the code, so `outcome` is a string on every span the
 /// crate opens; the code is the span's `status` field. The vocabulary is the
 /// receive span's own, which is why it lives with the receiver and not on
-/// [`ResponseStatus`].
-const fn outcome_label(status: ResponseStatus) -> &'static str {
-    match status {
-        ResponseStatus::NoContent => "ok",
-        ResponseStatus::BadRequest => "bad_request",
-        ResponseStatus::Unauthorized => "unauthorized",
-        ResponseStatus::PayloadTooLarge => "payload_too_large",
-        ResponseStatus::InternalServerError => "handler_error",
+/// `ReceiveError`.
+const fn refusal_label(error: &ReceiveError) -> &'static str {
+    match error {
+        ReceiveError::Signature(SignatureError::Missing | SignatureError::Mismatch) => {
+            "unauthorized"
+        }
+        ReceiveError::Signature(SignatureError::Malformed)
+        | ReceiveError::MissingHeader { .. }
+        | ReceiveError::UnsupportedContentType
+        | ReceiveError::BodyRead(_) => "bad_request",
+        ReceiveError::BodyTooLarge { .. } => "payload_too_large",
     }
 }
 

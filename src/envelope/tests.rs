@@ -1,8 +1,8 @@
 //! The envelope's tests, beside the production code so they share the
 //! crate's fixtures. Grouped by concern: the receiving path through
-//! `from_signed`, the header rules it applies, how it reads the
-//! `http::HeaderMap`, the probe, the meta as a value, the wire format, and
-//! `decode`.
+//! `from_signed`, the status each receive failure is answered with, the
+//! header rules it applies, how it reads the `http::HeaderMap`, the probe,
+//! the meta as a value, the wire format, and `decode`.
 //!
 //! Every signed envelope here is checked against [`verifier`], which also
 //! signs the bodies it accepts; [`headers`] is the well-formed header set
@@ -181,6 +181,62 @@ mod receive {
 
         let decoded: serde_json::Value = envelope.decode().unwrap();
         assert_eq!(decoded["zen"], "⚡ é café 🐙");
+    }
+}
+
+/// The response contract: the `http::StatusCode` each receive failure is
+/// answered with.
+mod status {
+    use http::StatusCode;
+
+    use crate::{BodyError, ReceiveError, SignatureError, header};
+
+    #[test]
+    fn maps_every_receive_error_to_the_status_the_contract_names() {
+        // The whole table: an absent or mismatched signature is the client's
+        // authentication failing (401); a signature that is not `sha256=` and
+        // 64 hex characters, a missing required header, a form-encoded body
+        // and a body frame the transport could not produce are malformed
+        // requests (400); the body limit is its own code (413). One row per
+        // `ReceiveError` shape the match has an arm for. Which failure a
+        // request earns is `Envelope::from_signed`'s test; that the receiver
+        // answers with the mapped status is its own.
+        let table = [
+            (
+                ReceiveError::Signature(SignatureError::Missing),
+                StatusCode::UNAUTHORIZED,
+            ),
+            (
+                ReceiveError::Signature(SignatureError::Mismatch),
+                StatusCode::UNAUTHORIZED,
+            ),
+            (
+                ReceiveError::Signature(SignatureError::Malformed),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                ReceiveError::MissingHeader {
+                    name: header::DELIVERY_ID,
+                },
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                ReceiveError::UnsupportedContentType,
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                ReceiveError::BodyRead(BodyError::new("connection reset by peer")),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                ReceiveError::BodyTooLarge { limit: 1 },
+                StatusCode::PAYLOAD_TOO_LARGE,
+            ),
+        ];
+
+        for (error, status) in table {
+            assert_eq!(error.status(), status, "{error:?}");
+        }
     }
 }
 

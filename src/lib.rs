@@ -86,9 +86,10 @@
 //!   [`Verifier::sign`] signs a test's synthetic request. The header value
 //!   parsed is a [`Signature`], which is where a malformed one is refused; a
 //!   signature that does not authenticate is a [`SignatureError`].
-//! - [`Envelope::from_signed`] and [`ResponseStatus`]: the sans-I/O path for
-//!   a transport with no `http_body::Body`, over the `http::HeaderMap` and the
-//!   body bytes every runtime hands over; the header names are in
+//! - [`Envelope::from_signed`] and [`ReceiveError::status`]: the sans-I/O
+//!   path for a transport with no `http_body::Body`, over the
+//!   `http::HeaderMap` and the body bytes every runtime hands over, answered
+//!   with the `http::StatusCode` the receiver would; the header names are in
 //!   [`header`].
 //!
 //! Always pass the exact request bytes. Parsing, re-encoding, or normalizing
@@ -107,9 +108,9 @@
 //! The core (envelope, verification, the handler trait and its inputs, the
 //! dispatcher) depends on none of them and builds for `wasm32-unknown-unknown`.
 //! [`Envelope::from_signed`] over an `http::HeaderMap`, the [`header`]
-//! constants and [`ResponseStatus`] into `http::StatusCode` are part of it:
-//! the `http` crate is not optional, since every surveyed Rust runtime hands
-//! over its types, and it adds one entry to the dependency tree.
+//! constants and [`ReceiveError::status`] as an `http::StatusCode` are part
+//! of it: the `http` crate is not optional, since every surveyed Rust runtime
+//! hands over its types, and it adds one entry to the dependency tree.
 //!
 //! # Tracing
 //!
@@ -244,7 +245,6 @@ mod octocrab;
 mod payload;
 #[cfg(feature = "http-body")]
 mod receiver;
-mod respond;
 mod runtime;
 mod signature;
 #[cfg(test)]
@@ -263,7 +263,6 @@ pub use octoevents_derive::Payload;
 pub use payload::{Event, FromEnvelope, Payload};
 #[cfg(feature = "http-body")]
 pub use receiver::{WebhookReceiver, WebhookReceiverBuilder};
-pub use respond::ResponseStatus;
 pub use runtime::{MaybeSend, MaybeSync};
 pub use signature::{Signature, SignatureError, Verifier, WebhookSecret, WebhookSecretError};
 #[cfg(all(feature = "http-body", feature = "tracing"))]

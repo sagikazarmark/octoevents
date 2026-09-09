@@ -383,10 +383,10 @@ mod receive {
     async fn answers_a_receive_failure_with_the_status_the_contract_maps_it_to() {
         // The receiver's one test dedicated to the mapping. Which failure a
         // request earns is pinned on `Envelope::from_signed`, and which
-        // status each failure maps to on `ResponseStatus::for_receive_error`,
-        // so one failure through HTTP shows the receiver answers with the
-        // mapped status; the refusal before the body is read has its own
-        // test below.
+        // status each failure maps to on `ReceiveError::status`, so one
+        // failure through HTTP shows the receiver answers with the mapped
+        // status; the refusal before the body is read has its own test
+        // below.
         let receiver =
             WebhookReceiverBuilder::new(verifier()).build(|_: Envelope| async { Ok::<_, ()>(()) });
 
@@ -929,56 +929,63 @@ mod debug {
     }
 }
 
-/// The response contract: an empty body, the HTTP status each
-/// `ResponseStatus` converts to, and the outcome label each is recorded
-/// under on the receive span.
+/// The response contract as the receiver applies it: an empty body around
+/// the status, and the outcome label each refusal is recorded under on the
+/// receive span.
 mod respond {
     use http::StatusCode;
     use http_body::Body as _;
 
     use crate::{
-        ResponseStatus,
-        receiver::{empty_response, outcome_label},
+        BodyError, ReceiveError, SignatureError, header,
+        receiver::{empty_response, refusal_label},
     };
 
     #[test]
     fn response_contract_uses_empty_bodies() {
-        let response = empty_response(ResponseStatus::BadRequest);
+        let response = empty_response(StatusCode::BAD_REQUEST);
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(response.body().size_hint().exact(), Some(0));
     }
 
     #[test]
-    fn converts_every_status_to_the_matching_http_status_code() {
-        for status in [
-            ResponseStatus::NoContent,
-            ResponseStatus::BadRequest,
-            ResponseStatus::Unauthorized,
-            ResponseStatus::PayloadTooLarge,
-            ResponseStatus::InternalServerError,
-        ] {
-            assert_eq!(StatusCode::from(status).as_u16(), status.as_u16());
-        }
-    }
-
-    #[test]
-    fn labels_every_status_with_the_outcome_the_receive_span_records() {
-        // The whole table, one row per status. The labels are the front
-        // page's vocabulary for the receive span's `outcome`, and a dashboard
-        // filters on them verbatim, so each is a literal here, not derived
-        // from the variant's name. That the receiver records them on the
-        // span, beside the code as `status`, is `tests/tracing_outcome.rs`'s
-        // test.
+    fn labels_every_refusal_with_the_outcome_the_receive_span_records() {
+        // The whole table, one row per `ReceiveError` shape the match has an
+        // arm for. The labels are the front page's vocabulary for the receive
+        // span's `outcome`, and a dashboard filters on them verbatim, so each
+        // is a literal here, not derived from the status. Which status each
+        // refusal is answered with is `ReceiveError::status`'s test; that
+        // the receiver records label and code together on the span is
+        // `tests/tracing_outcome.rs`'s.
         let table = [
-            (ResponseStatus::NoContent, "ok"),
-            (ResponseStatus::BadRequest, "bad_request"),
-            (ResponseStatus::Unauthorized, "unauthorized"),
-            (ResponseStatus::PayloadTooLarge, "payload_too_large"),
-            (ResponseStatus::InternalServerError, "handler_error"),
+            (
+                ReceiveError::Signature(SignatureError::Missing),
+                "unauthorized",
+            ),
+            (
+                ReceiveError::Signature(SignatureError::Mismatch),
+                "unauthorized",
+            ),
+            (
+                ReceiveError::Signature(SignatureError::Malformed),
+                "bad_request",
+            ),
+            (
+                ReceiveError::MissingHeader {
+                    name: header::DELIVERY_ID,
+                },
+                "bad_request",
+            ),
+            (ReceiveError::UnsupportedContentType, "bad_request"),
+            (
+                ReceiveError::BodyRead(BodyError::new("connection reset by peer")),
+                "bad_request",
+            ),
+            (ReceiveError::BodyTooLarge { limit: 1 }, "payload_too_large"),
         ];
 
-        for (status, label) in table {
-            assert_eq!(outcome_label(status), label, "{status:?}");
+        for (error, label) in table {
+            assert_eq!(refusal_label(&error), label, "{error:?}");
         }
     }
 }
