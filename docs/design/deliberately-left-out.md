@@ -706,9 +706,10 @@ the tower section's portable ideas). Declined, twice. When the dispatcher had
 one `E`, `From` was what `?` converts through and what `thiserror`'s
 `#[from]` derives, so the conversion a handler's body already used was the
 one the dispatcher used to absorb it. Now that the dispatcher boxes, the
-conversion is std's blanket `From<E: Error> for Box<dyn Error + Send +
-Sync>`, and an adapter would be a second mechanism for a conversion every
-`Error` already has; the survey's reason for tower's shape, that its services
+conversion is std's blanket `From<E: Error + Send + Sync + 'static> for
+Box<dyn Error + Send + Sync>` (`From<E: Error + 'static> for Box<dyn Error>`
+on `wasm32`), and an adapter would be a second mechanism for a conversion
+every such error already has; the survey's reason for tower's shape, that its services
 share no error type, is answered by the box rather than by a closure per
 registration.
 

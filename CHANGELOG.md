@@ -61,7 +61,8 @@ reads the "Changed" and "Removed" lists first.
   registered, and what `DispatchError::source` holds. A handler returning
   `Result<(), BoxError>` needs no error enum; one with an error type of its
   own keeps it, and the registration asks only `Into<BoxError>`, which every
-  `Error` is.
+  `Error + Send + Sync + 'static` is, and on `wasm32` every `Error +
+  'static`.
 - `DecodeError`: the one error of every decode path, with `KindMismatch`,
   `Json` and `Input` variants and the `input`/`input_with_source`
   constructors for a consumer's own `FromEnvelope` impl.

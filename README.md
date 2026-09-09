@@ -26,7 +26,7 @@ use octoevents::{Action, BoxError, Dispatcher, Envelope, EventKind, Verifier, We
 
 /// Runs for `issues.opened`. The envelope is the verified unit of receipt: its
 /// meta (delivery ID, kind, action, repository, sender, ...) and the raw payload.
-/// `BoxError` is the crate's erased error; any `Error + Send + Sync` converts into it with `?`.
+/// `BoxError` is the crate's erased error; any `Error + Send + Sync + 'static` converts into it with `?`.
 async fn thank(envelope: Envelope) -> Result<(), BoxError> {
     let sender = envelope.meta.sender.map(|s| s.login).unwrap_or_default();
     println!("Thank you for your contribution, @{sender}! :)");
@@ -463,7 +463,7 @@ which reaches no handler.
 
 **Your own error type.** A handler with dependencies usually has one, and
 `thiserror` derives it; the dispatcher asks nothing more of it than `Error +
-Send + Sync`.
+Send + Sync + 'static` (`Error + 'static` on `wasm32`).
 Behind a `DispatchError` it is boxed, and a policy that wants it back
 downcasts the source:
 
