@@ -13,6 +13,26 @@ use crate::{Action, EventKind, events::string_enum};
 /// delivery ID and installation ID travel beside a decoded payload without
 /// going back to the envelope.
 ///
+/// # Where the fields come from
+///
+/// Four fields are read from the headers: the delivery ID and the kind,
+/// which every delivery carries, and the target type and ID. The other five,
+/// the action, installation ID, repository, organization and sender, are read
+/// from the payload when the envelope is built, by
+/// [`Envelope::from_signed`](crate::Envelope::from_signed) once the body is
+/// authenticated and by [`Envelope::new`](crate::Envelope::new) alike. That
+/// read is one pass over the bytes that keeps those five top-level values and
+/// skips everything else: linear in the body, as the signature check over the
+/// same bytes is, with no model built of the rest of the document. It runs for
+/// every envelope whatever the handler's input will be, because the dispatcher
+/// routes by the action, and the action is in the payload, not in a header.
+/// It is best-effort and cannot fail; the rules are on `Envelope::new`.
+///
+/// So "decodes nothing", said of a handler over this type, means no decode on
+/// the handler's behalf, not that the payload went unread. A decode is the
+/// fallible turn of the bytes into an input that asks for it, and it happens
+/// only for a routed handler whose route matched.
+///
 /// The crate produces this view and consumers only read it, so it is
 /// `#[non_exhaustive]`: GitHub can add a stable routing field (an enterprise
 /// reference, for example) without that becoming a breaking change here.

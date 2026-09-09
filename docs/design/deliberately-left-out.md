@@ -87,6 +87,55 @@ event enum) mis-resolves when kinds share a shape (`issues` and
 answer for a kind it was not built with; every other library surveyed reads
 the header. Recorded on `EventKind`.
 
+## No header-only meta; the payload is probed at receipt
+
+`EventMeta` carries five fields read from the payload (action, installation
+ID, repository, organization, sender) beside the four from the headers, and
+both envelope constructors read them when the envelope is built, before any
+handler runs. Three shapes that would defer that read were considered and
+declined: a meta holding the header fields alone, with the payload fields read
+when a handler's input is `EventMeta` or `Event<P>`; a meta that reads them
+lazily on first access; and a probe that runs only when the route table has a
+route on an action.
+
+The first does not defer what it sets out to. The dispatcher looks a route up
+by `(kind, Option<action>)`, so the action has to be known before the
+dispatcher knows which handler, and so which input, the delivery is for;
+"read the action when the input asks for it" is circular. A header-only meta
+moves the same read into the dispatcher, which then needs somewhere to put
+the result. What could be deferred is the four fields routing does not use,
+but they ride on the pass that reads the action, as borrowed slices of the
+same document, and they are what makes a handler over the envelope useful
+without a decode: `always`, `fallback`, the policy seam skipping a bot
+sender or dead-lettering by repository, and the error observer all read them.
+`Event<P>` cannot take its meta from `P` either: `P` is usually a consumer's
+view without `sender` or `action`, so it would need a second pass where there
+is now one. The lazy meta costs more than it saves: `EventMeta` is `Clone +
+Eq + Hash + Serialize` plain data, and a cell inside it breaks equality,
+makes the observer's `&EventMeta` trigger a parse, and complicates the serde
+path a forwarded envelope is read back through. The route-table-driven probe
+is the one variant that skips work, and it would trade away `action` and
+`installation_id` on the dispatch span, the failed-delivery event and every
+`DispatchError` for a saving no benchmark has yet shown matters; it stays
+recorded as an idea in
+[`rust-dispatch-designs.md`](../research/rust-dispatch-designs.md).
+
+The promise the crate makes is therefore "no decode before a matched
+handler's input asks for it", not "no read of the body": the probe is one
+linear pass over the bytes, in the same order of work as the HMAC over the
+same bytes, that keeps five top-level values and builds no model of the rest.
+That is less eager than every receiver surveyed: octokit/webhooks.js and
+Probot `JSON.parse` the whole body in `verifyAndReceive` and route on
+`payload.action` (Probot's `context.payload` is a property over that parsed
+object, not a call that parses), gidgethub `json.loads` it into
+`event.data`, octocrab parses it into a `serde_json::Value` and then a typed
+model, go-github unmarshals it into the typed struct. GitHub puts `action`
+in the body rather than a header, so every receiver that routes on it reads
+the body before routing; CloudEvents designed its context attributes to make
+that unnecessary and GitHub did not adopt them
+([`webhook-terminology.md`](../research/webhook-terminology.md)). Recorded on
+`EventMeta`.
+
 ## Consumer-defined views, not one blessed struct per kind
 
 A `Payload` is any serde type that declares its kind with `#[derive(Payload)]`,

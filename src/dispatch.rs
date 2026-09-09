@@ -130,7 +130,10 @@ where
 /// delivery fails only at the first handler over octocrab's `WebhookEvent`,
 /// and the [`DispatchError`] names that registration. A routed handler
 /// decodes only when its route matches: a handler registered for some actions
-/// decodes nothing for a delivery carrying another.
+/// decodes nothing for a delivery carrying another. Routing itself decodes
+/// nothing either: the kind and action a route is looked up by were read into
+/// the [`EventMeta`] when the envelope was built, the kind from the header and
+/// the action from the payload's top level.
 ///
 #[cfg_attr(feature = "derive", doc = "```")]
 #[cfg_attr(not(feature = "derive"), doc = "```ignore")]

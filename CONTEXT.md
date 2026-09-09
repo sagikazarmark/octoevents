@@ -246,11 +246,17 @@ The best-effort read of the payload bytes that fills the payload-derived
 fields of an `EventMeta` (action, installation ID, repository, organization,
 sender) without decoding the rest of the document. Partial, and never fatal:
 malformed JSON leaves every probed field empty, one malformed field clears
-only itself, and the bytes are kept either way. An implementation term for
-prose and internals, not an API: it runs inside both envelope constructors
-and no public name says "probe". No library or spec surveyed names this step
-(`docs/research/webhook-terminology.md`).
-_Avoid_: Peek, sniff, extract (unqualified; "extracted" is fine in prose), decode (the full, fallible turn into a handler's input), parse (kept for the header-to-kind step)
+only itself, and the bytes are kept either way. It runs at receipt, for every
+envelope, whatever input its handler will take: the dispatcher routes by the
+action, and the action is in the payload, so the probe cannot wait for a
+decode to ask for it. It is the one read of the payload before a decode, and
+the reason "decodes nothing" never means "the payload went unread". An
+implementation term for prose and internals, not an API: it runs inside both
+envelope constructors and no public name says "probe". No library or spec
+surveyed names this step (`docs/research/webhook-terminology.md`); the
+alternatives to running it at receipt are in
+`docs/design/deliberately-left-out.md`.
+_Avoid_: Peek, sniff, extract (unqualified; "extracted" is fine in prose), decode (the full, fallible turn into a handler's input), parse (kept for the header-to-kind step), lazy or deferred meta (a shape considered and declined; the meta is complete when the envelope is)
 
 **Decode**:
 Turning an envelope into a handler's input, through `FromEnvelope`: a serde

@@ -12,10 +12,11 @@ use crate::{DecodeError, Envelope, EventKind, EventMeta};
 /// - [`Envelope`] is its own input: a clone, the meta plus a refcount bump on
 ///   the bytes. The receiver and the `always` and `fallback` tiers take a
 ///   handler over it and move the envelope in without going through here.
-/// - [`EventMeta`] decodes nothing and cannot fail, so a handler over it is
-///   routed by kind and action and receives only the meta:
-///   `installation.deleted` revoking tokens by installation ID needs no
-///   payload at all.
+/// - [`EventMeta`] is a clone of the meta the envelope was built with, read
+///   from the headers and the payload at receipt, so its decode does nothing
+///   and cannot fail: a handler over it is routed by kind and action and
+///   receives only the meta. `installation.deleted` revoking tokens by
+///   installation ID needs no view of the payload.
 /// - Every serde [`Payload`] decodes with [`Envelope::decode_payload`]: the
 ///   kind check first, then the bytes. A payload registered with `on` under a
 ///   matcher that disagrees with its kind fails the delivery at the kind, as

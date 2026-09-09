@@ -62,7 +62,11 @@
 //!   forwarded; only `from_signed` carries an authentication claim.
 //! - [`EventMeta`]: the delivery ID, [`EventKind`], [`Action`], installation
 //!   ID, repository, organization, sender and target, read from the headers
-//!   and a best-effort probe of the payload.
+//!   and a best-effort probe of the payload. The probe is the one read of the
+//!   payload before a handler's input decodes it: five top-level values kept,
+//!   the rest skipped, never a failure, for every envelope, since the
+//!   dispatcher routes by the action it read. Its cost is stated on
+//!   `EventMeta`.
 //! - [`Handler<I>`](Handler): consumer code over one input `I`, any
 //!   [`FromEnvelope`]: the `Envelope`, the `EventMeta`, a [`Payload`] view
 //!   (a serde type declaring its kind with `#[derive(Payload)]`), or

@@ -149,6 +149,18 @@ receives and what is decoded for it:
 | `P: Payload` | The payload as `P` | `P`, kind checked | `on`, with the kind from `P` or spelled |
 | `Event<P>` | The meta beside the payload as `P` | `P`, kind checked | `on`, with the kind from `P` or spelled |
 
+"Decoded" is what is turned into the handler's input on its behalf when its
+route runs, and where a delivery can fail before the handler sees it.
+"Nothing" there does not mean the payload went unread: every envelope
+constructor reads the meta at receipt, in one pass over the bytes that keeps
+five top-level values (`action`, `installation.id`, `repository`,
+`organization`, `sender`) and skips the rest, best-effort and never failing.
+The action `on` routes by is one of them, which is why it is read before any
+handler runs. Nothing else in the document is looked at until an input decodes
+it; the
+[`EventMeta` docs](https://docs.rs/octoevents/latest/octoevents/struct.EventMeta.html)
+state the read and its cost.
+
 A `Payload` is a serde view over the fields a handler reads, declaring the
 event kind it decodes with `#[derive(Payload)]` and `#[payload(EventKind::..)]`.
 It fails only on the fields it names, so a field GitHub adds elsewhere in the
