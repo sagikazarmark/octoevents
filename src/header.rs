@@ -55,7 +55,12 @@ pub const DELIVERY_ID: HeaderName = HeaderName::from_static("x-github-delivery")
 pub const EVENT_NAME: HeaderName = HeaderName::from_static("x-github-event");
 
 /// `Content-Type`: must be `application/json` for the body to be accepted.
-pub const CONTENT_TYPE: HeaderName = HeaderName::from_static("content-type");
+///
+/// `http`'s own constant, re-exported rather than defined again, so the
+/// headers a request needs are named from one module and the two spellings
+/// are one `HeaderName`.
+#[doc(inline)]
+pub use http::header::CONTENT_TYPE;
 
 /// `X-GitHub-Hook-Installation-Target-Type`: the resource the webhook is
 /// installed on, which parses into

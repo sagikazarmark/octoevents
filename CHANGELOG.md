@@ -59,7 +59,8 @@ reads the "Changed" and "Removed" lists first.
   compile error that names `trace_boxed_errors`.
 - The `header` module: the names of the headers the crate reads, as
   `http::HeaderName` constants, for a transport's pre-body signature check
-  and a test's `http::Request::builder()`.
+  and a test's `http::Request::builder()`. `CONTENT_TYPE` is
+  `http::header::CONTENT_TYPE` re-exported, the others are GitHub's own.
 - `EventMeta::new` and `RepositoryRef::new` constructors.
 - `From<&str>` on `EventKind`, `Action` and `TargetType`; `Display` on
   `TargetType` and `Match`; `Hash` on `EventMeta` and `RepositoryRef`.
