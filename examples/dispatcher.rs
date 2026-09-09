@@ -21,15 +21,18 @@
 //! recovered from the store, not by asking GitHub to redeliver.
 //!
 //! Inside the dispatcher, handlers over three inputs appear, as structs and
-//! as a closure, every one returning the application error:
+//! as a closure, each with the error type it has; the dispatcher boxes every
+//! one at its registration, so no enum joins them:
 //!
 //! - [`Auditor`] is a `Handler<Envelope>` in the `always` tier: it runs for
 //!   every delivery, reads the metadata off the envelope, and, with nothing
 //!   decoded on its behalf, runs even for a payload octocrab cannot represent.
+//!   It cannot fail, and says so with `Infallible`.
 //! - [`Labeler`] is a `Handler<Event<PullRequestWebhookEventPayload>>`: the
 //!   meta beside octocrab's pull-request payload. Its kind comes from that
 //!   type, so registering it names only the action it wants, and other
-//!   actions never reach it or decode for it.
+//!   actions never reach it or decode for it. Its error is `BoxError`, so
+//!   `?` converts whatever the GitHub API client would return.
 //! - The triage closure is a handler over `Event<WebhookEvent>`, octocrab's
 //!   decoded event with the meta, registered with `on` for some pull-request
 //!   actions; the input type is what needs the `octocrab` feature, not the
@@ -39,29 +42,20 @@
 //! delivery, source chain included, since the receiver answers a handler
 //! error with a bare 500 and says nothing else: the dispatcher's
 //! `DispatchError` names the tier, the delivery, the failing handler and the
-//! line that registered it.
+//! line that registered it, and its source is the handler's error.
 
 // The handlers here print instead of awaiting a database or the GitHub API,
 // which is what a real `async fn handle` would do.
 #![expect(clippy::unused_async_trait_impl)]
 
-use std::{error::Error as _, sync::Mutex};
+use std::{convert::Infallible, error::Error as _, sync::Mutex};
 
 use axum::{Router, routing::post_service};
 use octocrab::models::webhook_events::{WebhookEvent, payload::PullRequestWebhookEventPayload};
 use octoevents::{
-    Action, DecodeError, DispatchError, Dispatcher, Envelope, Event, EventKind, EventMeta, Handler,
+    Action, BoxError, DispatchError, Dispatcher, Envelope, Event, EventKind, EventMeta, Handler,
     Match, Verifier, WebhookReceiverBuilder, WebhookSecret,
 };
-
-/// The application error every handler inside the dispatcher returns.
-///
-/// One `From<DecodeError>` covers every decode the dispatcher performs.
-#[derive(Debug, thiserror::Error)]
-enum AppError {
-    #[error(transparent)]
-    Decode(#[from] DecodeError),
-}
 
 /// A stand-in for a database: remembers which deliveries were stored, and
 /// keeps the envelopes an operator has to look at.
@@ -104,7 +98,7 @@ enum InboxError {
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
-    Dispatch(#[from] DispatchError<AppError>),
+    Dispatch(#[from] DispatchError),
 }
 
 /// Persists, deduplicates and dead-letters around a dispatcher that only
@@ -119,7 +113,7 @@ enum InboxError {
 /// Errors from the handlers that ran pass through either way.
 struct Inbox {
     store: Store,
-    dispatcher: Dispatcher<AppError>,
+    dispatcher: Dispatcher,
 }
 
 impl Handler<Envelope> for Inbox {
@@ -162,11 +156,11 @@ impl Handler<Envelope> for Inbox {
 }
 
 /// Runs for every delivery, reading only what `EventMeta` carries off the
-/// envelope.
+/// envelope. Printing cannot fail, and the error type says so.
 struct Auditor;
 
 impl Handler<Envelope> for Auditor {
-    type Error = AppError;
+    type Error = Infallible;
 
     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
         let meta = &envelope.meta;
@@ -191,7 +185,7 @@ struct Labeler {
 }
 
 impl Handler<Event<PullRequestWebhookEventPayload>> for Labeler {
-    type Error = AppError;
+    type Error = BoxError;
 
     async fn handle(
         &self,
@@ -224,7 +218,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Routing only: what runs for which kind and action. Whether a delivery
     // is routed at all is the wrapper's decision.
-    let dispatcher = Dispatcher::<AppError>::builder()
+    let dispatcher = Dispatcher::builder()
         .always(Auditor)
         .on(
             (
@@ -239,7 +233,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .repository
                         .map_or_else(String::new, |repository| repository.name)
                 );
-                Ok::<_, AppError>(())
+                Ok::<_, BoxError>(())
             },
         )
         .on(
@@ -252,9 +246,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // The receiver answers a handler error with a bare 500 (the response is
     // GitHub's delivery record, not a log), so the observer is where an
-    // operator learns why a delivery failed. A dispatch error names the tier,
-    // the delivery, the failing handler and the line that registered it; its
-    // source is the application error.
+    // operator without a `tracing` subscriber learns why a delivery failed. A
+    // dispatch error names the tier, the delivery, the failing handler and the
+    // line that registered it; its source is the handler's error.
     let webhook = WebhookReceiverBuilder::new(verifier)
         .on_error(|_: &EventMeta, error: &InboxError| {
             eprintln!("{error}");

@@ -34,22 +34,6 @@ impl Handler<Envelope> for Counter {
     }
 }
 
-/// The application error a dispatcher under test converts every handler's
-/// error into.
-struct AppError;
-
-impl From<octoevents::DecodeError> for AppError {
-    fn from(_: octoevents::DecodeError) -> Self {
-        Self
-    }
-}
-
-impl From<std::convert::Infallible> for AppError {
-    fn from(never: std::convert::Infallible) -> Self {
-        match never {}
-    }
-}
-
 #[cfg(feature = "http-body")]
 #[test]
 fn the_receiver_accepts_single_threaded_handler_state() {
@@ -67,7 +51,7 @@ fn the_receiver_accepts_single_threaded_handler_state() {
             let calls = Rc::clone(&closure_calls);
             async move {
                 calls.set(calls.get() + 1);
-                Ok::<_, ()>(())
+                Ok::<_, std::convert::Infallible>(())
             }
         },
     );
@@ -119,22 +103,47 @@ fn receive_accepts_a_single_threaded_body_and_handler() {
     let _future = receiver.receive(request);
 }
 
+/// A Worker-shaped error: `worker::Error` holds a `JsValue`, so it is
+/// neither `Send` nor `Sync`. On `wasm32` the crate's `BoxError` is
+/// `Box<dyn Error>`, which such an error converts into; natively it would
+/// not.
+#[derive(Debug)]
+struct JsError(Rc<Cell<u32>>);
+
+impl std::fmt::Display for JsError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "js error {}", self.0.get())
+    }
+}
+
+impl std::error::Error for JsError {}
+
 /// The `on_error` observer is bounded like a handler, so a Worker can record
-/// failures into the same single-threaded state, JavaScript values included.
+/// failures into the same single-threaded state, JavaScript values included,
+/// and the handler's error may hold them too.
 #[cfg(feature = "http-body")]
 #[test]
-fn the_receiver_accepts_a_single_threaded_error_observer() {
+fn the_receiver_accepts_a_single_threaded_error_observer_and_error() {
     use octoevents::{EventMeta, Verifier, WebhookReceiverBuilder, WebhookSecret};
-
-    struct JsValue;
 
     let failures = Rc::new(Cell::new(0));
     let observer_failures = Rc::clone(&failures);
     let _receiver = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("secret")))
-        .on_error(move |_: &EventMeta, _: &JsValue| {
+        .on_error(move |_: &EventMeta, _: &JsError| {
             observer_failures.set(observer_failures.get() + 1);
         })
-        .build(|_: Envelope| async { Err::<(), _>(JsValue) });
+        .build(|_: Envelope| async { Err::<(), _>(JsError(Rc::new(Cell::new(1)))) });
+}
+
+/// A dispatcher's routes box their handlers' errors into the same `BoxError`,
+/// so a route may fail with a JavaScript value on `wasm32`.
+#[test]
+fn a_dispatcher_route_may_fail_with_a_single_threaded_error() {
+    use octoevents::Dispatcher;
+
+    let _dispatcher = Dispatcher::builder()
+        .always(|_: Envelope| async { Err::<(), _>(JsError(Rc::new(Cell::new(1)))) })
+        .build();
 }
 
 /// A handler over the envelope reaches the receiver through the dispatcher's
@@ -147,7 +156,7 @@ fn the_receiver_accepts_a_dispatcher_over_single_threaded_always_and_fallback_ha
 
     let calls = Rc::new(Cell::new(0));
     let closure_calls = Rc::clone(&calls);
-    let dispatcher = Dispatcher::<AppError>::builder()
+    let dispatcher = Dispatcher::builder()
         .always(Counter {
             calls: Rc::clone(&calls),
         })
@@ -226,7 +235,7 @@ fn the_dispatcher_accepts_single_threaded_handlers_over_the_meta_the_envelope_a_
     let closure_calls = Rc::clone(&calls);
     let view_calls = Rc::clone(&calls);
     let event_calls = Rc::clone(&calls);
-    let dispatcher = Dispatcher::<AppError>::builder()
+    let dispatcher = Dispatcher::builder()
         .on(
             (EventKind::Installation, Action::Deleted),
             Revoker {
@@ -310,7 +319,7 @@ fn the_dispatcher_accepts_single_threaded_handler_state_over_every_input() {
 
     let calls = Rc::new(Cell::new(0));
     let closure_calls = Rc::clone(&calls);
-    let dispatcher = Dispatcher::<AppError>::builder()
+    let dispatcher = Dispatcher::builder()
         .always(Counter {
             calls: Rc::clone(&calls),
         })

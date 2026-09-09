@@ -9,15 +9,15 @@
 //!
 //! ```
 //! use octoevents::{
-//!     Action, Dispatcher, Envelope, EventKind, Verifier, WebhookReceiverBuilder, WebhookSecret,
+//!     Action, BoxError, Dispatcher, Envelope, EventKind, Verifier, WebhookReceiverBuilder,
+//!     WebhookSecret,
 //! };
-//!
-//! // The error every handler returns. Any error converts into it with `?`.
-//! type BoxError = Box<dyn std::error::Error + Send + Sync>;
 //!
 //! /// Runs for `issues.opened`. The envelope is the verified unit of receipt:
 //! /// its meta (delivery ID, kind, action, repository, sender, ...) and the
-//! /// raw payload bytes.
+//! /// raw payload bytes. `BoxError` is the crate's erased error; any
+//! /// `Error + Send + Sync + 'static` converts into it with `?`, and a
+//! /// handler with an error type of its own keeps it.
 //! async fn thank(envelope: Envelope) -> Result<(), BoxError> {
 //!     let sender = envelope.meta.sender.map(|s| s.login).unwrap_or_default();
 //!     println!("Thank you for your contribution, @{sender}! :)");
@@ -25,7 +25,7 @@
 //! }
 //!
 //! // Routes each verified envelope by kind and action.
-//! let dispatcher = Dispatcher::<BoxError>::builder()
+//! let dispatcher = Dispatcher::builder()
 //!     .on((EventKind::Issues, Action::Opened), thank)
 //!     .build();
 //!
@@ -69,16 +69,19 @@
 //!   [`FromEnvelope`]: the `Envelope`, the `EventMeta`, a [`Payload`] view
 //!   (a serde type declaring its kind with `#[derive(Payload)]`), or
 //!   [`Event<P>`](Event) for the meta beside the payload. An `async fn`, a
-//!   struct, or a closure.
+//!   struct, or a closure, with any error that converts into [`BoxError`]:
+//!   an `Error + Send + Sync + 'static` type of its own (any `Error +
+//!   'static` on `wasm32`), `BoxError` itself, `anyhow::Error`, a `String`.
 //! - [`Dispatcher`]: a handler over the envelope that routes to other
 //!   handlers by kind and action in three [tiers](Tier), always, route and
 //!   fallback, and reports an [`Outcome`]. Built with [`DispatcherBuilder`],
 //!   whose routes take an [`IntoMatcher`]: an [`EventMatcher`] shape that says
 //!   its kinds, or, for a handler over a payload, actions alone or
-//!   [`AnyAction`]. A failure is a [`DispatchError`]
-//!   naming the tier, the handler and its registration site. The policy the
-//!   tiers cannot express lives in a handler wrapping `dispatch`,
-//!   [the policy seam](Dispatcher#the-policy-seam).
+//!   [`AnyAction`]. Each handler's error is boxed where it is registered,
+//!   so handlers share no error enum. A failure is a [`DispatchError`]
+//!   naming the tier, the handler and its registration site, the boxed
+//!   error its source. The policy the tiers cannot express lives in a
+//!   handler wrapping `dispatch`, [the policy seam](Dispatcher#the-policy-seam).
 //! - [`WebhookReceiver`]: authenticates, bounds and dispatches one request,
 //!   through [`WebhookReceiver::receive`] over an `http::Request` (`http-body`
 //!   feature) or [`WebhookReceiver::receive_bytes`] over the `http::HeaderMap`
@@ -108,7 +111,7 @@
 //! | `derive` | yes | `#[derive(Payload)]`, declaring a serde type's kind with `#[payload(EventKind::..)]`; without it, a payload is declared with a three-line `impl Payload` |
 //! | `tower` | no | `tower_service::Service` for [`WebhookReceiver`] |
 //! | `octocrab` | no | [`FromEnvelope`] for octocrab's `WebhookEvent` and [`Payload`] for its per-kind payload structs; see [Feature caveats](#feature-caveats) |
-//! | `tracing` | no | The spans and the failed-delivery event under [Tracing](#tracing), and `trace_errors` / `trace_boxed_errors` on [`WebhookReceiverBuilder`] |
+//! | `tracing` | no | The spans and the failed-delivery event under [Tracing](#tracing) |
 //!
 //! The core (envelope, verification, the handler trait and its inputs, the
 //! dispatcher, the receiver over headers and bytes) depends on none of them
@@ -153,38 +156,31 @@
 //!
 //! A field recorded in more than one place is recorded in one form
 //! everywhere: `delivery_id`, `event` and `action` as strings,
-//! `installation_id` as an integer, `outcome` as a string label with its own
-//! vocabulary per span, and `error`, on the receive span for a refusal and on
-//! the failed-delivery event for a handler failure, as the error's text. The
-//! one value two vocabularies share, `handler_error`, partitions differently:
-//! on the receive span it is every delivery a handler failed, since any
-//! handler error is a 500; on the dispatch span it is a matched delivery a
-//! handler failed, and an unmatched delivery failed by its `always` or
-//! `fallback` tier is `unmatched_error`. A receive `handler_error` is a
-//! dispatch `handler_error` or `unmatched_error`.
+//! `installation_id` as an integer, and `outcome` as a string label with its
+//! own vocabulary per span. `error` is the error's text to every subscriber
+//! wherever it appears; the failed-delivery event records it as an error
+//! value, so a subscriber that walks sources renders the chain beneath it
+//! too, where the receive span records a refusal's text alone. The one value
+//! two vocabularies share, `handler_error`, partitions differently: on the
+//! receive span it is every delivery a handler failed, since any handler
+//! error is a 500; on the dispatch span it is a matched delivery a handler
+//! failed, and an unmatched delivery failed by its `always` or `fallback`
+//! tier is `unmatched_error`. A receive `handler_error` is a dispatch
+//! `handler_error` or `unmatched_error`.
 //!
 //! A failed delivery also emits one event at ERROR, `handler failed`, with
 //! `delivery_id`, `event`, and `action` and `installation_id` when the
-//! delivery has them, so a subscriber filtering at ERROR sees every failed
-//! delivery without an observer; the 500 it is answered with is the receive
-//! span's `status`, since a handler failure is answered nothing else. A
-//! successful delivery, a request refused before any handler ran and a
-//! short-circuited `ping` emit no event.
-//! By default the event carries no text of the error, since the receiver
-//! places no bound on the handler's error type. The text is a setting on the
-//! receiver builder, and it goes on the same event, never a second one:
-//! `WebhookReceiverBuilder::trace_errors`, for a `TracedError` (any
-//! `E: Error`), records the error's `Display` as `error` and its `source()`
-//! as `source`, an error value the subscriber renders with the sources
-//! beneath it (the `fmt` subscriber prints `error=<text> source=<cause>
-//! source.sources=[<cause>, ..]`); `WebhookReceiverBuilder::trace_boxed_errors`
-//! does the same for a `BoxedError`, an error behind a pointer (`Box<dyn
-//! Error + Send + Sync>`, `anyhow::Error`) or a [`DispatchError`] over one,
-//! which is no `Error` itself, and asking `trace_errors` of one is a compile
-//! error that says so. With a dispatcher, `error` says where (the tier, the
-//! handler and its registration site) and `source` why (the application
-//! error). An `on_error` observer runs beside the event and changes nothing
-//! about it.
+//! delivery has them, and the handler's error, boxed, as `error`: an error
+//! value, so the subscriber renders its text and the chain of sources beneath
+//! it (the `fmt` subscriber prints `error=<text> error.sources=[<cause>,
+//! ..]`). With a dispatcher the text says where (the tier, the handler and
+//! its registration site) and the chain why (the application error, and its
+//! own sources). A subscriber filtering at ERROR sees every failed delivery
+//! and why, with no observer and no setting; the 500 it is answered with is
+//! the receive span's `status`, since a handler failure is answered nothing
+//! else. A successful delivery, a request refused before any handler ran and
+//! a short-circuited `ping` emit no event. An `on_error` observer runs beside
+//! the event and changes nothing about it.
 //!
 //! Nothing secret-derived is recorded anywhere: not the secret, the
 //! signature header, nor a computed MAC.
@@ -267,10 +263,8 @@ pub use meta::{AccountMeta, EventMeta, RepositoryMeta, TargetType};
 pub use octoevents_derive::Payload;
 pub use payload::{Event, FromEnvelope, Payload};
 pub use receiver::{WebhookReceiver, WebhookReceiverBuilder};
-pub use runtime::{MaybeSend, MaybeSync};
+pub use runtime::{BoxError, MaybeSend, MaybeSync};
 pub use signature::{Signature, SignatureError, Verifier, WebhookSecret, WebhookSecretError};
-#[cfg(feature = "tracing")]
-pub use trace::{BoxedError, TracedError};
 
 /// The byte buffer type of [`Envelope::raw_payload`] and of the body
 /// [`Envelope::from_signed`] takes, re-exported from the `bytes` crate.

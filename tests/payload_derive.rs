@@ -57,22 +57,6 @@ where
     r#ref: T,
 }
 
-/// The application error a dispatcher under test converts every handler's
-/// error into.
-struct AppError;
-
-impl From<DecodeError> for AppError {
-    fn from(_: DecodeError) -> Self {
-        Self
-    }
-}
-
-impl From<Infallible> for AppError {
-    fn from(never: Infallible) -> Self {
-        match never {}
-    }
-}
-
 #[test]
 fn the_declared_kind_is_the_payloads_kind() {
     assert_eq!(IssueNumber::KIND, EventKind::Issues);
@@ -151,7 +135,7 @@ fn a_handler_over_a_generic_view_is_registered_by_the_views_kind() {
         Ok(())
     }
 
-    let _dispatcher = Dispatcher::<AppError>::builder()
+    let _dispatcher = Dispatcher::builder()
         .on(AnyAction, number)
         .on(AnyAction, untyped)
         .build();

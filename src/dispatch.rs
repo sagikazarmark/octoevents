@@ -4,12 +4,13 @@ use std::{
 };
 
 use crate::{
-    Action, DecodeError, Envelope, EventKind, EventMeta, FromEnvelope, Handler, IntoMatcher,
+    Action, BoxError, Envelope, EventKind, EventMeta, FromEnvelope, Handler, IntoMatcher,
     MaybeSend, MaybeSync, matcher::Slot, runtime::BoxFuture, trace,
 };
 
 /// The erased handler: every handler is registered as one of these, its
-/// input's decode folded in, so routing is monomorphic in everything but `E`.
+/// input's decode folded in and its error converted into [`BoxError`], so
+/// routing is monomorphic.
 ///
 /// A trait rather than a `dyn Fn` over the envelope, for two reasons a
 /// function signature cannot give. The future may borrow the handler, so
@@ -18,17 +19,20 @@ use crate::{
 /// would have to capture the input, and the input would need to be
 /// `MaybeSend`, a bound `on` does not place. And the platform split is the
 /// supertraits, as on `Handler`, rather than a hand-written pair of aliases.
-trait ErasedHandler<E>: MaybeSend + MaybeSync {
+trait ErasedHandler: MaybeSend + MaybeSync {
     /// Decodes the handler's input from the envelope and starts the handler
     /// on it.
     ///
     /// The envelope is borrowed for the decode alone: nothing is cloned for
     /// a route whose input is not the envelope, and a route over the
     /// envelope clones it once, through `FromEnvelope`. A decode failure is
-    /// the `Err`, already converted into `E`, so no future is built for a
-    /// delivery the handler cannot receive and `E` never enters one; the
-    /// `Ok` is the handler's future, its error converted on completion.
-    fn call<'a>(&'a self, envelope: &Envelope) -> Result<BoxFuture<'a, Result<(), E>>, E>;
+    /// the `Err`, already boxed, so no future is built for a delivery the
+    /// handler cannot receive; the `Ok` is the handler's future, its error
+    /// boxed on completion.
+    fn call<'a>(
+        &'a self,
+        envelope: &Envelope,
+    ) -> Result<BoxFuture<'a, Result<(), BoxError>>, BoxError>;
 }
 
 /// A routed handler behind its input's decode.
@@ -40,37 +44,42 @@ struct Routed<I, H> {
     input: PhantomData<fn(I)>,
 }
 
-impl<I, H, E> ErasedHandler<E> for Routed<I, H>
+impl<I, H> ErasedHandler for Routed<I, H>
 where
     I: FromEnvelope,
     H: Handler<I> + MaybeSend + MaybeSync,
-    E: From<DecodeError> + From<H::Error>,
+    H::Error: Into<BoxError>,
 {
-    fn call<'a>(&'a self, envelope: &Envelope) -> Result<BoxFuture<'a, Result<(), E>>, E> {
-        let input = I::from_envelope(envelope).map_err(E::from)?;
+    fn call<'a>(
+        &'a self,
+        envelope: &Envelope,
+    ) -> Result<BoxFuture<'a, Result<(), BoxError>>, BoxError> {
+        let input = I::from_envelope(envelope).map_err(BoxError::from)?;
         let future = self.handler.handle(input);
-        Ok(Box::pin(async move { future.await.map_err(E::from) }))
+        Ok(Box::pin(async move { future.await.map_err(Into::into) }))
     }
 }
 
 /// A handler over the envelope for the `always` and `fallback` tiers, whose
 /// input is known to be the envelope: it is cloned once, here, without going
-/// through `Envelope::from_envelope`, and so without asking
-/// `E: From<DecodeError>` of a tier that decodes nothing. A detail of those
-/// two tiers: the consumer's handler is the same `Handler<Envelope>` as
-/// anywhere.
+/// through `Envelope::from_envelope`, so those two tiers decode nothing. A
+/// detail of those two tiers: the consumer's handler is the same
+/// `Handler<Envelope>` as anywhere.
 struct OverEnvelope<H> {
     handler: H,
 }
 
-impl<H, E> ErasedHandler<E> for OverEnvelope<H>
+impl<H> ErasedHandler for OverEnvelope<H>
 where
     H: Handler<Envelope> + MaybeSend + MaybeSync,
-    E: From<H::Error>,
+    H::Error: Into<BoxError>,
 {
-    fn call<'a>(&'a self, envelope: &Envelope) -> Result<BoxFuture<'a, Result<(), E>>, E> {
+    fn call<'a>(
+        &'a self,
+        envelope: &Envelope,
+    ) -> Result<BoxFuture<'a, Result<(), BoxError>>, BoxError> {
         let future = self.handler.handle(envelope.clone());
-        Ok(Box::pin(async move { future.await.map_err(E::from) }))
+        Ok(Box::pin(async move { future.await.map_err(Into::into) }))
     }
 }
 
@@ -113,13 +122,13 @@ where
 /// sees an unmatched delivery as a success unless a fallback failed it; the
 /// outcome is for the policy seam to read.
 ///
-/// A failure is reported as a [`DispatchError`]: the application error `E`
-/// wrapped with the [`Tier`] the failing handler ran in, the delivery's ID,
-/// kind and action, the handler's name, and the source location of the
-/// registration that put the handler there. Every registration method records
-/// its handler's name and its caller's location, so an operator reading
-/// "delivery X failed" knows which handler and can go to the line of code
-/// that registered it.
+/// A failure is reported as a [`DispatchError`]: the handler's error, boxed
+/// as a [`BoxError`], wrapped with the [`Tier`] the failing handler ran in,
+/// the delivery's ID, kind and action, the handler's name, and the source
+/// location of the registration that put the handler there. Every
+/// registration method records its handler's name and its caller's location,
+/// so an operator reading "delivery X failed" knows which handler and can go
+/// to the line of code that registered it.
 ///
 /// The decode rule: `always` and `fallback` receive the bytes as they were
 /// verified and nothing is decoded on their behalf; each routed handler
@@ -137,15 +146,12 @@ where
 ///
 #[cfg_attr(feature = "derive", doc = "```")]
 #[cfg_attr(not(feature = "derive"), doc = "```ignore")]
-/// use octoevents::{Action, AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind};
+/// use octoevents::{Action, AnyAction, BoxError, Dispatcher, Envelope, Event, EventKind};
 ///
-/// /// The application error every handler converts into. `From<DecodeError>`
-/// /// is what `on` asks of it: a routed handler's input is decoded on its behalf.
-/// #[derive(Debug)]
-/// enum AppError { Decode(DecodeError), Unhandled(EventKind) }
-/// impl From<DecodeError> for AppError {
-///     fn from(error: DecodeError) -> Self { Self::Decode(error) }
-/// }
+/// /// A fallback's own reason for failing a delivery.
+/// #[derive(Debug, thiserror::Error)]
+/// #[error("no handler for {0} events")]
+/// struct Unhandled(EventKind);
 ///
 /// // A consumer view over the pull-request payload; the kind it declares is
 /// // the kind its handler is routed by.
@@ -153,26 +159,26 @@ where
 /// #[payload(EventKind::PullRequest)]
 /// struct PullRequestNumber { number: u64 }
 ///
-/// async fn forward(envelope: Envelope) -> Result<(), AppError> {
+/// async fn forward(envelope: Envelope) -> Result<(), BoxError> {
 ///     println!("forward {} ({} bytes)", envelope.meta.delivery_id, envelope.raw_payload.len());
 ///     Ok(())
 /// }
 ///
-/// async fn notify(Event { meta, payload }: Event<PullRequestNumber>) -> Result<(), AppError> {
+/// async fn notify(Event { meta, payload }: Event<PullRequestNumber>) -> Result<(), BoxError> {
 ///     println!("PR #{} {:?} for installation {:?}", payload.number, meta.action, meta.installation_id);
 ///     Ok(())
 /// }
 ///
-/// async fn label(pr: PullRequestNumber) -> Result<(), AppError> {
+/// async fn label(pr: PullRequestNumber) -> Result<(), std::io::Error> {
 ///     println!("label PR #{}", pr.number);
 ///     Ok(())
 /// }
 ///
-/// async fn reject(envelope: Envelope) -> Result<(), AppError> {
-///     Err(AppError::Unhandled(envelope.meta.kind))
+/// async fn reject(envelope: Envelope) -> Result<(), Unhandled> {
+///     Err(Unhandled(envelope.meta.kind))
 /// }
 ///
-/// let dispatcher = Dispatcher::<AppError>::builder()
+/// let dispatcher = Dispatcher::builder()
 ///     .always(forward)
 ///     .on(AnyAction, notify)
 ///     .on([Action::Opened, Action::Reopened], label)
@@ -181,14 +187,18 @@ where
 /// # let _ = dispatcher;
 /// ```
 ///
-/// Handlers written against `E` itself, as above, need nothing further. A
-/// handler keeps its own error type, and the dispatcher converts it into `E`
-/// through `From` at registration: a reusable struct with an error of its
-/// own, or one whose error is [`Infallible`](std::convert::Infallible),
-/// registers once `E: From<H::Error>` holds. `E: From<DecodeError>` is asked
-/// by `on` alone, since only a routed handler has an input decoded on its
-/// behalf; a dispatcher of `always` and `fallback` handlers builds over any
-/// error type, `std::io::Error` included.
+/// Each handler keeps its own error type, and every registration method asks
+/// the same one thing of it, `Into<BoxError>`: every `Error + Send + Sync +
+/// 'static` type is, through std's blanket `From` (every `Error + 'static`
+/// on `wasm32`, where the box is `Box<dyn Error>`), and so are `BoxError`
+/// itself, `anyhow::Error`, `String`, `&str` and
+/// [`Infallible`](std::convert::Infallible). The dispatcher boxes the error
+/// where the handler is registered, so the handlers above share no error
+/// enum and a reusable struct handler registers with the error it has. A
+/// decode failure is boxed the same way, as the [`DecodeError`] it is, and
+/// reported at the handler that needed the decode.
+///
+/// [`DecodeError`]: crate::DecodeError
 ///
 /// `on` routes a handler over any [`FromEnvelope`] input for the kinds and
 /// actions a matcher selects. [`EventMeta`] decodes nothing, so a handler
@@ -199,9 +209,7 @@ where
 /// octocrab.
 ///
 /// ```
-/// use octoevents::{Action, DecodeError, Dispatcher, Envelope, EventKind, EventMeta, FromEnvelope};
-/// # struct AppError;
-/// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
+/// use octoevents::{Action, BoxError, DecodeError, Dispatcher, Envelope, EventKind, EventMeta, FromEnvelope};
 ///
 /// #[derive(serde::Deserialize)]
 /// struct Sender { sender: Login }
@@ -214,22 +222,22 @@ where
 ///     }
 /// }
 ///
-/// async fn revoke(meta: EventMeta) -> Result<(), AppError> {
+/// async fn revoke(meta: EventMeta) -> Result<(), BoxError> {
 ///     println!("revoke tokens for installation {:?}", meta.installation_id);
 ///     Ok(())
 /// }
 ///
-/// async fn forward(envelope: Envelope) -> Result<(), AppError> {
+/// async fn forward(envelope: Envelope) -> Result<(), BoxError> {
 ///     println!("forward {} bytes of {}", envelope.raw_payload.len(), envelope.meta.kind);
 ///     Ok(())
 /// }
 ///
-/// async fn metrics(sender: Sender) -> Result<(), AppError> {
+/// async fn metrics(sender: Sender) -> Result<(), BoxError> {
 ///     println!("by {}", sender.sender.login);
 ///     Ok(())
 /// }
 ///
-/// let dispatcher = Dispatcher::<AppError>::builder()
+/// let dispatcher = Dispatcher::builder()
 ///     .on((EventKind::Installation, Action::Deleted), revoke)
 ///     .on(EventKind::Push, forward)
 ///     .on([EventKind::Issues, EventKind::IssueComment], metrics)
@@ -243,17 +251,14 @@ where
 /// ```
 /// # #[cfg(feature = "octocrab")] {
 /// use octocrab::models::webhook_events::WebhookEvent;
-/// use octoevents::{Action, Dispatcher, Event, EventKind};
-/// # use octoevents::DecodeError;
-/// # struct AppError;
-/// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
+/// use octoevents::{Action, BoxError, Dispatcher, Event, EventKind};
 ///
-/// async fn triage(Event { meta, payload: event }: Event<WebhookEvent>) -> Result<(), AppError> {
+/// async fn triage(Event { meta, payload: event }: Event<WebhookEvent>) -> Result<(), BoxError> {
 ///     println!("triage {:?} for {:?}", meta.action, event.repository.map(|repository| repository.name));
 ///     Ok(())
 /// }
 ///
-/// let dispatcher = Dispatcher::<AppError>::builder()
+/// let dispatcher = Dispatcher::builder()
 ///     .on((EventKind::PullRequest, [Action::Opened, Action::Synchronize]), triage)
 ///     .build();
 /// # let _ = dispatcher;
@@ -284,31 +289,21 @@ where
 /// [`Outcome`]'s docs show a wrapper that dead-letters an unknown kind; the
 /// `dispatcher` example shows one that also persists and deduplicates. The
 /// [design notes](crate#design) record the short-circuit tier this replaces.
-pub struct Dispatcher<E> {
-    routes: Arc<Routes<E>>,
+#[derive(Clone)]
+pub struct Dispatcher {
+    routes: Arc<Routes>,
 }
 
-impl<E> Clone for Dispatcher<E> {
-    fn clone(&self) -> Self {
-        Self {
-            routes: Arc::clone(&self.routes),
-        }
-    }
-}
-
-impl<E> fmt::Debug for Dispatcher<E> {
+impl fmt::Debug for Dispatcher {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.routes.fmt_as("Dispatcher", formatter)
     }
 }
 
-impl<E> Dispatcher<E>
-where
-    E: 'static,
-{
+impl Dispatcher {
     /// Starts building a dispatcher whose unmatched deliveries succeed.
     #[must_use]
-    pub fn builder() -> DispatcherBuilder<E> {
+    pub fn builder() -> DispatcherBuilder {
         DispatcherBuilder::default()
     }
 
@@ -335,17 +330,14 @@ where
     /// use std::pin::pin;
     /// use std::task::{Context, Poll, Waker};
     ///
-    /// use octoevents::{Dispatcher, Envelope, EventKind};
-    /// # use octoevents::DecodeError;
-    /// # struct AppError;
-    /// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
+    /// use octoevents::{BoxError, Dispatcher, Envelope, EventKind};
     ///
-    /// async fn log(envelope: Envelope) -> Result<(), AppError> {
+    /// async fn log(envelope: Envelope) -> Result<(), BoxError> {
     ///     println!("{} bytes of {}", envelope.raw_payload.len(), envelope.meta.kind);
     ///     Ok(())
     /// }
     ///
-    /// let dispatcher = Dispatcher::<AppError>::builder().on(EventKind::Push, log).build();
+    /// let dispatcher = Dispatcher::builder().on(EventKind::Push, log).build();
     /// let envelope = Envelope::new(
     ///     "72d3162e-cc78-11e3-81ab-4c9367dc0958",
     ///     EventKind::Push,
@@ -387,7 +379,7 @@ where
             )
         )
     )]
-    pub async fn dispatch(&self, envelope: Envelope) -> Outcome<E> {
+    pub async fn dispatch(&self, envelope: Envelope) -> Outcome {
         let (matched, routed) = self.routes.lookup(&envelope.meta);
         let result = self.run_tiers(&envelope, matched, routed).await;
         let outcome = Outcome { matched, result };
@@ -406,8 +398,8 @@ where
         &self,
         envelope: &Envelope,
         matched: Match,
-        routed: impl Iterator<Item = &[Route<E>]>,
-    ) -> Result<(), DispatchError<E>> {
+        routed: impl Iterator<Item = &[Route]>,
+    ) -> Result<(), DispatchError> {
         run_chain(envelope, Tier::Always, &self.routes.always).await?;
 
         match matched {
@@ -427,15 +419,10 @@ where
 /// Runs one chain in order, stopping at the first error and wrapping it with
 /// the tier, the delivery, and the failing route's handler name and
 /// registration site. The clones for the error happen only on that path.
-async fn run_chain<E>(
-    envelope: &Envelope,
-    tier: Tier,
-    chain: &[Route<E>],
-) -> Result<(), DispatchError<E>> {
+async fn run_chain(envelope: &Envelope, tier: Tier, chain: &[Route]) -> Result<(), DispatchError> {
     for route in chain {
         // Two failure points, one shape: a decode failure before the future
-        // exists, the handler's after it ran. Kept as two statements so no
-        // `E` is live across the await, which would ask `E: Send`.
+        // exists, the handler's after it ran.
         let future = route
             .handler
             .call(envelope)
@@ -447,11 +434,8 @@ async fn run_chain<E>(
     Ok(())
 }
 
-impl<E> Handler<Envelope> for Dispatcher<E>
-where
-    E: 'static,
-{
-    type Error = DispatchError<E>;
+impl Handler<Envelope> for Dispatcher {
+    type Error = DispatchError;
 
     /// Dispatches the envelope and keeps only the result: an unmatched
     /// delivery succeeds unless a fallback fails it. The `octoevents.dispatch`
@@ -464,62 +448,16 @@ where
     /// other: it contributes a result, never a match. The outer outcome
     /// reports the outer route table's decision alone, `Matched` for a kind
     /// the inner dispatcher had no route for; each dispatcher's span records
-    /// its own outcome.
+    /// its own outcome. The inner [`DispatchError`] is an
+    /// [`Error`](std::error::Error) like any handler's, so it is boxed as the
+    /// outer error's source, and a reporter walking the chain reads the outer
+    /// site, then the inner, then the application error.
     ///
-    /// A route's error converts into the dispatcher's with `From`, and a
-    /// nested dispatcher's error is a `DispatchError<E>`, which is an
-    /// [`Error`](std::error::Error) only when `E` is. `Box<dyn Error + Send +
-    /// Sync>` is not, so a `Dispatcher<BoxError>` cannot be a route of
-    /// another `Dispatcher<BoxError>` as it stands:
-    ///
-    /// ```compile_fail,E0277
+    /// ```
     /// use octoevents::{Dispatcher, EventKind};
-    /// type BoxError = Box<dyn std::error::Error + Send + Sync>;
     ///
-    /// let inner = Dispatcher::<BoxError>::builder().build();
-    /// let outer = Dispatcher::<BoxError>::builder()
-    ///     .on(EventKind::Issues, inner)
-    ///     .build();
-    /// ```
-    ///
-    /// A closure that hands back the inner error's `source`, the boxed
-    /// application error, registers; the inner tier, handler and site are
-    /// on the inner span. An application error type that converts from
-    /// `DispatchError` over itself, beside the `From<DecodeError>` that
-    /// [`on`](DispatcherBuilder::on) asks of every `E`, nests without the
-    /// closure.
-    ///
-    /// ```
-    /// use octoevents::{DispatchError, Dispatcher, Envelope, EventKind};
-    /// type BoxError = Box<dyn std::error::Error + Send + Sync>;
-    ///
-    /// let inner = Dispatcher::<BoxError>::builder().build();
-    /// let outer = Dispatcher::<BoxError>::builder()
-    ///     .on(EventKind::Issues, move |envelope: Envelope| {
-    ///         let inner = inner.clone();
-    ///         async move {
-    ///             inner.dispatch(envelope).await.result
-    ///                 .map_err(|error: DispatchError<BoxError>| error.source)
-    ///         }
-    ///     })
-    ///     .build();
-    /// # let _ = outer;
-    /// ```
-    ///
-    /// ```
-    /// use octoevents::{DecodeError, DispatchError, Dispatcher, EventKind};
-    ///
-    /// #[derive(Debug)]
-    /// enum AppError { Decode(DecodeError), Nested(Box<DispatchError<AppError>>) }
-    /// impl From<DecodeError> for AppError {
-    ///     fn from(error: DecodeError) -> Self { Self::Decode(error) }
-    /// }
-    /// impl From<DispatchError<AppError>> for AppError {
-    ///     fn from(error: DispatchError<AppError>) -> Self { Self::Nested(Box::new(error)) }
-    /// }
-    ///
-    /// let inner = Dispatcher::<AppError>::builder().build();
-    /// let outer = Dispatcher::<AppError>::builder()
+    /// let inner = Dispatcher::builder().build();
+    /// let outer = Dispatcher::builder()
     ///     .on(EventKind::Issues, inner)
     ///     .build();
     /// # let _ = outer;
@@ -571,7 +509,7 @@ where
 /// ```compile_fail,E0639
 /// use octoevents::{Match, Outcome};
 ///
-/// let outcome = Outcome::<std::io::Error> {
+/// let outcome = Outcome {
 ///     matched: Match::Matched,
 ///     result: Ok(()),
 /// };
@@ -579,19 +517,15 @@ where
 ///
 /// ```
 /// use octoevents::{DispatchError, Dispatcher, Envelope, Handler, Match};
-/// # use octoevents::DecodeError;
-/// # #[derive(Debug)]
-/// # struct AppError;
-/// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
 ///
 /// /// Dead-letters deliveries of kinds the dispatcher never registered.
 /// struct DeadLetter {
-///     dispatcher: Dispatcher<AppError>,
+///     dispatcher: Dispatcher,
 /// }
 ///
 /// impl Handler<Envelope> for DeadLetter {
 ///     // The dispatcher's error passes through, tier, handler and registration site included.
-///     type Error = DispatchError<AppError>;
+///     type Error = DispatchError;
 ///
 ///     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
 ///         // The clone shares the bytes; the wrapper still holds them.
@@ -607,21 +541,21 @@ where
 ///         }
 ///     }
 /// }
-/// # let _ = DeadLetter { dispatcher: Dispatcher::<AppError>::builder().build() };
+/// # let _ = DeadLetter { dispatcher: Dispatcher::builder().build() };
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 #[must_use = "an outcome carries the handlers' result in its `result` field"]
 #[non_exhaustive]
-pub struct Outcome<E> {
+pub struct Outcome {
     /// Whether the route table matched the delivery, and if not, whether it
     /// knew the kind.
     pub matched: Match,
     /// `Ok` when every handler that ran succeeded; otherwise the first error,
     /// with the tier, handler and registration site it came from.
-    pub result: Result<(), DispatchError<E>>,
+    pub result: Result<(), DispatchError>,
 }
 
-impl<E> Outcome<E> {
+impl Outcome {
     /// The value the `octoevents.dispatch` span records as `outcome`.
     fn label(&self) -> &'static str {
         match (self.matched, self.result.is_ok()) {
@@ -678,8 +612,8 @@ impl fmt::Display for Match {
     }
 }
 
-/// The error of a failed dispatch: the application error, and where in the
-/// dispatch and in the consumer's source it came from.
+/// The error of a failed dispatch: the application error, boxed, and where in
+/// the dispatch and in the consumer's source it came from.
 ///
 /// The dispatcher wraps the error of the handler that failed the delivery
 /// with what it knew and the handler did not: the [`Tier`] the handler ran
@@ -689,8 +623,8 @@ impl fmt::Display for Match {
 /// registration method records its caller's location and its handler's name
 /// at compile time, so each costs one static reference per registration, on
 /// `wasm32` as anywhere. A decode failure is reported at the handler that
-/// needed the decode: its tier, its name, its registration site, and
-/// `E::from` of the [`DecodeError`].
+/// needed the decode: its tier, its name, its registration site, and the
+/// [`DecodeError`](crate::DecodeError) as the source.
 ///
 /// The handler name is [`type_name`]'s output for the type the registration
 /// method received: the function's path for an `async fn` item
@@ -705,14 +639,14 @@ impl fmt::Display for Match {
 /// [`Display`](fmt::Display) names where, not why: the tier, the delivery,
 /// the handler, and the registration site. Why is the
 /// [`source`](Error::source), the application error, so a reporter that walks
-/// the chain prints both, and [`into_source`](Self::into_source) drops the
-/// wrapping for code that wants the application error alone. The [`Error`]
-/// impl asks `Error + 'static` of `E`, what any source in a chain must be;
-/// for an `E` that is not one, `Box<dyn Error + Send + Sync>` included, the
-/// dispatcher still builds, the error still displays, `into_source` returns
-/// the boxed error, which is one, and with the `tracing` feature
-/// `WebhookReceiverBuilder::trace_boxed_errors` puts both on the
-/// failed-delivery event.
+/// the chain prints both; [`into_source`](Self::into_source) drops the
+/// wrapping for code that wants the application error alone, and code that
+/// wants its own type back downcasts the [`BoxError`]:
+/// `error.source.downcast_ref::<AppError>()`, or, for a decode failure,
+/// `downcast_ref::<DecodeError>()`. The type is an [`Error`] whatever the
+/// handler's error was, since the source is always the box, so a dispatcher
+/// nests as a route of another and the receiver puts the error on the
+/// failed-delivery event with no bound left to ask.
 ///
 /// A wrapping handler that passes the dispatcher's result through keeps the
 /// tier, handler name and registration site by making this its error type;
@@ -729,9 +663,9 @@ impl fmt::Display for Match {
 /// delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (pull_request.opened) failed in the route tier at the handler `app::label` registered at src/main.rs:42:10
 ///   caused by: database is down
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 #[non_exhaustive]
-pub struct DispatchError<E> {
+pub struct DispatchError {
     /// The tier the failing handler ran in.
     pub tier: Tier,
     /// The failing handler's name: [`type_name`] of the handler the
@@ -746,29 +680,28 @@ pub struct DispatchError<E> {
     pub kind: EventKind,
     /// The action of the delivery that failed, when it had one.
     pub action: Option<Action>,
-    /// The application error: the handler's own, converted through `From`, or
-    /// `E::from` of the [`DecodeError`] when the handler's input could not be
-    /// decoded.
-    pub source: E,
+    /// The application error, boxed: the handler's own, or the
+    /// [`DecodeError`](crate::DecodeError) when the handler's input could not
+    /// be decoded. What [`source`](Error::source) returns, by value.
+    pub source: BoxError,
 }
 
-impl<E> DispatchError<E> {
+impl DispatchError {
     /// Drops the wrapping and returns the application error.
     ///
-    /// The one-call path from a dispatch result to the application error, for
-    /// code that reports the delivery and the handler by other means or an
-    /// `E` that is not an [`Error`] itself.
+    /// The one-call path from a dispatch result to the boxed application
+    /// error, for code that reports the delivery and the handler by other
+    /// means, or hands the error on as its own.
     #[must_use]
-    pub fn into_source(self) -> E {
+    pub fn into_source(self) -> BoxError {
         self.source
     }
 }
 
 // Written out rather than derived through thiserror: the action is optional
 // and joins the kind with a dot only when present (`pull_request.opened`,
-// `ping`), which a format string cannot express, and the `Error` impl must
-// stay separate so `Display` holds for an `E` that is not an `Error`.
-impl<E> fmt::Display for DispatchError<E> {
+// `ping`), which a format string cannot express.
+impl fmt::Display for DispatchError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "delivery {} ({}", self.delivery_id, self.kind)?;
         if let Some(action) = &self.action {
@@ -782,12 +715,9 @@ impl<E> fmt::Display for DispatchError<E> {
     }
 }
 
-impl<E> Error for DispatchError<E>
-where
-    E: Error + 'static,
-{
+impl Error for DispatchError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(&self.source)
+        Some(&*self.source)
     }
 }
 
@@ -828,17 +758,17 @@ impl fmt::Display for Tier {
 }
 
 /// A builder for [`Dispatcher`].
-pub struct DispatcherBuilder<E> {
-    routes: Routes<E>,
+pub struct DispatcherBuilder {
+    routes: Routes,
 }
 
-impl<E> fmt::Debug for DispatcherBuilder<E> {
+impl fmt::Debug for DispatcherBuilder {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.routes.fmt_as("DispatcherBuilder", formatter)
     }
 }
 
-impl<E> Default for DispatcherBuilder<E> {
+impl Default for DispatcherBuilder {
     fn default() -> Self {
         Self {
             routes: Routes {
@@ -850,10 +780,7 @@ impl<E> Default for DispatcherBuilder<E> {
     }
 }
 
-impl<E> DispatcherBuilder<E>
-where
-    E: 'static,
-{
+impl DispatcherBuilder {
     /// Registers a handler over the [`Envelope`] that runs for every delivery
     /// the dispatcher receives, before routing.
     ///
@@ -877,9 +804,9 @@ where
     ///
     /// Like every registration method, this records the handler's name and
     /// where it was called so a [`DispatchError`] can point back at the
-    /// registration. Unlike `on`, it asks no `From<DecodeError>` of `E`:
-    /// nothing is decoded here, so a dispatcher of this tier alone builds
-    /// over any error type.
+    /// registration, and asks `Into<BoxError>` of the handler's error, which
+    /// any `Error + Send + Sync + 'static` is (any `Error + 'static` on
+    /// `wasm32`):
     ///
     /// ```
     /// use octoevents::{Dispatcher, Envelope};
@@ -889,7 +816,7 @@ where
     ///     Ok(())
     /// }
     ///
-    /// let dispatcher = Dispatcher::<std::io::Error>::builder().always(audit).build();
+    /// let dispatcher = Dispatcher::builder().always(audit).build();
     /// # let _ = dispatcher;
     /// ```
     #[must_use]
@@ -897,7 +824,7 @@ where
     pub fn always<H>(mut self, handler: H) -> Self
     where
         H: Handler<Envelope> + MaybeSend + MaybeSync + 'static,
-        E: From<H::Error>,
+        H::Error: Into<BoxError>,
     {
         self.routes.always.push(Route::over_envelope(handler));
         self
@@ -922,7 +849,7 @@ where
     /// and action that decodes nothing; the [`Envelope`], bytes included, for
     /// one kind's forwarder; a `Payload` or `Event<P>`, which decodes with its
     /// kind check, so a matcher that says a kind the view disagrees with fails
-    /// the delivery with [`DecodeError::KindMismatch`], where a matcher of
+    /// the delivery with [`DecodeError::KindMismatch`](crate::DecodeError::KindMismatch), where a matcher of
     /// actions alone cannot disagree; or a consumer type implementing
     /// `FromEnvelope` itself, for a view over fields several kinds share. Each
     /// route decodes its own input when it runs, and a decode failure fails
@@ -931,31 +858,28 @@ where
     ///
     #[cfg_attr(feature = "derive", doc = "```")]
     #[cfg_attr(not(feature = "derive"), doc = "```ignore")]
-    /// use octoevents::{Action, AnyAction, Dispatcher, Event, EventKind, EventMeta};
-    /// # use octoevents::DecodeError;
-    /// # struct AppError;
-    /// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
+    /// use octoevents::{Action, AnyAction, BoxError, Dispatcher, Event, EventKind, EventMeta};
     ///
     /// #[derive(serde::Deserialize, octoevents::Payload)]
     /// #[payload(EventKind::PullRequest)]
     /// struct PullRequestNumber { number: u64 }
     ///
-    /// async fn label(pr: PullRequestNumber) -> Result<(), AppError> {
+    /// async fn label(pr: PullRequestNumber) -> Result<(), BoxError> {
     ///     println!("label PR #{}", pr.number);
     ///     Ok(())
     /// }
     ///
-    /// async fn notify(Event { meta, payload }: Event<PullRequestNumber>) -> Result<(), AppError> {
+    /// async fn notify(Event { meta, payload }: Event<PullRequestNumber>) -> Result<(), BoxError> {
     ///     println!("{}: PR #{} {:?}", meta.delivery_id, payload.number, meta.action);
     ///     Ok(())
     /// }
     ///
-    /// async fn revoke(meta: EventMeta) -> Result<(), AppError> {
+    /// async fn revoke(meta: EventMeta) -> Result<(), BoxError> {
     ///     println!("revoke tokens for installation {:?}", meta.installation_id);
     ///     Ok(())
     /// }
     ///
-    /// let dispatcher = Dispatcher::<AppError>::builder()
+    /// let dispatcher = Dispatcher::builder()
     ///     .on([Action::Opened, Action::Reopened], label)          // `pull_request`, from the type
     ///     .on(AnyAction, notify)                                  // every `pull_request` action
     ///     .on((EventKind::Installation, Action::Deleted), revoke) // `EventMeta` declares no kind
@@ -977,9 +901,7 @@ where
     /// and is registered under those kinds:
     ///
     /// ```
-    /// use octoevents::{Action, DecodeError, Dispatcher, Envelope, EventKind, FromEnvelope};
-    /// # struct AppError;
-    /// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
+    /// use octoevents::{Action, BoxError, DecodeError, Dispatcher, Envelope, EventKind, FromEnvelope};
     ///
     /// #[derive(serde::Deserialize)]
     /// struct Sender { sender: Login }
@@ -992,17 +914,17 @@ where
     ///     }
     /// }
     ///
-    /// async fn forward(envelope: Envelope) -> Result<(), AppError> {
+    /// async fn forward(envelope: Envelope) -> Result<(), BoxError> {
     ///     println!("forward {} bytes", envelope.raw_payload.len());
     ///     Ok(())
     /// }
     ///
-    /// async fn metrics(sender: Sender) -> Result<(), AppError> {
+    /// async fn metrics(sender: Sender) -> Result<(), BoxError> {
     ///     println!("by {}", sender.sender.login);
     ///     Ok(())
     /// }
     ///
-    /// let dispatcher = Dispatcher::<AppError>::builder()
+    /// let dispatcher = Dispatcher::builder()
     ///     .on(EventKind::Push, forward)
     ///     .on([EventKind::Issues, EventKind::IssueComment], metrics)
     ///     .on([(EventKind::Issues, Action::Opened), (EventKind::PullRequest, Action::Closed)], metrics)
@@ -1015,20 +937,19 @@ where
     /// implements [`Handler`] for one input; a struct that implements it for
     /// several names the input: `on::<EventMeta, _, _>(matcher, auditor)`.
     ///
-    /// This is the one registration method that asks `E: From<DecodeError>`
-    /// of the application error, because it is the one whose handler has an
-    /// input decoded on its behalf and reported through `E` when the decode
-    /// fails. `always` and `fallback` decode nothing and ask nothing, so a
-    /// dispatcher of those two tiers alone builds over an error type without
-    /// the conversion; a route over one is refused here:
+    /// The handler's error is asked to be `Into<BoxError>`, as every
+    /// registration method asks; a decode failure is boxed the same way, as
+    /// the [`DecodeError`](crate::DecodeError) it is, so the handler's error type need not know
+    /// of decoding. An error type that is not an `Error` and converts into no
+    /// box is refused here, with rustc's report on the missing conversion:
     ///
     /// ```compile_fail,E0277
     /// use octoevents::{Dispatcher, Envelope, EventKind};
     ///
-    /// async fn forward(envelope: Envelope) -> Result<(), std::io::Error> { Ok(()) }
+    /// // `()` is neither an `Error` nor `Into<BoxError>`.
+    /// async fn forward(envelope: Envelope) -> Result<(), ()> { Ok(()) }
     ///
-    /// // `std::io::Error` is not `From<DecodeError>`.
-    /// let dispatcher = Dispatcher::<std::io::Error>::builder()
+    /// let dispatcher = Dispatcher::builder()
     ///     .on(EventKind::Push, forward)
     ///     .build();
     /// ```
@@ -1062,27 +983,21 @@ where
     /// ```
     ///
     /// ```compile_fail,E0277
-    /// use octoevents::{Dispatcher, Envelope};
-    /// # use octoevents::DecodeError;
-    /// # struct AppError;
-    /// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
+    /// use octoevents::{BoxError, Dispatcher, Envelope};
     ///
-    /// async fn forward(envelope: Envelope) -> Result<(), AppError> { Ok(()) }
+    /// async fn forward(envelope: Envelope) -> Result<(), BoxError> { Ok(()) }
     ///
-    /// let dispatcher = Dispatcher::<AppError>::builder()
+    /// let dispatcher = Dispatcher::builder()
     ///     .on("issues.opened", forward)
     ///     .build();
     /// ```
     ///
     /// ```compile_fail,E0277
-    /// use octoevents::{Action, Dispatcher, EventMeta};
-    /// # use octoevents::DecodeError;
-    /// # struct AppError;
-    /// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
+    /// use octoevents::{Action, BoxError, Dispatcher, EventMeta};
     ///
-    /// async fn revoke(meta: EventMeta) -> Result<(), AppError> { Ok(()) }
+    /// async fn revoke(meta: EventMeta) -> Result<(), BoxError> { Ok(()) }
     ///
-    /// let dispatcher = Dispatcher::<AppError>::builder()
+    /// let dispatcher = Dispatcher::builder()
     ///     .on(Action::Deleted, revoke)
     ///     .build();
     /// ```
@@ -1101,18 +1016,15 @@ where
     /// ```
     ///
     /// ```compile_fail,E0277
-    /// use octoevents::{Dispatcher, EventKind};
-    /// # use octoevents::DecodeError;
-    /// # struct AppError;
-    /// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
+    /// use octoevents::{BoxError, Dispatcher, EventKind};
     ///
     /// #[derive(serde::Deserialize)]
     /// struct Sender { sender: String }
     ///
-    /// let dispatcher = Dispatcher::<AppError>::builder()
+    /// let dispatcher = Dispatcher::builder()
     ///     .on(EventKind::Issues, |sender: Sender| async move {
     ///         println!("{}", sender.sender);
-    ///         Ok::<_, AppError>(())
+    ///         Ok::<_, BoxError>(())
     ///     })
     ///     .build();
     /// ```
@@ -1127,7 +1039,7 @@ where
     /// ```text
     /// error[E0593]: function is expected to take 1 argument, but it takes 2 arguments
     ///    |
-    ///    | async fn notify(meta: EventMeta, pr: PullRequestNumber) -> Result<(), AppError> {
+    ///    | async fn notify(meta: EventMeta, pr: PullRequestNumber) -> Result<(), BoxError> {
     ///    | ------------------------------------------------------------------------------- takes 2 arguments
     /// ...
     ///    |     .on(Action::Opened, notify)
@@ -1141,21 +1053,18 @@ where
     ///
     #[cfg_attr(feature = "derive", doc = "```compile_fail,E0593")]
     #[cfg_attr(not(feature = "derive"), doc = "```ignore")]
-    /// use octoevents::{Action, Dispatcher, EventKind, EventMeta};
-    /// # use octoevents::DecodeError;
-    /// # struct AppError;
-    /// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
+    /// use octoevents::{Action, BoxError, Dispatcher, EventKind, EventMeta};
     ///
     /// #[derive(serde::Deserialize, octoevents::Payload)]
     /// #[payload(EventKind::PullRequest)]
     /// struct PullRequestNumber { number: u64 }
     ///
-    /// async fn notify(meta: EventMeta, pr: PullRequestNumber) -> Result<(), AppError> {
+    /// async fn notify(meta: EventMeta, pr: PullRequestNumber) -> Result<(), BoxError> {
     ///     println!("{}: PR #{}", meta.delivery_id, pr.number);
     ///     Ok(())
     /// }
     ///
-    /// let dispatcher = Dispatcher::<AppError>::builder()
+    /// let dispatcher = Dispatcher::builder()
     ///     .on(Action::Opened, notify)
     ///     .build();
     /// ```
@@ -1165,8 +1074,8 @@ where
     where
         I: FromEnvelope + 'static,
         H: Handler<I> + MaybeSend + MaybeSync + 'static,
+        H::Error: Into<BoxError>,
         M: IntoMatcher<I>,
-        E: From<DecodeError> + From<H::Error>,
     {
         let route = Route::routed(handler);
         self.insert_each(matcher.into_matcher().into_slots(), &route);
@@ -1192,18 +1101,15 @@ where
     /// green in GitHub:
     ///
     /// ```
-    /// use octoevents::{Dispatcher, Envelope};
-    /// # use octoevents::DecodeError;
-    /// # struct AppError;
-    /// # impl From<DecodeError> for AppError { fn from(_: DecodeError) -> Self { Self } }
+    /// use octoevents::{BoxError, Dispatcher, Envelope};
     ///
-    /// async fn log_unrouted(envelope: Envelope) -> Result<(), AppError> {
+    /// async fn log_unrouted(envelope: Envelope) -> Result<(), BoxError> {
     ///     let meta = &envelope.meta;
     ///     println!("unrouted {} {} {:?}", meta.delivery_id, meta.kind, meta.action);
     ///     Ok(())
     /// }
     ///
-    /// let dispatcher = Dispatcher::<AppError>::builder().fallback(log_unrouted).build();
+    /// let dispatcher = Dispatcher::builder().fallback(log_unrouted).build();
     /// # let _ = dispatcher;
     /// ```
     ///
@@ -1216,18 +1122,18 @@ where
     /// kind. "Log it, then reject it" is the two handlers in that order:
     ///
     /// ```
-    /// use octoevents::{Dispatcher, Envelope, EventKind};
-    /// # use octoevents::DecodeError;
-    /// # #[derive(Debug)]
-    /// # enum AppError { Decode(DecodeError), Unhandled(EventKind) }
-    /// # impl From<DecodeError> for AppError { fn from(error: DecodeError) -> Self { Self::Decode(error) } }
-    /// # async fn log_unrouted(_: Envelope) -> Result<(), AppError> { Ok(()) }
+    /// use octoevents::{BoxError, Dispatcher, Envelope, EventKind};
+    /// # async fn log_unrouted(_: Envelope) -> Result<(), BoxError> { Ok(()) }
     ///
-    /// async fn reject(envelope: Envelope) -> Result<(), AppError> {
-    ///     Err(AppError::Unhandled(envelope.meta.kind))
+    /// #[derive(Debug, thiserror::Error)]
+    /// #[error("no handler for {0} events")]
+    /// struct Unhandled(EventKind);
+    ///
+    /// async fn reject(envelope: Envelope) -> Result<(), Unhandled> {
+    ///     Err(Unhandled(envelope.meta.kind))
     /// }
     ///
-    /// let dispatcher = Dispatcher::<AppError>::builder()
+    /// let dispatcher = Dispatcher::builder()
     ///     .fallback(log_unrouted)
     ///     .fallback(reject)
     ///     .build();
@@ -1238,7 +1144,7 @@ where
     pub fn fallback<H>(mut self, handler: H) -> Self
     where
         H: Handler<Envelope> + MaybeSend + MaybeSync + 'static,
-        E: From<H::Error>,
+        H::Error: Into<BoxError>,
     {
         self.routes.fallback.push(Route::over_envelope(handler));
         self
@@ -1246,7 +1152,7 @@ where
 
     /// Finishes the dispatcher.
     #[must_use]
-    pub fn build(self) -> Dispatcher<E> {
+    pub fn build(self) -> Dispatcher {
         Dispatcher {
             routes: Arc::new(self.routes),
         }
@@ -1254,13 +1160,13 @@ where
 
     /// Registers one handler under every slot; the route is shared, not
     /// duplicated.
-    fn insert_each(&mut self, slots: impl IntoIterator<Item = Slot>, route: &Route<E>) {
+    fn insert_each(&mut self, slots: impl IntoIterator<Item = Slot>, route: &Route) {
         for slot in slots {
             self.insert(slot, route.clone());
         }
     }
 
-    fn insert(&mut self, slot: Slot, route: Route<E>) {
+    fn insert(&mut self, slot: Slot, route: Route) {
         let routes = self.routes.by_kind.entry(slot.kind).or_default();
         let chain = match slot.action {
             Some(action) => routes.by_action.entry(action).or_default(),
@@ -1279,8 +1185,8 @@ where
 /// The two constructors take the handler itself, not an erased one, so the
 /// handler name is always that of the handler erased: neither can be
 /// recorded without the other.
-struct Route<E> {
-    handler: Arc<dyn ErasedHandler<E>>,
+struct Route {
+    handler: Arc<dyn ErasedHandler>,
     /// [`type_name`] of the handler before erasure: a static string, on
     /// `wasm32` as anywhere.
     handler_name: &'static str,
@@ -1289,10 +1195,7 @@ struct Route<E> {
     registration_site: &'static Location<'static>,
 }
 
-impl<E> Route<E>
-where
-    E: 'static,
-{
+impl Route {
     /// A routed handler, erased behind its input's decode: the route decodes
     /// `I` from the envelope when it runs, so a route that never matches
     /// never decodes, and a decode failure is this route's failure.
@@ -1303,9 +1206,9 @@ where
     #[track_caller]
     fn routed<I, H>(handler: H) -> Self
     where
-        E: From<DecodeError> + From<H::Error>,
         I: FromEnvelope + 'static,
         H: Handler<I> + MaybeSend + MaybeSync + 'static,
+        H::Error: Into<BoxError>,
     {
         Self::registered(
             Arc::new(Routed {
@@ -1323,8 +1226,8 @@ where
     #[track_caller]
     fn over_envelope<H>(handler: H) -> Self
     where
-        E: From<H::Error>,
         H: Handler<Envelope> + MaybeSend + MaybeSync + 'static,
+        H::Error: Into<BoxError>,
     {
         Self::registered(Arc::new(OverEnvelope { handler }), type_name::<H>())
     }
@@ -1333,21 +1236,17 @@ where
     /// `#[track_caller]` resolves to: the consumer's call to the registration
     /// method, through the constructor above and that method.
     #[track_caller]
-    fn registered(handler: Arc<dyn ErasedHandler<E>>, handler_name: &'static str) -> Self {
+    fn registered(handler: Arc<dyn ErasedHandler>, handler_name: &'static str) -> Self {
         Self {
             handler,
             handler_name,
             registration_site: Location::caller(),
         }
     }
-}
 
-// Outside the `E: 'static` block above: the run loop is generic over `E`
-// with no lifetime bound, and building a dispatch error needs none.
-impl<E> Route<E> {
     /// Wraps this route's failure with the tier it ran in, the delivery, and
     /// the handler name and registration site the route carries.
-    fn failed(&self, tier: Tier, envelope: &Envelope, source: E) -> DispatchError<E> {
+    fn failed(&self, tier: Tier, envelope: &Envelope, source: BoxError) -> DispatchError {
         let meta = &envelope.meta;
         DispatchError {
             tier,
@@ -1361,7 +1260,7 @@ impl<E> Route<E> {
     }
 }
 
-impl<E> Clone for Route<E> {
+impl Clone for Route {
     fn clone(&self) -> Self {
         Self {
             handler: Arc::clone(&self.handler),
@@ -1374,9 +1273,8 @@ impl<E> Clone for Route<E> {
 // The erased handler is never `Debug`; its name and where it was registered
 // are what an operator reading the route table wants, so a route prints as
 // `Route(app::revoke, src/main.rs:12:10, ..)`, the `..` standing for the
-// elided handler as in `WebhookReceiver`'s `Debug`. No bound on `E`: the
-// dispatcher is `Debug` for any error type, as it is `Clone` for any.
-impl<E> fmt::Debug for Route<E> {
+// elided handler as in `WebhookReceiver`'s `Debug`.
+impl fmt::Debug for Route {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_tuple("Route")
@@ -1387,13 +1285,13 @@ impl<E> fmt::Debug for Route<E> {
 }
 
 /// Every chain a dispatcher can run.
-struct Routes<E> {
-    always: Vec<Route<E>>,
-    by_kind: HashMap<EventKind, KindRoutes<E>>,
-    fallback: Vec<Route<E>>,
+struct Routes {
+    always: Vec<Route>,
+    by_kind: HashMap<EventKind, KindRoutes>,
+    fallback: Vec<Route>,
 }
 
-impl<E> Routes<E> {
+impl Routes {
     /// Looks one delivery up in the route table: the match it decides and the
     /// routed chains it selects, the action-specific chain before the
     /// kind-wide one.
@@ -1401,7 +1299,7 @@ impl<E> Routes<E> {
     /// This is the whole of matching: the tiers that run afterwards cannot
     /// change it. Routes are keyed by kind first so the lookup is entirely by
     /// reference: no `EventKind` or `Action` is cloned to build a key.
-    fn lookup(&self, meta: &EventMeta) -> (Match, impl Iterator<Item = &[Route<E>]>) {
+    fn lookup(&self, meta: &EventMeta) -> (Match, impl Iterator<Item = &[Route]>) {
         let kind_routes = self.by_kind.get(&meta.kind);
         let specific = kind_routes.and_then(|routes| {
             meta.action
@@ -1436,21 +1334,13 @@ impl<E> Routes<E> {
 }
 
 /// Every handler chain registered for one event kind.
-struct KindRoutes<E> {
-    any_action: Vec<Route<E>>,
-    by_action: HashMap<Action, Vec<Route<E>>>,
+#[derive(Default)]
+struct KindRoutes {
+    any_action: Vec<Route>,
+    by_action: HashMap<Action, Vec<Route>>,
 }
 
-impl<E> Default for KindRoutes<E> {
-    fn default() -> Self {
-        Self {
-            any_action: Vec::new(),
-            by_action: HashMap::new(),
-        }
-    }
-}
-
-impl<E> fmt::Debug for KindRoutes<E> {
+impl fmt::Debug for KindRoutes {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("KindRoutes")

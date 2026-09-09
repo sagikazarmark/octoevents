@@ -423,78 +423,92 @@ ship if demand appears.
 name, `payload`, and the deref would shadow a view field named `meta` or
 `payload` behind a type-safe but surprising resolution. Recorded on `Event`.
 
-## `Error`, not `Display`, to trace the error's text; a second method for the boxed shape
+## The dispatcher boxes every handler's error; no generic `E` (reversed)
 
-With the `tracing` feature a failed delivery is one ERROR event, and the
-error's text goes on it through `WebhookReceiverBuilder::trace_errors`, which
-asks `E: Error`. The spec that introduced the text (#29) named a `Display`
-bound. `Error` was chosen because the text alone is not the story: a
-`DispatchError`'s `Display` says where the delivery failed (the tier, the
-handler, the registration site) and why is its `source()`, the application
-error, which a `Display` bound cannot reach. The event records both, `error`
-as the text and `source` as an error value the subscriber renders with the
-chain beneath it, and a `Display`-bounded method would have recorded the
-where and lost the why for exactly the shape the front page teaches. The
-cost is that an error type that is only `Display` (a `String`, a `&str`) has
-no one-line path; a consumer with one writes an `on_error` observer that
-emits its own event, and the receiver's bound-free event still names the
-delivery.
+The dispatcher was `Dispatcher<E>` over one application error, with every
+registration asking `E: From<H::Error>` and `on` asking `E: From<DecodeError>`
+beside it, and the receiver's `on_error` observer received `&E` with no bound.
+It now boxes each handler's error where the handler is registered, as a
+`BoxError` (`Box<dyn Error + Send + Sync>` natively, `Box<dyn Error>` on
+`wasm32`), and `DispatchError` holds the box as its source. The registration
+methods and the receiver's `build` ask one thing of a handler's error,
+`Into<BoxError>`, which every `Error + Send + Sync + 'static` is natively and
+every `Error + 'static` on `wasm32`; `Dispatcher`, `DispatcherBuilder`,
+`DispatchError` and `Outcome` carry no type parameter.
 
-That shape, `Box<dyn Error + Send + Sync>`, is not an `Error` (std implements
-`Error` for `Box<E>` only for a sized `E`), so a `DispatchError` over it is
-not one either, and `trace_errors` refuses both. One method over a crate
-trait covering both an `E: Error` and the box was probed and is not
-expressible:
+The generic `E` was a premise the crate never recorded as a decision, and its
+one benefit, a typed observer, was measured before it was given up: across
+the thirteen `on_error` sites in the examples, the README, the rustdoc and
+the tests, none outside two crate-internal tests used the concrete type. Every
+production observer did `eprintln!("{error}")` and walked `source()`, which
+the box does as well; the two tests asserted which handler failed, which the
+dispatch error's own fields say. What the observer keeps is the receiver's
+handler's error as returned, so a plain handler's enum is still matched on
+without a downcast; behind a dispatcher the application error is the boxed
+source, and a policy that wants its type back downcasts it.
 
-```text
-error[E0119]: conflicting implementations of trait `TracedError` for type `Box<(dyn std::error::Error + Send + Sync + 'static)>`
-   |
- 7 | impl<E: Error + 'static> TracedError for E {
-   | ------------------------------------------ first implementation here
-...
-11 | impl TracedError for Box<dyn Error + Send + Sync> {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ conflicting implementation for `Box<(dyn std::error::Error + Send + Sync + 'static)>`
-   |
-   = note: upstream crates may add a new impl of trait `std::error::Error` for type `std::boxed::Box<(dyn std::error::Error + std::marker::Send + std::marker::Sync + 'static)>` in future versions
-```
+What the generic `E` cost, each entry a wart the box removes at once:
 
-The same note defeats every variant: an impl for `DispatchError<Box<dyn
-Error + Send + Sync>>` beside the blanket, a blanket over `Deref<Target:
-Error>` beside one over `Error` (they overlap for real on `Box<AppError>`),
-or a second `Error` impl for `DispatchError` over the box. The blanket over
-`Error` is what every `thiserror` enum needs, so the box gets its own method,
-`trace_boxed_errors`, over the sealed `BoxedError`: anything
-`AsRef<dyn Error + Send + Sync + 'static>` (`Box`, `Arc`, `anyhow::Error`,
-which the tests cover) and a `DispatchError` over one. `AsRef<dyn Error +
-Send + Sync>` rather than `Deref<Target = dyn Error + Send + Sync>` because
-it is the conversion `anyhow` and the std pointers both implement by that
-name and it says what is wanted, a view of the error, rather than how a
-pointer is followed; a generic `Deref<Target: Error + ?Sized>` was probed
-first and does not compile, since an unsized associated target cannot be
-coerced to the `dyn Error` the event's `source` value needs. Two fields
-rather than the whole error as one value, for every shape alike, because a
-subscriber's error value must be `Error + 'static` and a `DispatchError`
-over a box is no `Error`; a borrowed view that made it one would not be
-`'static`. A `Display`-bounded third method reopens if a run meets an error
-type that is only `Display`; `trace_boxed_errors` folds into `trace_errors`
-if std ever implements `Error` for the unsized box, the impl the E0119 note
-reserves.
+- `DispatchError<E>` was an `Error` only when `E` was, and `Box<dyn Error +
+  Send + Sync>` is not one (std implements `Error` for `Box<E>` only for a
+  sized `E`). So the front page's own dispatcher produced an error type that
+  was no `Error`: the README's error-handling section needed a second,
+  `ignore`d recipe reaching the `source` field, a `Dispatcher<BoxError>`
+  could not be a route of another (a `compile_fail` doctest recorded it and
+  taught a closure around it), and the receiver could not put the error on
+  its tracing event without a bound the handler's type might not meet.
+- The tracing event carried no error by default, because the receiver
+  placed no bound on `E`; the text was two opt-in builder methods,
+  `trace_errors` (asking `E: Error`) and `trace_boxed_errors` (asking a
+  sealed `BoxedError`, anything `AsRef<dyn Error + Send + Sync>` or a
+  `DispatchError` over one), two because rustc's coherence refused one trait
+  over both shapes: "upstream crates may add a new impl of trait
+  `std::error::Error` for type `Box<dyn Error + Send + Sync>`" (E0119),
+  and every variant probed met the same note. A `TracedError` trait with no
+  methods existed to give the refusal a message naming the other method, and
+  a trybuild harness held that message to its text. An operator picked a
+  method by knowing a coherence rule, and an ERROR event that named the
+  delivery and not the reason was the default.
+- Every handler in one dispatcher shared one error type, and `on` asked it
+  to convert from `DecodeError`, so every `thiserror` enum in the repository
+  carried a `Decode(#[from] DecodeError)` variant for the dispatcher's sake.
 
-The name `TracedError` was then taken for what does compile: a sealed trait
-with the one blanket impl over `E: Error` and no second, which `trace_errors`
-asks in place of `E: Error`. It admits exactly what the bare bound admitted,
-and exists for its `#[diagnostic::on_unimplemented]`: the comparative review
-(run 4) found that `.trace_errors()` on the front page's own
-`Dispatcher<Box<dyn Error + Send + Sync>>` was a ten-line rustc report about
-an unsized `dyn Error`, naming neither method. With the trait, and
-`#[diagnostic::do_not_recommend]` on its blanket so rustc does not name the
-impl in place of the message, the report is the crate's: "`DispatchError<Box<dyn
-Error + Send + Sync>>` is not an `Error`, so `trace_errors` cannot record
-it", with a note naming `trace_boxed_errors`. `Error` is its supertrait, so
-the receiver reads the error through `Error` as before, and the method's
-doctest holds the refusal as E0277. Recorded on `trace_errors` (the bound and
-the `Display`-only cost), `TracedError`, `trace_boxed_errors` and
-`BoxedError` (the shapes admitted, and the two fields).
+With the box: `DispatchError` is an `Error` unconditionally, so dispatchers
+nest and the README recipe is one; the event carries the error as one
+`error` value, unconditionally, and the subscriber renders the chain (the
+former `error` text and `source` value were a workaround for a non-`Error`
+`DispatchError`); handlers with different error types register on one
+dispatcher, as tower's services do, and no enum joins them; the
+`From<DecodeError>` bound, `trace_errors`, `trace_boxed_errors`,
+`TracedError`, `BoxedError` and the trybuild harness are gone.
+
+Shapes considered against it. Keeping `E` and tracing unconditionally through
+a `Display` bound on `build`, the one bound `DispatchError<BoxError>` met,
+would have recorded the where and lost the why, the chain, for exactly the
+shape the front page teaches, and kept the nesting and README warts. Boxing as
+`Box<dyn Error + Send + Sync>` on every target would have refused
+`worker::Error`, which holds a `JsValue` and is `!Send`, so the Worker example
+could not have returned it; the alias splits on `target_arch` beside
+`BoxFuture` in `runtime`, the crate's one place for such splits, and a
+consumer's `Result<(), octoevents::BoxError>` compiles on both. Boxing as
+`Box<dyn Error>` on every target would have made `DispatchError` `!Send`
+natively, which a handler holding one across an await in a multi-threaded
+runtime would have met. The bound sits at the registration sites and not on
+`Handler::Error` itself, so a closure returning `Result<(), ()>` is refused
+at the call with rustc's report on the missing conversion, and not by the
+handler trait's `on_unimplemented` claiming the closure is not a handler,
+which it is. `Outcome` and `DispatchError` lose `Clone` and `PartialEq`,
+which the box has not; a policy reads `outcome.matched` and `outcome.result`
+and never compared whole outcomes, and error types are conventionally
+neither.
+
+The one field name in two forms, `error`, stays: the receive span records a
+refusal's text alone, its source withheld for the reason the next entry
+gives, and the event records the handler's error as a value, so a subscriber
+that walks sources renders `error.sources` beside the text. To every
+subscriber `error` is the text in both places. Recorded on `BoxError`,
+`DispatchError`, `Dispatcher`, `on_error`, `build` and in the `Tracing`
+section of the crate front page.
 
 ## No `trace_error` observer
 
@@ -503,15 +517,15 @@ second ERROR event, `handler error`, beside the receiver's bound-free
 `handler failed`. A failed delivery was two lines that read alike, and the
 receiver could not make them one: its own event needs no bound and the
 observer it holds is a type-erased `Fn`, so it cannot tell that the observer
-about to run will say everything it is about to say. Making the text a
-receiver setting instead (`trace_errors`, `trace_boxed_errors`) lets the
-receiver emit one event that carries it, and leaves `on_error` for what
-tracing does not do: a metric, a dead letter, a line on stderr. The two
-compose, and the observer changes nothing about the event. Suppressing the
-receiver's event whenever any observer is registered was declined: a
-metrics-only observer would have made failed deliveries invisible at ERROR,
-the silence #18 set out to end. Recorded on `on_error` and in the `Tracing`
-section of the crate front page.
+about to run will say everything it is about to say. Making the text the
+receiver's, first as a setting and now unconditionally as the previous entry
+records, lets the receiver emit one event that carries it, and leaves
+`on_error` for what tracing does not do: a metric, a dead letter, a line on
+stderr. The two compose, and the observer changes nothing about the event.
+Suppressing the receiver's event whenever any observer is registered was
+declined: a metrics-only observer would have made failed deliveries invisible
+at ERROR, the silence #18 set out to end. Recorded on `on_error` and in the
+`Tracing` section of the crate front page.
 
 ## The transport's error text stays off the receive span
 
@@ -522,13 +536,14 @@ told apart from `bad_request` (#70). Its `source()` is not recorded. Every
 the span unconditionally; the one source, `BodyError` beneath `BodyRead`, is
 the transport's error rendered as text, which is the transport's to write and
 could quote the request, signature included. Recording it would put text the
-crate does not control on a span with no opt-in, where a handler's error text
-waits for `trace_errors`. A setting for it (`trace_body_errors`, say) was not
-added: the fixed text already says which refusal it was, and a transport's own
-logging says why its stream broke. The text stays on the error value, where a
-transport built on `Envelope::from_signed` that holds it decides. Recorded on
-`record_refusal` in `receiver` and in the `Tracing` section of the crate front
-page.
+crate does not control on a span with no opt-in. A handler's error text is
+the application's own and goes on the failed-delivery event with its chain;
+the refusal's source is the transport's and does not. A setting for it
+(`trace_body_errors`, say) was not added: the fixed text already says which
+refusal it was, and a transport's own logging says why its stream broke. The
+text stays on the error value, where a transport built on
+`Envelope::from_signed` that holds it decides. Recorded on `record_refusal`
+in `receiver` and in the `Tracing` section of the crate front page.
 
 ## The derive is suggested for `EventMeta`: a note cannot be filtered on `Self`
 
@@ -679,33 +694,33 @@ under `I: Payload` and reads `I::KIND`, as the shipped relative shapes do,
 and both compile beside the shipped impls (probed). Recorded on `on`,
 `IntoMatcher` and `AnyAction`.
 
-## `From`, not a `map_err` adapter, to convert a route's errors
+## `Into<BoxError>`, not a `map_err` adapter, to convert a route's errors
 
-A routed handler's error and the decode's `DecodeError` both become the
-dispatcher's `E` through `From`: `on` asks `E: From<H::Error> +
-From<DecodeError>`, `always` and `fallback` ask `E: From<H::Error>` alone.
-The dispatcher survey ranked the other shape, tower's, as portable: a
-`map_err`-style adapter at registration, a closure from the handler's error
-to `E` handed in beside the handler, instead of a bound on `E`
-([`rust-dispatch-designs.md`](../research/rust-dispatch-designs.md), the
-tower section's portable ideas). Declined. `From` is what `?` converts
-through and what `thiserror`'s `#[from]` exists to derive, so the conversion
-a handler's body already uses to return its error is the one the dispatcher
-uses to absorb it, and a handler written against `E` itself converts
-through nothing at all. The adapter would be a second conversion mechanism
-for the same error, spelled per registration, and the survey's own reason
-for it, that tower services are combinators with no shared error type, does
-not hold for a dispatcher whose one `E` is the point.
+A handler's error becomes the dispatcher's boxed error through `Into`: every
+registration method asks `H::Error: Into<BoxError>`, and the decode's
+`DecodeError` converts the same way. The dispatcher survey ranked the other
+shape, tower's, as portable: a `map_err`-style adapter at registration, a
+closure from the handler's error to the dispatcher's handed in beside the
+handler ([`rust-dispatch-designs.md`](../research/rust-dispatch-designs.md),
+the tower section's portable ideas). Declined, twice. When the dispatcher had
+one `E`, `From` was what `?` converts through and what `thiserror`'s
+`#[from]` derives, so the conversion a handler's body already used was the
+one the dispatcher used to absorb it. Now that the dispatcher boxes, the
+conversion is std's blanket `From<E: Error + Send + Sync + 'static> for
+Box<dyn Error + Send + Sync>` (`From<E: Error + 'static> for Box<dyn Error>`
+on `wasm32`), and an adapter would be a second mechanism for a conversion
+every such error already has; the survey's reason for tower's shape, that its services
+share no error type, is answered by the box rather than by a closure per
+registration.
 
-What the bound costs was measured: the platform persona's application error
-needed one `#[from] DecodeError` variant (run 3), the quickstart's
-`Box<dyn Error + Send + Sync>` needs nothing, and `anyhow::Error` and
-`String` handlers register on it with no glue (the comparative review's
-probe). An adapter would reopen for a handler whose error `E` cannot
-convert from and the consumer cannot touch, a foreign type with no `From`
-either side may write; a closure over the handler does that today.
-Recorded on `Dispatcher` (the paragraph on `From` at registration) and `on`
-(which asks `From<DecodeError>` and why `always` does not).
+What the bound admits was measured: the quickstart's `BoxError` handler,
+`anyhow::Error`, `String`, `&str`, `std::io::Error` and every `thiserror`
+type register with no glue (the tests under `dispatch::tests::errors` and
+`tests/tracing_failed_delivery.rs`). An adapter would reopen for a handler
+whose error is neither an `Error` nor `Into<BoxError>` and the consumer
+cannot touch, a foreign type with no `Error` impl; a closure over the handler
+does that today. Recorded on `Dispatcher` (the paragraph on the bound at
+registration) and `on` (the refusal of `()`).
 
 ## `fallback` stays, with one job
 

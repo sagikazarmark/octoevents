@@ -22,13 +22,11 @@ A receiver that thanks the author of every opened issue:
 
 ```rust,no_run
 use axum::{Router, routing::post_service};
-use octoevents::{Action, Dispatcher, Envelope, EventKind, Verifier, WebhookReceiverBuilder, WebhookSecret};
-
-// The error every handler returns. Any error converts into it with `?`.
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
+use octoevents::{Action, BoxError, Dispatcher, Envelope, EventKind, Verifier, WebhookReceiverBuilder, WebhookSecret};
 
 /// Runs for `issues.opened`. The envelope is the verified unit of receipt: its
 /// meta (delivery ID, kind, action, repository, sender, ...) and the raw payload.
+/// `BoxError` is the crate's erased error; any `Error + Send + Sync + 'static` converts into it with `?`.
 async fn thank(envelope: Envelope) -> Result<(), BoxError> {
     let sender = envelope.meta.sender.map(|s| s.login).unwrap_or_default();
     println!("Thank you for your contribution, @{sender}! :)");
@@ -40,7 +38,7 @@ async fn main() -> Result<(), BoxError> {
     let secret = std::env::var("GITHUB_WEBHOOK_SECRET")?;
 
     // Routes each verified envelope by kind and action.
-    let dispatcher = Dispatcher::<BoxError>::builder()
+    let dispatcher = Dispatcher::builder()
         .on((EventKind::Issues, Action::Opened), thank)
         .build();
 
@@ -70,8 +68,9 @@ tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
 ```
 
 `serde` is for the payload views under [Handlers](#handlers) and `thiserror`
-for the error enum under [Error handling](#error-handling); the quickstart
-itself reads the envelope's meta, returns a boxed error, and needs neither.
+for a handler's own error type under [Error handling](#error-handling); the
+quickstart itself reads the envelope's meta, returns the crate's `BoxError`,
+and needs neither.
 
 Every request goes through three steps:
 
@@ -90,11 +89,11 @@ Every request goes through three steps:
 | 400 | The signature is malformed, a header is missing, the content type is not JSON, or the body could not be read |
 | 413 | The body is over the limit (25 MiB by default) |
 
-A 500 is a bare status, and out of the box nothing else says a handler
-failed: an observer registered with `on_error` is where the error reaches
-your code, as [Error handling](#error-handling) shows, and with the
-`tracing` feature the receiver also emits one event at ERROR per failed
-delivery, as [Tracing](#tracing) describes.
+A 500 is a bare status: with the `tracing` feature the receiver emits one
+event at ERROR per failed delivery, error and cause chain included, as
+[Tracing](#tracing) describes, and an observer registered with `on_error` is
+where the error reaches your code, as [Error handling](#error-handling)
+shows.
 
 `thank` took the whole envelope; a handler can take the decoded payload
 instead, and a dispatcher can run several handlers in tiers. The next
@@ -167,9 +166,7 @@ It fails only on the fields it names, so a field GitHub adds elsewhere in the
 document changes nothing.
 
 ```rust
-use octoevents::{Action, Dispatcher, Envelope, Event, EventKind, EventMeta, Payload};
-
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
+use octoevents::{Action, BoxError, Dispatcher, Envelope, Event, EventKind, EventMeta, Payload};
 
 // A view over an `issues` payload: only what the handlers read, and the kind
 // it decodes from.
@@ -210,7 +207,7 @@ async fn notify(Event { meta, payload }: Event<IssueOpened>) -> Result<(), BoxEr
     Ok(())
 }
 
-let dispatcher = Dispatcher::<BoxError>::builder()
+let dispatcher = Dispatcher::builder()
     .always(audit)                                          // every delivery
     .on((EventKind::Installation, Action::Deleted), revoke) // kind and action spelled here
     .on(Action::Opened, label)                              // kind from `IssueOpened`
@@ -224,13 +221,11 @@ Meta and payload together is one input, `Event<P>`, not two parameters.
 
 A handler with dependencies is a struct implementing `Handler<I>`; the
 dependencies are its fields, borrowed through `&self` on every delivery. The
-struct keeps its own error type, and the dispatcher converts it into the
-application error through `From`:
+struct keeps its own error type, and the dispatcher boxes it where the
+struct is registered:
 
 ```rust
 use octoevents::{AnyAction, Dispatcher, Event, EventKind, Handler, Payload};
-
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 #[derive(serde::Deserialize, Payload)]
 #[payload(EventKind::Issues)]
@@ -251,7 +246,7 @@ impl Handler<Event<IssueOpened>> for Labeler {
     }
 }
 
-let dispatcher = Dispatcher::<BoxError>::builder()
+let dispatcher = Dispatcher::builder()
     .on(AnyAction, Labeler { label: "triage".into() })
     .build();
 ```
@@ -311,9 +306,7 @@ actions alone (an `Action`, an array of them, or `AnyAction` for every
 action) and the kind comes from the type.
 
 ```rust
-use octoevents::{Action, AnyAction, Dispatcher, Envelope, EventKind, EventMeta, Payload};
-
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
+use octoevents::{Action, AnyAction, BoxError, Dispatcher, Envelope, EventKind, EventMeta, Payload};
 
 #[derive(serde::Deserialize, Payload)]
 #[payload(EventKind::Issues)]
@@ -345,7 +338,7 @@ async fn reject(envelope: Envelope) -> Result<(), BoxError> {
     Err(format!("unhandled event: {}", envelope.meta.kind).into())
 }
 
-let dispatcher = Dispatcher::<BoxError>::builder()
+let dispatcher = Dispatcher::builder()
     // Always: first, for every delivery, bytes included.
     .always(audit)
     // Routes with the kind taken from the payload type...
@@ -411,33 +404,30 @@ is for a wrapper to read.
 
 ## Error handling
 
-The dispatcher is `Dispatcher<E>` over one application error `E`. Two
-conversions are required: `E: From<H::Error>` for every registered handler,
-and `E: From<DecodeError>` for every handler registered with `on`, because
-the dispatcher decodes a routed handler's input on its behalf and reports a
-payload that does not fit through `E` (`always` and `fallback` decode
-nothing and ask nothing of `E`). `Box<dyn Error + Send + Sync>` satisfies
-both, which is why the quickstart needed no error type of its own. The named
-alternative is an enum:
+Every handler keeps the error type it has, and every registration asks one
+thing of it: that it converts into `BoxError`, the crate's erased error
+(`Box<dyn Error + Send + Sync>` natively, `Box<dyn Error>` on `wasm32`).
+Every `Error + Send + Sync + 'static` type does, through std's blanket
+`From`, and every `Error + 'static` on `wasm32`; so do `BoxError` itself,
+`anyhow::Error`, `String` and `&str`. The quickstart's handlers return
+`BoxError` and need no error type of their own. The dispatcher boxes the
+error where the handler is registered, so handlers with different error types
+share one dispatcher and no enum joins them. A payload that does not fit a
+routed handler's view is boxed the same way, as the `DecodeError` it is.
+
+A failure is a `DispatchError`: the boxed error wrapped with the tier, the
+delivery's ID, kind and action, the failing handler's name, and the source
+location of the registration that put it there. Its text says *where*; its
+source chain says *why*:
 
 ```rust
 use std::error::Error as _;
 
-use octoevents::{DecodeError, DispatchError, Dispatcher, EventMeta, Verifier, WebhookReceiverBuilder, WebhookSecret};
-
-#[derive(Debug, thiserror::Error)]
-enum AppError {
-    // What the dispatcher reports for a payload that does not fit a view.
-    #[error(transparent)]
-    Decode(#[from] DecodeError),
-    // What the handlers' own dependencies fail with.
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-}
+use octoevents::{DispatchError, Dispatcher, EventMeta, Verifier, WebhookReceiverBuilder, WebhookSecret};
 
 /// Runs when a handler failed, before the 500 is answered: where, then why,
 /// one cause per line.
-fn report(_: &EventMeta, error: &DispatchError<AppError>) {
+fn report(_: &EventMeta, error: &DispatchError) {
     eprintln!("{error}");
     let mut cause = error.source();
     while let Some(error) = cause {
@@ -446,18 +436,14 @@ fn report(_: &EventMeta, error: &DispatchError<AppError>) {
     }
 }
 
-let dispatcher = Dispatcher::<AppError>::builder().build();
+let dispatcher = Dispatcher::builder().build();
 
 let webhook = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("development-secret")))
     .on_error(report)
     .build(dispatcher);
 ```
 
-A failure is a `DispatchError`: the handler's error wrapped with the tier, the
-delivery's ID, kind and action, the failing handler's name, and the source
-location of the registration that put it there. Its text says *where*; its
-source says *why*. For a payload without the `title` a view names, `report`
-prints:
+For a payload without the `title` a view names, `report` prints:
 
 ```text
 delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (issues.opened) failed in the route tier at the handler `app::label` registered at src/main.rs:60:10
@@ -466,26 +452,48 @@ delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (issues.opened) failed in the rout
 ```
 
 The response stays a bare 500 either way: it is GitHub's delivery record, not
-a log. The `on_error` observer is synchronous, places no bound on the error
-type, and runs whenever the receiver's handler fails: with a dispatcher, that
-includes a payload that could not be decoded for a routed handler, as above.
-It never runs for a refused request, which is a status code, or for a
-short-circuited `ping`, which reaches no handler.
+a log. The `on_error` observer is synchronous and receives the receiver's
+handler's error as that handler returned it, so with a dispatcher it is the
+`DispatchError` above, and with a plain handler whose error is your own enum
+it is that enum, matched on without a downcast. It runs whenever the
+receiver's handler fails: with a dispatcher, that includes a payload that
+could not be decoded for a routed handler, as above. It never runs for a
+refused request, which is a status code, or for a short-circuited `ping`,
+which reaches no handler.
 
-**Boxed errors.** `Box<dyn Error + Send + Sync>` is not itself an `Error`, so
-neither is `DispatchError` over it, and there is no `source()` to call on what
-the observer receives. The handler's error is the `source` field, and the
-chain continues from there:
+**Your own error type.** A handler with dependencies usually has one, and
+`thiserror` derives it; the dispatcher asks nothing more of it than `Error +
+Send + Sync + 'static` (`Error + 'static` on `wasm32`).
+Behind a `DispatchError` it is boxed, and a policy that wants it back
+downcasts the source:
 
-```rust,ignore
-.on_error(|_, error: &DispatchError<BoxError>| {
-    eprintln!("{error}: {}", error.source);
-    let mut cause = error.source.source();
-    while let Some(error) = cause {
-        eprintln!("  caused by: {error}");
-        cause = error.source();
-    }
-})
+```rust
+use octoevents::{Action, DecodeError, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, Verifier, WebhookReceiverBuilder, WebhookSecret};
+
+#[derive(Debug, thiserror::Error)]
+enum LabelError {
+    #[error("the GitHub API is unavailable")]
+    Api,
+}
+
+async fn label(envelope: Envelope) -> Result<(), LabelError> {
+    let _ = envelope;
+    Err(LabelError::Api)
+}
+
+let dispatcher = Dispatcher::builder()
+    .on((EventKind::Issues, Action::Opened), label)
+    .build();
+
+let webhook = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("development-secret")))
+    .on_error(|_: &EventMeta, error: &DispatchError| {
+        if let Some(LabelError::Api) = error.source.downcast_ref::<LabelError>() {
+            // page the on-call
+        } else if error.source.is::<DecodeError>() {
+            // a view GitHub's payload no longer fits: a deploy, not a page
+        }
+    })
+    .build(dispatcher);
 ```
 
 ## Testing without GitHub
@@ -502,7 +510,7 @@ use octoevents::Match;
 
 #[tokio::test]
 async fn thanks_for_an_opened_issue() {
-    let dispatcher = Dispatcher::<BoxError>::builder()
+    let dispatcher = Dispatcher::builder()
         .on((EventKind::Issues, Action::Opened), thank)
         .build();
 
@@ -536,7 +544,7 @@ use octoevents::header;
 
 #[tokio::test]
 async fn accepts_a_signed_delivery() {
-    let dispatcher = Dispatcher::<BoxError>::builder()
+    let dispatcher = Dispatcher::builder()
         .on((EventKind::Issues, Action::Opened), thank)
         .build();
     let verifier = Verifier::new(WebhookSecret::new("test-secret"));
@@ -577,9 +585,7 @@ and mounts with `post_service`, as the quickstart does.
 use axum::{Router, extract::Request, routing::post};
 use octoevents::{Dispatcher, Verifier, WebhookReceiverBuilder, WebhookSecret};
 
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
-
-let dispatcher = Dispatcher::<BoxError>::builder().build();
+let dispatcher = Dispatcher::builder().build();
 let webhook = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("development-secret")))
     .build(dispatcher);
 
@@ -606,9 +612,7 @@ hand-parsing a raw invocation event collects its `(name, value)` pairs into a
 use http::{HeaderMap, StatusCode};
 use octoevents::{Bytes, Dispatcher, Verifier, WebhookReceiverBuilder, WebhookSecret};
 
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
-
-let dispatcher = Dispatcher::<BoxError>::builder().build();
+let dispatcher = Dispatcher::builder().build();
 let webhook = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("development-secret")))
     .build(dispatcher);
 
@@ -634,13 +638,11 @@ With the `tracing` feature, a delivery runs in three spans:
 `octoevents.receive` (INFO) around the receiver, `octoevents.verify` (DEBUG)
 around the signature check, and `octoevents.dispatch` (INFO) around the
 dispatcher, each recording an `outcome` on the way out. A failed delivery
-emits one event at ERROR, `handler failed`, naming the delivery.
-
-By default that event carries no text of the error, since the receiver places
-no bound on the error type. `.trace_errors()` on the receiver builder puts an
-`Error`'s text and source chain on it; `.trace_boxed_errors()` does the same
-for a boxed error, or a `DispatchError` over one. Nothing secret-derived is
-recorded anywhere. The full contract, span by span and field by field, is
+emits one event at ERROR, `handler failed`, naming the delivery and carrying
+the handler's error as `error`, an error value whose source chain the
+subscriber renders (the `fmt` subscriber prints `error=<where>
+error.sources=[<why>, ..]`). Nothing secret-derived is recorded anywhere. The
+full contract, span by span and field by field, is
 [on the crate's front page](https://docs.rs/octoevents/latest/octoevents/#tracing).
 
 ## Security
@@ -677,8 +679,8 @@ recorded anywhere. The full contract, span by span and field by field, is
   verified one is answered 204 before any handler runs; `.handle_ping(true)`
   passes it through instead. An unsigned one is 401 either way.
 - **Nothing leaks.** The response is a bare status; the error's text reaches
-  only the observer and, if asked, the tracing event. No span records the
-  secret, the signature header, or a computed MAC.
+  only the observer and the tracing event. No span records the secret, the
+  signature header, or a computed MAC.
 
 ## Migrating from Probot
 
@@ -691,7 +693,7 @@ matching handler and aggregates.
 | `app.on('issues.opened', h)` | `on((EventKind::Issues, Action::Opened), h)`, or `on(Action::Opened, h)` with the kind taken from `h`'s payload type. There is no string route form |
 | `app.on('issues', h)` | `on(EventKind::Issues, h)`, or `on(AnyAction, h)` |
 | `app.onAny(h)` | `always(h)`: first, for every delivery, over the envelope; its error fails the delivery. Sees `ping` only with `handle_ping(true)` |
-| `app.onError(h)` | `on_error(h)` on the receiver builder, called with the meta and the receiver's handler's error. With a dispatcher as that handler, the error is a `DispatchError`: `{error}` says where (tier, handler, registration site), `error.source` says why. Unlike `onError`, it never sees a refused request: a bad signature is a 401, not an error |
+| `app.onError(h)` | `on_error(h)` on the receiver builder, called with the meta and the receiver's handler's error. With a dispatcher as that handler, the error is a `DispatchError`: `{error}` says where (tier, handler, registration site), `error.source()` says why. Unlike `onError`, it never sees a refused request: a bad signature is a 401, not an error |
 | `app.receive(event)` | `dispatcher.dispatch(envelope)` with an envelope from `Envelope::new`; see [Testing without GitHub](#testing-without-github) |
 | `context.payload` | The handler's input: a serde view of your own (`#[derive(Payload)]`), or octocrab's structs with the `octocrab` feature |
 | `context.id`, `context.name` | `meta.delivery_id` and `meta.kind` on the `EventMeta`; a handler gets it beside the payload as `Event<P>` |
@@ -707,7 +709,7 @@ matching handler and aggregates.
 | `derive` | yes | `#[derive(Payload)]`, declaring a serde view's kind with `#[payload(EventKind::..)]`. Without it the same impl is three lines by hand |
 | `tower` | no | `tower_service::Service` for `WebhookReceiver`, so it mounts with `post_service` |
 | `octocrab` | no | `FromEnvelope` for octocrab's `WebhookEvent` and `Payload` for its per-kind structs. Makes octocrab's pre-1.0 types part of this crate's public API |
-| `tracing` | no | The spans and the failed-delivery event under [Tracing](#tracing), and `trace_errors` / `trace_boxed_errors` on the receiver builder |
+| `tracing` | no | The spans and the failed-delivery event under [Tracing](#tracing) |
 
 The core (envelope, verification, the handler trait and its inputs, the
 dispatcher, the receiver over headers and bytes) depends on none of them and

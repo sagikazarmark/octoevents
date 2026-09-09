@@ -1,20 +1,15 @@
-//! Span-field recording behind the `tracing` feature, and the two bounds the
-//! receiver's `trace_errors` and `trace_boxed_errors` ask.
+//! Span-field recording behind the `tracing` feature.
 //!
 //! The contract an operator relies on (the three spans, their levels and
 //! fields, the `outcome` vocabularies, the ERROR event) is documented once,
 //! in the `# Tracing` section of the crate front page; this module implements
 //! the part every span shares and explains only the choices the
 //! implementation makes. What only the receiver emits, the failed-delivery
-//! event, the setting that decides which fields of the error it carries, and
-//! the `error` a receive span records for a refusal, lives with the receiver
-//! in `receiver`.
+//! event and the `error` a receive span records for a refusal, lives with the
+//! receiver in `receiver`.
 //!
 //! The recording functions exist under every feature set, as no-ops without
-//! `tracing`, so their call sites carry no `cfg`. The two bounds,
-//! [`TracedError`] and [`BoxedError`], are the receiver's alone and exist
-//! with `tracing`, as the settings that ask them do; `boxed_error` says why
-//! they sit here rather than with the receiver.
+//! `tracing`, so their call sites carry no `cfg`.
 //!
 //! The spans this crate opens (`octoevents.verify`, `octoevents.receive`,
 //! `octoevents.dispatch`) declare their late-bound fields empty and fill them
@@ -28,24 +23,18 @@
 //! dispatch spans (the header values on one, the envelope's on the other),
 //! and `outcome` is a `&'static str` label on all three, with the receive
 //! span's HTTP code in its own `status` field. A `Display` value goes through
-//! [`record_display`] for the same reason, and the `error` the receive span
-//! records for a refusal takes the form the failed-delivery event fixed for
-//! that name.
+//! [`record_display`] for the same reason. `error` is the one name recorded
+//! in two forms, and to every subscriber it is the error's text in both: the
+//! receive span records a refusal's text alone, its source deliberately
+//! withheld (`receiver::record_refusal` says why), and the failed-delivery
+//! event records the handler's error as an error value, so a subscriber that
+//! walks sources renders the chain beneath it as `error.sources`, a field of
+//! its own beside the text.
 //!
 //! Nothing secret-derived may pass through here: signature header values,
 //! computed MACs, and secrets are never recorded. `tests/tracing_hygiene.rs`
 //! holds that invariant; `tests/tracing_outcome.rs` holds the one above, and
 //! `tests/tracing_failed_delivery.rs` the ERROR event's.
-
-#[cfg(feature = "tracing")]
-mod boxed_error;
-#[cfg(feature = "tracing")]
-mod traced_error;
-
-#[cfg(feature = "tracing")]
-pub use boxed_error::BoxedError;
-#[cfg(feature = "tracing")]
-pub use traced_error::TracedError;
 
 /// Records `value` into the named field of the current span.
 #[cfg(feature = "tracing")]

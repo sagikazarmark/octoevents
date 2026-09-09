@@ -474,9 +474,10 @@ impl BodyError {
 ///
 /// The one error type of every decode path: [`Envelope::decode`] and every
 /// [`FromEnvelope`](crate::FromEnvelope) impl return it, and the dispatcher
-/// reports it for a handler whose input could not be decoded. A single
-/// `From<DecodeError>` impl is therefore the only conversion of a decode
-/// failure an application error needs, whichever input decoded.
+/// reports it, boxed as the source of its
+/// [`DispatchError`](crate::DispatchError), for a handler whose input could
+/// not be decoded; `downcast_ref::<DecodeError>()` on that source is how a
+/// policy tells a decode failure from the handler's own.
 ///
 /// Three variants, each saying why: [`KindMismatch`](Self::KindMismatch),
 /// when a [`Payload`](crate::Payload) type's kind disagrees with the

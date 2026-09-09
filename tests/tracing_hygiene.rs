@@ -5,7 +5,7 @@
 //! header values, computed MACs and secrets are not. The `on_error` observer
 //! is under the same rule: it sees the event meta and the handler's error,
 //! nothing the receiver derived from the secret; so is the ERROR event a
-//! failed delivery emits, with or without the error `trace_errors` puts on it.
+//! failed delivery emits, the error on it included.
 //!
 //! The proof walks every field of every span and event the recording layer
 //! in `common` saw, down to TRACE so the verify span, the one nearest the
@@ -20,6 +20,7 @@
 mod common;
 
 use std::{
+    convert::Infallible,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
@@ -47,7 +48,8 @@ fn verifier() -> Verifier {
 fn spans_record_routing_metadata_but_never_the_signature_or_secret() {
     let (signature, request) = signed_request();
 
-    let receiver = WebhookReceiverBuilder::new(verifier()).build(|_| async { Ok::<_, ()>(()) });
+    let receiver =
+        WebhookReceiverBuilder::new(verifier()).build(|_| async { Ok::<_, Infallible>(()) });
 
     let (recording, response) = common::traced(receiver.receive(request));
     assert_eq!(response.status(), 204);
@@ -107,16 +109,18 @@ struct Database;
 fn the_event_with_the_error_on_it_carries_nothing_secret_derived() {
     let (signature, request) = signed_request();
 
-    let receiver = WebhookReceiverBuilder::new(verifier())
-        .trace_errors()
-        .build(|_| async { Err::<(), _>(Database) });
+    let receiver =
+        WebhookReceiverBuilder::new(verifier()).build(|_| async { Err::<(), _>(Database) });
 
     let (recording, response) = common::traced(receiver.receive(request));
     assert_eq!(response.status(), 500);
 
     let fields = &recording.event_at(Level::ERROR).fields;
     assert_eq!(fields.str("delivery_id"), Some("d34db33f-delivery"));
-    assert_eq!(fields.debug("error"), Some("database is down"));
+    assert_eq!(
+        fields.error("error").map(|error| error.text.as_str()),
+        Some("database is down")
+    );
     assert_no_field_secret_derived(&recording, &signature);
 }
 
@@ -127,7 +131,8 @@ fn a_refusal_records_its_error_on_the_receive_span_but_nothing_secret_derived() 
     // must not carry the MAC the receiver computed or the one the request
     // carried, and a malformed header, whose text names the header and must
     // not carry its value.
-    let receiver = WebhookReceiverBuilder::new(verifier()).build(|_| async { Ok::<_, ()>(()) });
+    let receiver =
+        WebhookReceiverBuilder::new(verifier()).build(|_| async { Ok::<_, Infallible>(()) });
     let (signature, _) = signed_request();
 
     let another = Verifier::new(WebhookSecret::new("another secret"))
@@ -159,7 +164,8 @@ fn a_body_the_transport_cannot_read_records_the_refusal_but_not_the_transports_t
     // refusal goes on the span as the crate's own fixed wording; what the
     // transport said stays on the `ReceiveError` value and reaches no span.
     let (signature, _) = signed_request();
-    let receiver = WebhookReceiverBuilder::new(verifier()).build(|_| async { Ok::<_, ()>(()) });
+    let receiver =
+        WebhookReceiverBuilder::new(verifier()).build(|_| async { Ok::<_, Infallible>(()) });
     let body = FailingBody(format!(
         "stream reset while reading a request signed {signature}"
     ));
