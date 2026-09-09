@@ -20,8 +20,8 @@ use std::{error::Error, future::Future, pin::Pin};
 /// and axum name `BoxError`; `Box<dyn Error>` on `wasm32`, where a Worker's
 /// error holds a `JsValue` and is neither `Send` nor `Sync`. A handler
 /// returning `Result<(), BoxError>` needs no error enum: `?` converts any
-/// `Error + Send + Sync + 'static` into it through std's blanket `From`, as
-/// it does a `String`, a `&str` and an `anyhow::Error`. A handler with an
+/// `Error + Send + Sync + 'static` into it through std's blanket `From`.
+/// A `String`, a `&str` and an `anyhow::Error` also convert through separate implementations.
 /// error type of its own keeps it, and the dispatcher and the receiver ask
 /// `Into<BoxError>` of it where it is registered, which every `Error + Send +
 /// Sync + 'static` type is, and on `wasm32` every `Error + 'static`; an
