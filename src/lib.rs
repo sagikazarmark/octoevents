@@ -19,7 +19,7 @@
 //! /// meta (delivery ID, kind, action, repository, sender, ...) and the raw
 //! /// payload bytes.
 //! async fn thank(envelope: Envelope) -> Result<(), BoxError> {
-//!     let sender = envelope.meta.sender.unwrap_or_default();
+//!     let sender = envelope.meta.sender.map(|s| s.login).unwrap_or_default();
 //!     println!("Thank you for your contribution, @{sender}! :)");
 //!     Ok(())
 //! }
@@ -259,7 +259,7 @@ pub use envelope::{BodyError, DecodeError, Envelope, ReceiveError};
 pub use events::{Action, EventKind};
 pub use handler::Handler;
 pub use matcher::{AnyAction, EventMatcher, IntoMatcher};
-pub use meta::{EventMeta, RepositoryRef, TargetType};
+pub use meta::{AccountRef, EventMeta, RepositoryRef, TargetType};
 /// Derives [`Payload`] for a serde type, declaring its kind:
 /// `#[derive(Payload)] #[payload(EventKind::..)]`. See the trait.
 #[cfg(feature = "derive")]

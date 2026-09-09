@@ -429,7 +429,7 @@ where
     /// let verifier = Verifier::new(WebhookSecret::new("test-secret"));
     /// let webhook = WebhookReceiverBuilder::new(verifier.clone()).build(dispatcher);
     ///
-    /// let body = r#"{"action":"opened","sender":{"login":"octocat"}}"#;
+    /// let body = r#"{"action":"opened","sender":{"id":1,"login":"octocat"}}"#;
     /// let request = http::Request::builder()
     ///     .method("POST")
     ///     .uri("/webhook")

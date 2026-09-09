@@ -102,8 +102,8 @@ pub(crate) fn require_signature(headers: &HeaderMap) -> Result<Signature, Signat
 ///     "full_name": "octocat/Hello-World",
 ///     "owner": "octocat"
 ///   },
-///   "organization": "octocat",
-///   "sender": "monalisa",
+///   "organization": { "id": 9919, "login": "github" },
+///   "sender": { "id": 583231, "login": "octocat" },
 ///   "target_type": "integration",
 ///   "target_id": 12345,
 ///   "raw_payload": "eyJhY3Rpb24iOiJvcGVuZWQifQ=="
@@ -134,7 +134,9 @@ pub(crate) fn require_signature(headers: &HeaderMap) -> Result<Signature, Signat
 ///   of the crate does not know reads back as the `Unknown` variant carrying
 ///   the string, never as an error.
 /// - `repository` is an object with `id`, `name`, `full_name` and `owner`,
-///   where `owner` is the login.
+///   where `owner` is the login; `organization` and `sender` are objects
+///   with `id` and `login`, the subset of GitHub's own account object that
+///   the meta keeps.
 ///
 /// On deserialize, `delivery_id`, `kind` and `raw_payload` are required;
 /// every other field is optional, and a field that is absent reads the same

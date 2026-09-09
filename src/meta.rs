@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
@@ -34,12 +36,13 @@ pub struct EventMeta {
     /// A compact repository reference, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repository: Option<RepositoryRef>,
-    /// The organization login, when present.
+    /// The organization the webhook fired in, when present: an organization
+    /// webhook's, or a GitHub App's installed on one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub organization: Option<String>,
-    /// The sender login, when present.
+    pub organization: Option<AccountRef>,
+    /// The user or app whose act triggered the webhook, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sender: Option<String>,
+    pub sender: Option<AccountRef>,
     /// The webhook installation target type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_type: Option<TargetType>,
@@ -115,14 +118,8 @@ impl EventMeta {
                 .repository
                 .and_then(parse_probe::<RepoProbe>)
                 .map(RepositoryRef::from),
-            organization: probe
-                .organization
-                .and_then(parse_probe::<LoginOnly>)
-                .map(|organization| organization.login),
-            sender: probe
-                .sender
-                .and_then(parse_probe::<LoginOnly>)
-                .map(|sender| sender.login),
+            organization: probe.organization.and_then(parse_probe::<AccountRef>),
+            sender: probe.sender.and_then(parse_probe::<AccountRef>),
             target_type: None,
             target_id: None,
         }
@@ -173,6 +170,55 @@ impl RepositoryRef {
     }
 }
 
+/// A compact reference to a GitHub account, a user, an organization or an
+/// app, extracted without parsing a full payload model: the numeric ID and
+/// the login.
+///
+/// What [`EventMeta::organization`] and [`EventMeta::sender`] hold. The ID
+/// is the stable identity, the login the name that can be changed under it,
+/// so a policy that keys on an account (a tenant table, a rate limit, a
+/// bot allow-list) keys on `id` and shows `login`. `Display` is the login,
+/// for a log line. Every other field GitHub sends for an account (`type`,
+/// `node_id`, `avatar_url`) is left to a decoded payload.
+///
+/// `#[non_exhaustive]` for the same reason as [`EventMeta`]. Build one in
+/// tests with [`AccountRef::new`], which takes every field the crate probes.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct AccountRef {
+    /// GitHub's numeric account ID.
+    pub id: u64,
+    /// The account's login.
+    pub login: String,
+}
+
+impl AccountRef {
+    /// Creates a reference from the fields GitHub sends in every payload's
+    /// `sender` and `organization` objects.
+    ///
+    /// ```
+    /// use octoevents::{AccountRef, EventKind, EventMeta};
+    ///
+    /// let mut meta = EventMeta::new("72d3162e-cc78-11e3-81ab-4c9367dc0958", EventKind::Push);
+    /// meta.sender = Some(AccountRef::new(583231, "octocat"));
+    /// assert_eq!(meta.sender.unwrap().to_string(), "octocat");
+    /// ```
+    #[must_use]
+    pub fn new(id: u64, login: impl Into<String>) -> Self {
+        Self {
+            id,
+            login: login.into(),
+        }
+    }
+}
+
+impl fmt::Display for AccountRef {
+    /// The login, for a log line or an `@`-mention.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.login)
+    }
+}
+
 string_enum! {
     /// The resource on which the webhook is installed, from
     /// `X-GitHub-Hook-Installation-Target-Type`: `integration` for a GitHub
@@ -191,7 +237,10 @@ fn parse_probe<T: serde::de::DeserializeOwned>(value: &RawValue) -> Option<T> {
 
 /// The top level of a payload as raw values, one per field the probe reads,
 /// so each is parsed on its own and a malformed one does not take its
-/// siblings with it.
+/// siblings with it. `organization` and `sender` then parse as
+/// [`AccountRef`] directly: its serde shape is the subset of GitHub's
+/// account object the meta keeps, and the fields it does not name are
+/// ignored.
 #[derive(Debug, Default, Deserialize)]
 struct Probe<'a> {
     #[serde(borrow)]

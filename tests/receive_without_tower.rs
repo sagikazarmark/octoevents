@@ -32,7 +32,7 @@ fn verifier() -> Verifier {
 
 /// The README's quickstart handler: an `async fn` item over the envelope.
 async fn thank(envelope: Envelope) -> Result<(), BoxError> {
-    let sender = envelope.meta.sender.unwrap_or_default();
+    let sender = envelope.meta.sender.map(|s| s.login).unwrap_or_default();
     println!("Thank you for your contribution, @{sender}! :)");
     Ok(())
 }
@@ -85,7 +85,7 @@ async fn the_readme_wiring_without_tower_accepts_a_dispatcher_over_a_boxed_error
     let response = app
         .oneshot(signed(
             "issues",
-            br#"{"action":"opened","sender":{"login":"octocat"}}"#,
+            br#"{"action":"opened","sender":{"id":1,"login":"octocat"}}"#,
         ))
         .await
         .unwrap();
