@@ -228,9 +228,12 @@ string_enum! {
     /// [`Unknown`](Self::Unknown) with the wire value intact. One kind's
     /// action is the caller's: a `repository_dispatch` payload's `action` is
     /// the `event_type` the `POST /repos/{owner}/{repo}/dispatches` request
-    /// gave, so it arrives as `Unknown` carrying that string, and a handler
-    /// for one is registered with `on((EventKind::RepositoryDispatch,
-    /// Action::Unknown("deploy".into())), h)`. The variants are the actions
+    /// gave, parsed like any other, so `"deploy"` arrives as `Unknown`
+    /// carrying that string and `"opened"` as `Opened`. A handler for one
+    /// is registered with the matcher built through `Action::from`,
+    /// `on((EventKind::RepositoryDispatch, Action::from("deploy")), h)`,
+    /// which stays correct should the string become a variant. The variants
+    /// are the actions
     /// GitHub's webhook reference lists across every kind, plus
     /// [`Performed`](Self::Performed), which earlier schemas listed for
     /// `security_advisory` and this crate keeps. The enum is

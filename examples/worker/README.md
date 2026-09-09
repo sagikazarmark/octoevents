@@ -36,8 +36,10 @@ cargo check --target wasm32-unknown-unknown
 
 The Worker reads two bindings: `GITHUB_WEBHOOK_SECRET`, a secret, and
 `RESTATE_OBJECT_URL`, a plain variable, the ingress URL of the virtual object
-envelopes are forwarded to; every request answers 500 while it points at
-nothing. `[vars]` in `wrangler.toml` sets the URL to a local Restate's
+envelopes are forwarded to. While it points at nothing, every verified
+delivery that reaches the dispatcher answers 500; a refused request is still
+401 or 400, and a verified `ping` still 204, so those three are not a sign of
+a broken URL. `[vars]` in `wrangler.toml` sets the URL to a local Restate's
 ingress, for `wrangler dev`. The secret is never put in `wrangler.toml`; for
 local development it goes in a `.dev.vars` file, which `wrangler dev` reads
 and `.gitignore` excludes:
