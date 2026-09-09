@@ -39,7 +39,9 @@
 //! [`Envelope::from_signed`]: crate::Envelope::from_signed
 //! [`Verifier::sign`]: crate::Verifier::sign
 
-use http::HeaderName;
+use http::{HeaderMap, HeaderName};
+
+use crate::{ReceiveError, Signature, SignatureError};
 
 /// `X-Hub-Signature-256`: the HMAC-SHA256 of the body under the webhook
 /// secret, which [`Verifier`](crate::Verifier) checks.
@@ -73,3 +75,59 @@ pub const TARGET_TYPE: HeaderName =
 /// `X-GitHub-Hook-Installation-Target-ID`: the ID of that resource, which
 /// parses into [`EventMeta::target_id`](crate::EventMeta::target_id).
 pub const TARGET_ID: HeaderName = HeaderName::from_static("x-github-hook-installation-target-id");
+
+// How the receiving path reads the headers named above. Crate-private: the
+// module's public face is the names, and the two paths that read them,
+// `Envelope::from_signed` and the receiver, read them through these so they
+// agree on what a header's value is and which failure its absence earns.
+
+/// The signature to verify, parsed from `headers`, or the header failure
+/// [`Envelope::from_signed`](crate::Envelope::from_signed) reports for it:
+/// [`SignatureError::Missing`] when the header is absent, decided here and
+/// nowhere else; [`SignatureError::Malformed`] when its bytes are not a
+/// signature, decided by `Signature::try_from` and nowhere else.
+/// [`Verifier::verify`](crate::Verifier::verify) takes the parsed value and
+/// can only mismatch.
+///
+/// The value's bytes are parsed, not its `str`: an `http::HeaderValue` need
+/// not be visible ASCII, and one that is not is present and not a signature
+/// (400), never mistaken for an absent header (401), so a corrupting hop and
+/// a missing header stay distinguishable.
+///
+/// Decidable from the headers alone, so the receiver uses it to refuse an
+/// unsigned or malformed request before reading the body, and `from_signed`
+/// uses it so both paths agree on which failure a header earns.
+pub(crate) fn signature(headers: &HeaderMap) -> Result<Signature, SignatureError> {
+    headers
+        .get(&SIGNATURE)
+        .ok_or(SignatureError::Missing)
+        .and_then(Signature::try_from)
+}
+
+/// The first value of `name` in `headers` as a string, or `None` when the
+/// header is absent or its value is not visible ASCII: a value the crate
+/// cannot read is a value it does not have. The receiver reads the span's
+/// `delivery_id` and `event` through it too, so the two read a header alike.
+pub(crate) fn read<'a>(headers: &'a HeaderMap, name: &HeaderName) -> Option<&'a str> {
+    headers.get(name).and_then(|value| value.to_str().ok())
+}
+
+/// A header the receiving path cannot do without: [`read`], with an empty
+/// value refused as [`ReceiveError::MissingHeader`] like an absent one.
+pub(crate) fn required(headers: &HeaderMap, name: HeaderName) -> Result<&str, ReceiveError> {
+    read(headers, &name)
+        .filter(|value| !value.is_empty())
+        .ok_or(ReceiveError::MissingHeader { name })
+}
+
+/// Whether `headers` declare the body `application/json`, by the media type
+/// alone: a `charset` or any other parameter is ignored, and the comparison
+/// is case-insensitive. An absent `Content-Type` is not JSON.
+pub(crate) fn is_json(headers: &HeaderMap) -> bool {
+    read(headers, &CONTENT_TYPE).is_some_and(|value| {
+        value
+            .split(';')
+            .next()
+            .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"))
+    })
+}

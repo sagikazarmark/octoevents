@@ -6,29 +6,7 @@ use http::{HeaderMap, HeaderName, StatusCode};
 use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
 
-use crate::{EventKind, EventMeta, Signature, SignatureError, TargetType, Verifier, header};
-
-/// The signature to verify, parsed from `headers`, or the header failure
-/// [`Envelope::from_signed`] reports for it: [`SignatureError::Missing`]
-/// when the header is absent, decided here and nowhere else;
-/// [`SignatureError::Malformed`] when its bytes are not a signature, decided
-/// by `Signature::try_from` and nowhere else. [`Verifier::verify`] takes the
-/// parsed value and can only mismatch.
-///
-/// The value's bytes are parsed, not its `str`: an `http::HeaderValue` need
-/// not be visible ASCII, and one that is not is present and not a signature
-/// (400), never mistaken for an absent header (401), so a corrupting hop and
-/// a missing header stay distinguishable.
-///
-/// Decidable from the headers alone, so the receiver uses it to refuse an
-/// unsigned or malformed request before reading the body, and `from_signed`
-/// uses it so both paths agree on which failure a header earns.
-pub(crate) fn require_signature(headers: &HeaderMap) -> Result<Signature, SignatureError> {
-    headers
-        .get(&header::SIGNATURE)
-        .ok_or(SignatureError::Missing)
-        .and_then(Signature::try_from)
-}
+use crate::{EventKind, EventMeta, SignatureError, TargetType, Verifier, header};
 
 /// A GitHub webhook and its routing metadata.
 ///
@@ -277,7 +255,7 @@ impl Envelope {
     /// Returns an authentication error first, [`ReceiveError::Signature`]:
     /// [`SignatureError::Missing`] when the header is absent,
     /// [`SignatureError::Malformed`] when it does not parse as a
-    /// [`Signature`], [`SignatureError::Mismatch`] when no configured secret
+    /// [`Signature`](crate::Signature), [`SignatureError::Mismatch`] when no configured secret
     /// produced it for `body`, in that order. Then content-type and
     /// required-header errors, for an authenticated request.
     pub fn from_signed(
@@ -285,20 +263,20 @@ impl Envelope {
         headers: &HeaderMap,
         body: Bytes,
     ) -> Result<Self, ReceiveError> {
-        let signature = require_signature(headers)?;
+        let signature = header::signature(headers)?;
         verifier.verify(&signature, &body)?;
 
-        if !header_str(headers, &header::CONTENT_TYPE).is_some_and(is_json_content_type) {
+        if !header::is_json(headers) {
             return Err(ReceiveError::UnsupportedContentType);
         }
 
-        let delivery_id = required_header(headers, header::DELIVERY_ID)?;
-        let event_name = required_header(headers, header::EVENT_NAME)?;
+        let delivery_id = header::required(headers, header::DELIVERY_ID)?;
+        let event_name = header::required(headers, header::EVENT_NAME)?;
 
         let mut meta = EventMeta::probe(delivery_id, EventKind::from(event_name), &body);
-        meta.target_type = header_str(headers, &header::TARGET_TYPE).map(TargetType::from);
+        meta.target_type = header::read(headers, &header::TARGET_TYPE).map(TargetType::from);
         meta.target_id =
-            header_str(headers, &header::TARGET_ID).and_then(|value| value.parse().ok());
+            header::read(headers, &header::TARGET_ID).and_then(|value| value.parse().ok());
 
         Ok(Self {
             meta,
@@ -596,29 +574,6 @@ impl DecodeError {
             source: Some(source.into()),
         }
     }
-}
-
-/// The first value of `name` in `headers` as a string, or `None` when the
-/// header is absent or its value is not visible ASCII: a value the crate
-/// cannot read is a value it does not have. The receiver reads the span's
-/// `delivery_id` and `event` through it too, so the two read a header alike.
-pub(crate) fn header_str<'a>(headers: &'a HeaderMap, name: &HeaderName) -> Option<&'a str> {
-    headers.get(name).and_then(|value| value.to_str().ok())
-}
-
-/// A header the receiving path cannot do without: [`header_str`], with an
-/// empty value refused as [`ReceiveError::MissingHeader`] like an absent one.
-fn required_header(headers: &HeaderMap, name: HeaderName) -> Result<&str, ReceiveError> {
-    header_str(headers, &name)
-        .filter(|value| !value.is_empty())
-        .ok_or(ReceiveError::MissingHeader { name })
-}
-
-fn is_json_content_type(value: &str) -> bool {
-    value
-        .split(';')
-        .next()
-        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"))
 }
 
 fn serialize_bytes<S>(value: &Bytes, serializer: S) -> Result<S::Ok, S::Error>

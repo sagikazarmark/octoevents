@@ -18,9 +18,7 @@ use crate::runtime::BoxFuture;
 use crate::{Action, BoxedError, TracedError};
 use crate::{
     BodyError, DEFAULT_BODY_LIMIT, Envelope, EventKind, EventMeta, Handler, MaybeSend, MaybeSync,
-    ReceiveError, SignatureError, Verifier,
-    envelope::{header_str, require_signature},
-    header, trace,
+    ReceiveError, SignatureError, Verifier, header, trace,
 };
 
 type ReceiveResponse = Response<Empty<Bytes>>;
@@ -522,7 +520,7 @@ where
         // check for transports that construct envelopes directly, and parses
         // the header again for the verifier; the header is 71 bytes, so the
         // second parse is cheaper than handing the first one across.
-        if let Err(error) = require_signature(headers) {
+        if let Err(error) = header::signature(headers) {
             return refuse(&error.into());
         }
 
@@ -681,10 +679,10 @@ where
 /// identifiable. Nothing else off the headers is recorded, the signature
 /// least of all.
 fn record_headers(headers: &HeaderMap) {
-    if let Some(delivery_id) = header_str(headers, &header::DELIVERY_ID) {
+    if let Some(delivery_id) = header::read(headers, &header::DELIVERY_ID) {
         trace::record("delivery_id", delivery_id);
     }
-    if let Some(event) = header_str(headers, &header::EVENT_NAME) {
+    if let Some(event) = header::read(headers, &header::EVENT_NAME) {
         trace::record("event", event);
     }
 }
