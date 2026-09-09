@@ -385,9 +385,12 @@ impl ReceiveError {
     ///
     /// An absent or mismatched signature is the client failing to
     /// authenticate, `401 Unauthorized`; a signature that is not `sha256=`
-    /// and 64 hex digits, a missing required header, a body that is not JSON
-    /// and a body the transport could not read are malformed requests,
-    /// `400 Bad Request`; a body over the limit is `413 Payload Too Large`.
+    /// and 64 hex digits, a missing required header, a content type other
+    /// than `application/json` and a body the transport could not read are
+    /// malformed requests, `400 Bad Request`; a body over the limit is `413
+    /// Payload Too Large`. Payload bytes that are not valid JSON earn no
+    /// status here: the envelope is built around them and a handler over it
+    /// runs, so only an input that decodes them fails, as a handler failure.
     /// `WebhookReceiver` applies this itself; it is public so a transport
     /// built directly on [`Envelope::from_signed`] answers GitHub the same
     /// way, as its docs show.
