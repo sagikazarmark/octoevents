@@ -12,8 +12,8 @@ use crate::{DecodeError, Envelope, EventKind, EventMeta};
 ///
 /// - [`Envelope`] is its own input: a clone, the meta plus a refcount bump on
 ///   the bytes. The receiver takes a handler over it and moves the envelope
-///   in; the `always` and `fallback` tiers clone it once themselves. Neither
-///   goes through here.
+///   in; the dispatcher clones it once for each handler that receives it,
+///   without decoding the payload.
 /// - [`EventMeta`] is a clone of the meta the envelope was built with, read
 ///   from the headers and the payload at receipt, so its decode does nothing
 ///   and cannot fail: a handler over it is routed by kind and action and

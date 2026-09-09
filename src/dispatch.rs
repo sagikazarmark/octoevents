@@ -35,7 +35,7 @@ trait ErasedHandler: MaybeSend + MaybeSync {
     ) -> Result<BoxFuture<'a, Result<(), BoxError>>, BoxError>;
 }
 
-/// A routed handler behind its input's decode.
+/// A registered handler behind its input's decode, shared by every tier.
 ///
 /// `fn(I)` rather than `I`: the route is `MaybeSend + MaybeSync` when the
 /// handler is, whatever the input.
@@ -56,29 +56,6 @@ where
     ) -> Result<BoxFuture<'a, Result<(), BoxError>>, BoxError> {
         let input = I::from_envelope(envelope).map_err(BoxError::from)?;
         let future = self.handler.handle(input);
-        Ok(Box::pin(async move { future.await.map_err(Into::into) }))
-    }
-}
-
-/// A handler over the envelope for the `always` and `fallback` tiers, whose
-/// input is known to be the envelope: it is cloned once, here, without going
-/// through `Envelope::from_envelope`, so those two tiers decode nothing. A
-/// detail of those two tiers: the consumer's handler is the same
-/// `Handler<Envelope>` as anywhere.
-struct OverEnvelope<H> {
-    handler: H,
-}
-
-impl<H> ErasedHandler for OverEnvelope<H>
-where
-    H: Handler<Envelope> + MaybeSend + MaybeSync,
-    H::Error: Into<BoxError>,
-{
-    fn call<'a>(
-        &'a self,
-        envelope: &Envelope,
-    ) -> Result<BoxFuture<'a, Result<(), BoxError>>, BoxError> {
-        let future = self.handler.handle(envelope.clone());
         Ok(Box::pin(async move { future.await.map_err(Into::into) }))
     }
 }
@@ -880,7 +857,9 @@ impl DispatcherBuilder {
         H: Handler<Envelope> + MaybeSend + MaybeSync + 'static,
         H::Error: Into<BoxError>,
     {
-        self.routes.always.push(Route::over_envelope(handler));
+        self.routes
+            .always
+            .push(Route::routed::<Envelope, H>(handler));
         self
     }
 
@@ -1210,7 +1189,9 @@ impl DispatcherBuilder {
         H: Handler<Envelope> + MaybeSend + MaybeSync + 'static,
         H::Error: Into<BoxError>,
     {
-        self.routes.fallback.push(Route::over_envelope(handler));
+        self.routes
+            .fallback
+            .push(Route::routed::<Envelope, H>(handler));
         self
     }
 
@@ -1260,9 +1241,10 @@ struct Route {
 }
 
 impl Route {
-    /// A routed handler, erased behind its input's decode: the route decodes
-    /// `I` from the envelope when it runs, so a route that never matches
-    /// never decodes, and a decode failure is this route's failure.
+    /// A registered handler, erased behind its input's decode: it decodes
+    /// `I` from the envelope when it runs, and a decode failure is this
+    /// handler's failure. The `always` and `fallback` tiers use `Envelope`,
+    /// whose decode is an infallible clone.
     ///
     /// `#[track_caller]` here, on [`registered`](Self::registered) below and
     /// on the registration method calling this makes the location the
@@ -1281,19 +1263,6 @@ impl Route {
             }),
             type_name::<H>(),
         )
-    }
-
-    /// A handler over the envelope for the `always` and `fallback` tiers,
-    /// erased as [`OverEnvelope`].
-    ///
-    /// `#[track_caller]` as on [`routed`](Self::routed).
-    #[track_caller]
-    fn over_envelope<H>(handler: H) -> Self
-    where
-        H: Handler<Envelope> + MaybeSend + MaybeSync + 'static,
-        H::Error: Into<BoxError>,
-    {
-        Self::registered(Arc::new(OverEnvelope { handler }), type_name::<H>())
     }
 
     /// Pairs an erased handler and its name with the location
