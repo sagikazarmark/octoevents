@@ -156,6 +156,22 @@ impl EventMeta {
 /// both in scope should not confuse them. It is a plain struct: a test builds
 /// one as a literal or with [`RepositoryMeta::new`], and a field GitHub adds
 /// here would be a breaking change, as it would to a literal.
+///
+/// ```
+/// use octoevents::RepositoryMeta;
+///
+/// let literal = RepositoryMeta {
+///     id: 1296269,
+///     name: "Hello-World".into(),
+///     full_name: "octocat/Hello-World".into(),
+///     owner: "octocat".into(),
+/// };
+///
+/// assert_eq!(
+///     literal,
+///     RepositoryMeta::new(1296269, "Hello-World", "octocat/Hello-World", "octocat")
+/// );
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RepositoryMeta {
     /// GitHub's numeric repository ID.
@@ -207,6 +223,15 @@ impl RepositoryMeta {
 /// `node_id`, `avatar_url`) is left to a decoded payload. Named as
 /// [`RepositoryMeta`] is, and a plain struct like it: a test builds one as a
 /// literal or with [`AccountMeta::new`].
+///
+/// ```
+/// use octoevents::AccountMeta;
+///
+/// let literal = AccountMeta { id: 583231, login: "octocat".into() };
+///
+/// assert_eq!(literal, AccountMeta::new(583231, "octocat"));
+/// assert_eq!(literal.to_string(), "octocat");
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AccountMeta {
     /// GitHub's numeric account ID.

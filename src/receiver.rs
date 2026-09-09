@@ -617,8 +617,10 @@ where
     /// The receiving contract, inside the receive span, with the body as a
     /// future so the two paths differ only in how it is produced: the
     /// header-only refusal runs first, and `body` is awaited only for a
-    /// request that passed it, so unsigned traffic never occupies
-    /// `body_limit` bytes of memory.
+    /// request that passed it. On the request path that is what keeps
+    /// unsigned traffic from occupying `body_limit` bytes of memory; on the
+    /// bytes path the caller holds them already, and the refusal spares the
+    /// verification.
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(

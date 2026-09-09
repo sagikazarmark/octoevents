@@ -95,10 +95,10 @@ same six steps reappear in every no-`http-body` transport, which is the
 argument for a function, not prose.
 
 Now `WebhookReceiver`, its builder and `receive_bytes(&HeaderMap, Bytes) ->
-StatusCode` are in the core under every feature set, `http-body` gates
-`receive<B: Body>` and the `Response` it answers with, which is exactly the
-body handling the feature's Cargo comment always said it gated, and the
-`tower` feature still implies it. The two paths share one `process` over a
+impl Future<Output = StatusCode>`, awaited like `receive`, are in the core
+under every feature set, `http-body` gates `receive<B: Body>` and the
+`Response` it answers with, which is the body handling the feature's Cargo
+comment always said it gated, and the `tower` feature still implies it. The two paths share one `process` over a
 body future, so they differ only in how the bytes are produced: read from the
 transport within the limit, or checked against it by length. `from_signed`
 stays for a transport that wants the envelope and not the answer, to forward

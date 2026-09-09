@@ -23,8 +23,8 @@ use crate::{DecodeError, Envelope, EventKind, EventMeta};
 ///   kind, as [`DecodeError::KindMismatch`], not at a missing field.
 /// - [`Event<P>`] pairs the meta with any other input's decode.
 /// - octocrab's `WebhookEvent`, with the `octocrab` feature, decodes the
-///   payload of any kind into octocrab's model through
-///   `Envelope::decode_event`.
+///   payload of any kind into octocrab's model, through its own impl of this
+///   trait like every other input.
 ///
 /// The trait is open. A view over fields several kinds share implements it
 /// directly, decoding with [`Envelope::decode`], which checks nothing about
