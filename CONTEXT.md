@@ -63,7 +63,8 @@ the payload. The receiver and the always and fallback tiers take a handler
 over the envelope; a routed handler is over any input. Its error is its own,
 `type Error` on the trait with no bound; where a handler is registered (`on`,
 `always`, `fallback`, the receiver's `build`) the error is asked to be
-`Into<BoxError>`, which every `Error` is. In prose, "a handler over
+`Into<BoxError>`, which every `Error + Send + Sync + 'static` is, and on
+`wasm32` every `Error + 'static`. In prose, "a handler over
 `Envelope`", "a handler over `Event<P>`".
 _Avoid_: Callback, subscriber, webhook handler and event handler (the former two flavours; now one trait and an input type), typed handler, payload handler (a handler over a `Payload` is registered with `on` like any other; its type fixes the kind when the matcher gives actions alone), raw handler (raw named a removed tier), meta handler (removed; a handler over `EventMeta` receives only the metadata)
 

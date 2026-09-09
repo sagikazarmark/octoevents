@@ -20,11 +20,13 @@ use std::{error::Error, future::Future, pin::Pin};
 /// and axum name `BoxError`; `Box<dyn Error>` on `wasm32`, where a Worker's
 /// error holds a `JsValue` and is neither `Send` nor `Sync`. A handler
 /// returning `Result<(), BoxError>` needs no error enum: `?` converts any
-/// `Error` into it through std's blanket `From`, as it does a `String`, a
-/// `&str` and an `anyhow::Error`. A handler with an error type of its own
-/// keeps it, and the dispatcher and the receiver ask `Into<BoxError>` of it
-/// where it is registered, which every `Error + Send + Sync + 'static` type
-/// is (every `Error + 'static` on `wasm32`).
+/// `Error + Send + Sync + 'static` into it through std's blanket `From`, as
+/// it does a `String`, a `&str` and an `anyhow::Error`. A handler with an
+/// error type of its own keeps it, and the dispatcher and the receiver ask
+/// `Into<BoxError>` of it where it is registered, which every `Error + Send +
+/// Sync + 'static` type is, and on `wasm32` every `Error + 'static`; an
+/// error holding an `Rc` converts there and is refused natively, where the
+/// box it would go into is `Send`.
 ///
 /// One alias rather than the spelled-out box so a consumer's `Result<(),
 /// octoevents::BoxError>` compiles for a Worker and for a native server

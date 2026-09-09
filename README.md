@@ -26,7 +26,7 @@ use octoevents::{Action, BoxError, Dispatcher, Envelope, EventKind, Verifier, We
 
 /// Runs for `issues.opened`. The envelope is the verified unit of receipt: its
 /// meta (delivery ID, kind, action, repository, sender, ...) and the raw payload.
-/// `BoxError` is the crate's erased error; any error converts into it with `?`.
+/// `BoxError` is the crate's erased error; any `Error + Send + Sync` converts into it with `?`.
 async fn thank(envelope: Envelope) -> Result<(), BoxError> {
     let sender = envelope.meta.sender.map(|s| s.login).unwrap_or_default();
     println!("Thank you for your contribution, @{sender}! :)");
@@ -407,8 +407,9 @@ is for a wrapper to read.
 Every handler keeps the error type it has, and every registration asks one
 thing of it: that it converts into `BoxError`, the crate's erased error
 (`Box<dyn Error + Send + Sync>` natively, `Box<dyn Error>` on `wasm32`).
-Every `Error` type does, through std's blanket `From`, and so do `BoxError`
-itself, `anyhow::Error`, `String` and `&str`; the quickstart's handlers return
+Every `Error + Send + Sync + 'static` type does, through std's blanket
+`From`, and every `Error + 'static` on `wasm32`; so do `BoxError` itself,
+`anyhow::Error`, `String` and `&str`. The quickstart's handlers return
 `BoxError` and need no error type of their own. The dispatcher boxes the
 error where the handler is registered, so handlers with different error types
 share one dispatcher and no enum joins them. A payload that does not fit a
@@ -461,7 +462,8 @@ refused request, which is a status code, or for a short-circuited `ping`,
 which reaches no handler.
 
 **Your own error type.** A handler with dependencies usually has one, and
-`thiserror` derives it; the dispatcher asks nothing more of it than `Error`.
+`thiserror` derives it; the dispatcher asks nothing more of it than `Error +
+Send + Sync`.
 Behind a `DispatchError` it is boxed, and a policy that wants it back
 downcasts the source:
 

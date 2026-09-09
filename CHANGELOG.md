@@ -177,8 +177,10 @@ reads the "Changed" and "Removed" lists first.
   Every handler's error is boxed as a `BoxError` where the handler is
   registered, so handlers with different error types share one dispatcher
   and no enum joins them; `on`, `always` and `fallback` ask
-  `H::Error: Into<BoxError>` of each, which every `Error` is, in place of
-  `E: From<H::Error>` and `on`'s `E: From<DecodeError>`. A `Decode(#[from]
+  `H::Error: Into<BoxError>` of each, which every `Error + Send + Sync +
+  'static` is (every `Error + 'static` on `wasm32`, where the box is
+  `Box<dyn Error>`), in place of `E: From<H::Error>` and `on`'s
+  `E: From<DecodeError>`. A `Decode(#[from]
   DecodeError)` variant an application error carried for the dispatcher's
   sake is no longer needed. `Dispatcher::<AppError>::builder()` is
   `Dispatcher::builder()`.

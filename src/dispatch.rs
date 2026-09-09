@@ -189,7 +189,8 @@ where
 ///
 /// Each handler keeps its own error type, and every registration method asks
 /// the same one thing of it, `Into<BoxError>`: every `Error + Send + Sync +
-/// 'static` type is, through std's blanket `From`, and so are `BoxError`
+/// 'static` type is, through std's blanket `From` (every `Error + 'static`
+/// on `wasm32`, where the box is `Box<dyn Error>`), and so are `BoxError`
 /// itself, `anyhow::Error`, `String`, `&str` and
 /// [`Infallible`](std::convert::Infallible). The dispatcher boxes the error
 /// where the handler is registered, so the handlers above share no error
@@ -804,7 +805,8 @@ impl DispatcherBuilder {
     /// Like every registration method, this records the handler's name and
     /// where it was called so a [`DispatchError`] can point back at the
     /// registration, and asks `Into<BoxError>` of the handler's error, which
-    /// any `Error` is:
+    /// any `Error + Send + Sync + 'static` is (any `Error + 'static` on
+    /// `wasm32`):
     ///
     /// ```
     /// use octoevents::{Dispatcher, Envelope};

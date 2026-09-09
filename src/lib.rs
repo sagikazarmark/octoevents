@@ -15,9 +15,9 @@
 //!
 //! /// Runs for `issues.opened`. The envelope is the verified unit of receipt:
 //! /// its meta (delivery ID, kind, action, repository, sender, ...) and the
-//! /// raw payload bytes. `BoxError` is the crate's erased error; any error
-//! /// converts into it with `?`, and a handler with an error type of its own
-//! /// keeps it.
+//! /// raw payload bytes. `BoxError` is the crate's erased error; any
+//! /// `Error + Send + Sync` converts into it with `?`, and a handler with an
+//! /// error type of its own keeps it.
 //! async fn thank(envelope: Envelope) -> Result<(), BoxError> {
 //!     let sender = envelope.meta.sender.map(|s| s.login).unwrap_or_default();
 //!     println!("Thank you for your contribution, @{sender}! :)");
@@ -70,8 +70,8 @@
 //!   (a serde type declaring its kind with `#[derive(Payload)]`), or
 //!   [`Event<P>`](Event) for the meta beside the payload. An `async fn`, a
 //!   struct, or a closure, with any error that converts into [`BoxError`]:
-//!   an `Error` type of its own, `BoxError` itself, `anyhow::Error`, a
-//!   `String`.
+//!   an `Error + Send + Sync` type of its own (any `Error` on `wasm32`),
+//!   `BoxError` itself, `anyhow::Error`, a `String`.
 //! - [`Dispatcher`]: a handler over the envelope that routes to other
 //!   handlers by kind and action in three [tiers](Tier), always, route and
 //!   fallback, and reports an [`Outcome`]. Built with [`DispatcherBuilder`],

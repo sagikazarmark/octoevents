@@ -64,7 +64,8 @@ use crate::{MaybeSend, MaybeSync};
 /// borrows `&self`, so nothing is cloned per delivery. The struct keeps its
 /// own error type, and the dispatcher it registers on boxes it as a
 /// [`BoxError`](crate::BoxError) at the registration, which asks only that
-/// the error convert into one, as every `Error` does:
+/// the error convert into one, as every `Error + Send + Sync + 'static` does
+/// (every `Error + 'static` on `wasm32`):
 ///
 #[cfg_attr(feature = "derive", doc = "```")]
 #[cfg_attr(not(feature = "derive"), doc = "```ignore")]

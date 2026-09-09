@@ -432,7 +432,8 @@ It now boxes each handler's error where the handler is registered, as a
 `BoxError` (`Box<dyn Error + Send + Sync>` natively, `Box<dyn Error>` on
 `wasm32`), and `DispatchError` holds the box as its source. The registration
 methods and the receiver's `build` ask one thing of a handler's error,
-`Into<BoxError>`, which every `Error` is; `Dispatcher`, `DispatcherBuilder`,
+`Into<BoxError>`, which every `Error + Send + Sync + 'static` is natively and
+every `Error + 'static` on `wasm32`; `Dispatcher`, `DispatcherBuilder`,
 `DispatchError` and `Outcome` carry no type parameter.
 
 The generic `E` was a premise the crate never recorded as a decision, and its

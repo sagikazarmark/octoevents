@@ -250,8 +250,9 @@ impl<E> WebhookReceiverBuilder<E> {
     /// taking the envelope, a struct with dependencies, a closure, or a
     /// `Dispatcher`. It does not need to be `Clone`.
     ///
-    /// Its error is anything that converts into [`BoxError`]: an `Error`
-    /// type, `BoxError` itself, `anyhow::Error`, a `String`. A handler error
+    /// Its error is anything that converts into [`BoxError`]: an `Error +
+    /// Send + Sync + 'static` type (any `Error + 'static` on `wasm32`),
+    /// `BoxError` itself, `anyhow::Error`, a `String`. A handler error
     /// is answered with a bare 500, the response being GitHub's delivery
     /// record and not a log; the error goes to the
     /// [`on_error`](Self::on_error) observer as the handler returned it and,
