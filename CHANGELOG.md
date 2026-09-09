@@ -129,7 +129,9 @@ reads the "Changed" and "Removed" lists first.
   sources, the examples, the tests with their fixtures, the README and the
   licences, and nothing else.
 - Examples in the order to read them, each with `#[cfg(test)]` tests that
-  drive it without GitHub (`cargo test --examples`): `quickstart`, the
+  drive it without GitHub (`cargo test --examples --all-features`; each
+  example requires `tower`, and `policy_seam` requires `octocrab`, so without
+  the features cargo skips them): `quickstart`, the
   README's program verbatim; `axum`, a receiver with no dispatcher;
   `dispatcher`, every tier and a handler over every input, the receiver's
   knobs set; and `policy_seam`, the former `dispatcher` example, whose store

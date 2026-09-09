@@ -141,10 +141,13 @@ where
 /// handler registered for some actions decodes nothing for a delivery
 /// carrying another. So a payload one handler's input cannot represent
 /// (octocrab's `WebhookEvent`, say, on a payload its model has drifted from)
-/// still reaches `always`, every handler over a consumer view or the
-/// `EventMeta` alone, and a strict `fallback`, which answers it with its own
-/// error rather than a decode error; the delivery fails only at that
-/// handler, and the [`DispatchError`] names its registration.
+/// fails the delivery at that handler and nowhere else, and the
+/// [`DispatchError`] names its registration: `always` and every routed
+/// handler ahead of it in the order have run, a handler over a consumer view
+/// or the `EventMeta` alone among them, and the handlers behind it do not,
+/// since the first error ends the dispatch. When no route matches such a
+/// payload, a strict `fallback` rejects it with its own error, not a decode
+/// error, since nothing decoded it.
 ///
 #[cfg_attr(feature = "derive", doc = "```")]
 #[cfg_attr(not(feature = "derive"), doc = "```ignore")]

@@ -35,22 +35,28 @@ cargo check --target wasm32-unknown-unknown
 ## Run
 
 The Worker reads two bindings: `GITHUB_WEBHOOK_SECRET`, a secret, and
-`RESTATE_OBJECT_URL`, a plain variable set under `[vars]` in `wrangler.toml`
-(the ingress URL of the virtual object envelopes are forwarded to; every
-request answers 500 while it points at nothing). The secret is never put in
-`wrangler.toml`; for local development it goes in a `.dev.vars` file, which
-`wrangler dev` reads and `.gitignore` excludes, and for a deployment it is
-uploaded once:
+`RESTATE_OBJECT_URL`, a plain variable, the ingress URL of the virtual object
+envelopes are forwarded to; every request answers 500 while it points at
+nothing. `[vars]` in `wrangler.toml` sets the URL to a local Restate's
+ingress, for `wrangler dev`. The secret is never put in `wrangler.toml`; for
+local development it goes in a `.dev.vars` file, which `wrangler dev` reads
+and `.gitignore` excludes:
 
 ```console
 echo 'GITHUB_WEBHOOK_SECRET=development-secret' > .dev.vars
 npx wrangler dev
 ```
 
+A deployment uploads the secret once and gives the URL of a Restate the
+Worker can reach, since the `[vars]` default is a localhost one:
+
 ```console
 npx wrangler secret put GITHUB_WEBHOOK_SECRET
-npx wrangler deploy
+npx wrangler deploy --var RESTATE_OBJECT_URL:https://<restate-ingress>/GitHubInstallation
 ```
+
+(or an `[env.<name>.vars]` block in `wrangler.toml` and `wrangler deploy
+--env <name>`).
 
 With `wrangler dev` listening on `http://localhost:8787`, a synthetic
 `installation.created` delivery, signed the way GitHub signs, exercises both

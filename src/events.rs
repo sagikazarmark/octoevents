@@ -223,12 +223,17 @@ string_enum! {
     /// [`EventMeta::action`](crate::EventMeta::action), and what the
     /// dispatcher routes by beside the kind. Some kinds have no action
     /// (`push`, `ping`, `create`, `delete`, `fork`, `gollum`, `page_build`,
-    /// `public`, `repository_dispatch`, `repository_import`), and a delivery
-    /// of one carries `None`; a delivery whose action this version does not
-    /// know carries [`Unknown`](Self::Unknown) with the wire value intact. The
-    /// variants are the actions GitHub's webhook reference lists across every
-    /// kind, plus [`Performed`](Self::Performed), which earlier schemas listed
-    /// for `security_advisory` and this crate keeps. The enum is
+    /// `public`, `repository_import`), and a delivery of one carries `None`;
+    /// a delivery whose action this version does not know carries
+    /// [`Unknown`](Self::Unknown) with the wire value intact. One kind's
+    /// action is the caller's: a `repository_dispatch` payload's `action` is
+    /// the `event_type` the `POST /repos/{owner}/{repo}/dispatches` request
+    /// gave, so it arrives as `Unknown` carrying that string, and a handler
+    /// for one is registered with `on((EventKind::RepositoryDispatch,
+    /// Action::Unknown("deploy".into())), h)`. The variants are the actions
+    /// GitHub's webhook reference lists across every kind, plus
+    /// [`Performed`](Self::Performed), which earlier schemas listed for
+    /// `security_advisory` and this crate keeps. The enum is
     /// `#[non_exhaustive]`, so a `match` over it keeps a wildcard arm.
     ///
     /// The conversions are the wire string's, as [`EventKind`]'s are:
