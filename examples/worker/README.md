@@ -1,10 +1,13 @@
 # Cloudflare Worker example
 
-The receiver on `wasm32-unknown-unknown`: a Worker that verifies every
-request, forwards each verified envelope to a [Restate](https://restate.dev)
-virtual object over the crate's wire format from the dispatcher's `always`
+The receiver on `wasm32-unknown-unknown`, as a GitHub App's receiver: a
+Worker that verifies every request, forwards each envelope its dispatcher is
+handed to a [Restate](https://restate.dev) virtual object keyed by the
+installation ID, over the crate's wire format from the dispatcher's `always`
 tier, then routes it to a handler over a consumer-defined view of the
-`installation` payload.
+`installation` payload. A delivery with no installation ID has no object to
+go to and is answered 500; the `ping` GitHub sends on creating the webhook is
+answered 204 by the receiver before the dispatcher.
 
 This is a package of its own, not a member of the repository's workspace:
 it has a `cdylib` target, its own lockfile and a wasm-only dependency
@@ -49,13 +52,29 @@ npx wrangler secret put GITHUB_WEBHOOK_SECRET
 npx wrangler deploy
 ```
 
-With `wrangler dev` listening on `http://localhost:8787`, the README's
-`gh webhook forward` line forwards real deliveries to it:
+With `wrangler dev` listening on `http://localhost:8787`, a synthetic
+`installation.created` delivery, signed the way GitHub signs, exercises both
+handlers; `openssl` computes the HMAC the crate's `Verifier::sign` would:
 
 ```console
-gh webhook forward --repo=<owner>/<repo> --events=installation,issues \
-  --url=http://localhost:8787 --secret=development-secret
+body='{"action":"created","installation":{"id":42,"account":{"login":"octocat"}},"sender":{"id":1,"login":"octocat"}}'
+signature=$(printf '%s' "$body" | openssl dgst -sha256 -hmac development-secret | sed 's/^.* //')
+curl -i http://localhost:8787 \
+  -H 'content-type: application/json' \
+  -H 'x-github-event: installation' \
+  -H 'x-github-delivery: 72d3162e-cc78-11e3-81ab-4c9367dc0958' \
+  -H "x-hub-signature-256: sha256=$signature" \
+  --data "$body"
 ```
+
+Change the secret on either side and the same request is answered 401.
+
+The repository README's `gh webhook forward` line does not exercise this
+Worker: it creates a repository webhook, and a repository webhook's
+deliveries carry no installation ID, so `Forward` answers each with 500 (and
+`installation` is an event only a GitHub App receives). Real deliveries come
+from a GitHub App whose webhook URL points at the deployed Worker, or at
+`wrangler dev` through a tunnel.
 
 ## Editor
 

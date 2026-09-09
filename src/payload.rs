@@ -260,9 +260,11 @@ impl<P: Payload> Payload for Event<P> {
 /// routes fails at the decode as
 /// [`DecodeError::KindMismatch`](crate::DecodeError::KindMismatch). The whole
 /// JSON document GitHub sends is decoded into the type, and serde ignores
-/// the fields the type does not name, so a payload type is free to name only
-/// the fields it needs. Every serde payload is a [`FromEnvelope`] whose
-/// decode checks the kind first.
+/// the fields the type does not name (unless the type opts out with
+/// `#[serde(deny_unknown_fields)]`, which a view over GitHub's payloads
+/// should not), so a payload type is free to name only the fields it needs.
+/// Every serde payload is a [`FromEnvelope`] whose decode checks the kind
+/// first.
 ///
 /// Derive it on your own serde view, naming the kind in the `#[payload]`
 /// attribute beside the fields it describes; with the `octocrab` feature,

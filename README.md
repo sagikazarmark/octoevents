@@ -102,7 +102,8 @@ shows.
 
 The dispatcher is optional. `WebhookReceiverBuilder::new(verifier).build(thank)`
 builds the receiver around the handler alone, and `thank` then receives every
-verified delivery, whatever its kind; the `axum` example is that shape.
+verified delivery, whatever its kind, except the `ping` the receiver answers
+itself by default; the `axum` example is that shape.
 
 `thank` took the whole envelope; a handler can take the decoded payload
 instead, and a dispatcher can run several handlers in three tiers, always,
@@ -701,8 +702,9 @@ does around that call. `Dispatcher::dispatch` is a plain `async fn` with no
 runtime of its own.
 
 The [`worker` example](examples/worker) runs the receiver on Cloudflare
-Workers through `receive`, and forwards every envelope as the wire format from
-the dispatcher's `always` tier. It is a package of its own, outside the
+Workers through `receive`, as a GitHub App's receiver: its `always` tier
+forwards each envelope the dispatcher is handed as the wire format, to an
+object keyed by the installation ID. It is a package of its own, outside the
 workspace, since it builds for `wasm32-unknown-unknown` alone; its README
 says how to build and run it.
 

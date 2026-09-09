@@ -1,8 +1,8 @@
 //! The receiver on Cloudflare Workers: `WebhookReceiver::receive` over the
 //! `http::Request` the `worker` crate hands over, built for
-//! `wasm32-unknown-unknown`. `README.md` beside this file says how to build,
-//! run and configure it; it is a package of its own, outside the repository's
-//! workspace.
+//! `wasm32-unknown-unknown`, as a GitHub App's receiver. `README.md` beside
+//! this file says how to build, run and configure it; it is a package of its
+//! own, outside the repository's workspace.
 //!
 //! The receiver is the same as on a native server. What differs is the
 //! target: the crate's `MaybeSend` and `MaybeSync` bounds are empty on
@@ -22,13 +22,20 @@
 //!   `#[derive(Payload)]`, so the matcher, `AnyAction`, says only that every
 //!   action of that kind is wanted.
 //! - [`Forward`], in the `always` tier, is the part specific to this
-//!   deployment: it serializes each verified envelope as the crate's
+//!   deployment: it serializes each envelope the dispatcher is handed as the
+//!   crate's
 //!   [wire format](https://docs.rs/octoevents/latest/octoevents/struct.Envelope.html#wire-format),
 //!   the flat JSON document `serde_json::to_string(&envelope)` produces, and
 //!   POSTs it to a [Restate](https://restate.dev) virtual object keyed by
-//!   installation ID, which another service reads back through serde. A
-//!   forwarder to any internal service has the same shape; only the URL and
-//!   the key are Restate's.
+//!   installation ID, which another service reads back through serde. The
+//!   key is what makes this an App's receiver: a delivery with no
+//!   installation ID (a repository webhook's, or an App's
+//!   `github_app_authorization`) has no object to go to and fails, so GitHub
+//!   redelivers it, and a deployment that wants those keeps them under
+//!   another key. The `ping` GitHub sends on creating the webhook never
+//!   reaches this tier: the receiver answers it itself under the default
+//!   `handle_ping(false)`. A forwarder to any internal service has the same
+//!   shape; only the URL and the key are Restate's.
 //!
 //! A native `cargo check`, or rust-analyzer left on the host target, reports
 //! `Forward::handle`'s future as not `MaybeSend`, naming the `JsFuture`
@@ -63,10 +70,11 @@ enum ForwardError {
     Worker(#[from] worker::Error),
 }
 
-/// Forwards the envelope to the Restate ingress. Registered in the
-/// dispatcher's `always` tier, it receives the envelope, bytes included, and
-/// runs before any routed handler; a delivery the ingress refused is not
-/// routed.
+/// Forwards the envelope to the Restate virtual object for its installation.
+/// Registered in the dispatcher's `always` tier, it receives each envelope
+/// the dispatcher is handed, bytes included, and runs before any routed
+/// handler; a delivery with no installation ID to key on, or one the ingress
+/// refused, fails and is not routed.
 struct Forward {
     object_url: String,
 }

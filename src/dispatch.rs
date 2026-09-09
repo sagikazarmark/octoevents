@@ -847,9 +847,9 @@ impl DispatcherBuilder {
     /// `ping` itself, before the dispatcher, unless built with
     /// `WebhookReceiverBuilder::handle_ping(true)`. A wrapper that answers a
     /// redelivery of a stored delivery ID with success before calling
-    /// `dispatch` keeps that redelivery from this tier too, so a metric that
+    /// `dispatch` keeps that redelivery from this tier too. So a metric that
     /// must count every verified delivery belongs at the top of the wrapper,
-    /// not here.
+    /// not here, with the receiver built to `handle_ping(true)`.
     ///
     /// Like every registration method, this records the handler's name and
     /// where it was called so a [`DispatchError`] can point back at the

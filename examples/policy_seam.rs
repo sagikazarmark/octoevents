@@ -23,8 +23,11 @@
 //! from that calls `dispatch` itself and reads the [`Outcome`] it reports:
 //! [`Inbox`] here. The dispatcher only routes.
 //!
-//! [`Inbox`] stores every verified envelope, bytes included, before anything
-//! is routed. A redelivery from GitHub carries the delivery ID of the first
+//! [`Inbox`] stores every envelope the receiver hands it, bytes included,
+//! before anything is routed: every verified delivery but the `ping` GitHub
+//! sends on creating the webhook, which the receiver answers itself under the
+//! default `handle_ping(false)` this example keeps. A redelivery from GitHub
+//! carries the delivery ID of the first
 //! attempt, so a delivery ID already in the store is answered with success
 //! and not routed, and the handlers never run twice for it. That holds after
 //! a handler failure too: the first attempt was stored before it was routed,
@@ -44,8 +47,10 @@
 //!   envelope, and, with nothing decoded on its behalf, runs even for a
 //!   payload octocrab cannot represent. It cannot fail, and says so with
 //!   `Infallible`. It does not see what the seam answers before calling
-//!   `dispatch`, a redelivery, nor a `ping` the receiver answered itself; a
-//!   count of every verified delivery belongs at the top of [`Inbox`].
+//!   `dispatch`, a redelivery, nor the `ping` the receiver answered itself; a
+//!   count of every delivery the receiver hands over belongs at the top of
+//!   [`Inbox`], and one that must include the `ping` needs the receiver
+//!   built with `handle_ping(true)` as well.
 //! - [`Labeler`] is a `Handler<Event<PullRequestWebhookEventPayload>>`: the
 //!   meta beside octocrab's pull-request payload. Its kind comes from that
 //!   type, so its matcher names only the action it wants (a *relative*
