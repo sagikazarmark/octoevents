@@ -64,7 +64,7 @@ mod receive {
     };
 
     #[test]
-    fn verifies_then_extracts_the_metadata() {
+    fn verifies_then_reads_the_metadata() {
         let verifier = verifier();
         let signature = verifier.sign(BODY).to_string();
 

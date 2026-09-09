@@ -15,7 +15,9 @@ extracted from headers and a best-effort payload probe. Composed of an
 crate produces envelopes and consumers read them: outside the crate one comes
 from `Envelope::from_signed` (the receiving path, verified) or `Envelope::new`
 (a test's path, unverified, the meta probed from the same bytes), never from
-a struct literal, so the two halves cannot disagree at birth.
+a struct literal, so the two halves cannot disagree at birth. The third way,
+serde over the *wire format*, reads back an envelope a trusted transport
+forwarded, meta as forwarded, neither verified nor probed.
 _Avoid_: Delivery (reserved for the outbound `octodelivery` project), event (the decoded unit, `Event<P>`, is the envelope decoded for one handler), message
 
 **EventMeta**:
@@ -39,12 +41,20 @@ _Avoid_: `Ref` as the suffix (the former names; a Rust word for a borrow and a G
 
 **Receiver**:
 The component that authenticates, bounds, and dispatches one HTTP request,
-owning no routing of paths or methods.
-_Avoid_: Service (names the optional Tower impl, not the concept), endpoint, listener
+owning no routing of paths or methods. The type is `WebhookReceiver`, built
+by `WebhookReceiverBuilder`: the `Webhook` prefix is the crate's rule for a
+name that would otherwise collide in a consumer's imports (`Receiver` is a
+channel end in std and tokio, `Secret` is `secrecy`'s), and no other type
+carries it. Two entry points over one policy: `receive`, over an
+`http::Request` whose body is read from the transport (`http-body` feature),
+and `receive_bytes`, over the headers and the body already read, in the
+core.
+_Avoid_: Service (names the optional Tower impl, not the concept), endpoint, listener, `Receiver` as the type (the collision the prefix avoids)
 
 **Handler**:
 Consumer-owned code that handles one verified delivery, received as one
-input: an `async fn` item, a struct implementing `Handler<I>`, or a closure.
+input: an `async fn` item, a struct implementing `Handler<I>`, a closure, or
+an `Arc` of any of them.
 Handlers *handle*; the receiver *receives*. One trait, named by what it
 receives: the input type `I` is any `FromEnvelope`, and it says what the
 handler gets and what is decoded for it: the `Envelope` (bytes included), the
@@ -71,6 +81,30 @@ method; only octocrab's input types need the `octocrab` feature. A policy the
 tiers cannot express (skip a duplicate, dead-letter an unmatched delivery)
 lives in a handler over the envelope wrapping `dispatch`, the *policy seam*.
 _Avoid_: Router (implies path/method routing, which stays with the caller)
+
+**Policy seam**:
+The handler over the envelope that wraps `Dispatcher::dispatch` and holds
+the policy the tiers cannot express: persist first, answer a redelivery of a
+stored delivery ID with success without dispatching, read the outcome to
+dead-letter or forward an unmatched delivery. Where deduplication and
+dead-lettering live; the dispatcher only routes. The `dispatcher` example
+shows one.
+_Avoid_: Middleware, interceptor, wrapper as the term (prose for what the seam is, fine), pre-dispatch hook
+
+**Route table**:
+The dispatcher's registrations from `on`, keyed by kind and then by action,
+what `Match` is decided against: a kind is *known* to the table when any
+route is registered for it. A *chain* is one tier's handlers in registration
+order; the always and fallback tiers are chains and not in the table.
+_Avoid_: Routing table (network vocabulary), registry, handler map
+
+**Redelivery**:
+GitHub's second attempt at a delivery, carrying the same delivery ID, sent
+when the first was not answered 2xx or when an operator asks for one. The one
+sending-side word this side needs: a receiver observes one and the policy
+seam answers it, with success for a delivery it has stored, and the crate
+itself never asks for one.
+_Avoid_: Retry (the sender's act, `octodelivery`'s word), replay (an attacker's act, which the crate does not guard against; see Security), duplicate as the term for the attempt (a duplicate is what the policy seam finds)
 
 **Always**:
 The dispatcher tier that runs first, before routing, receiving the envelope,
@@ -125,7 +159,7 @@ the event meta and a reference to the handler's error after a handler fails
 and before the 500 is answered. Synchronous, with no bound on the error type,
 and never called for a receive failure or a short-circuited ping. Not how the
 error's text reaches `tracing`; that is the failed-delivery event's setting.
-_Avoid_: Error handler (it handles nothing; the response is unchanged), hook, middleware, trace_error (the removed observer that emitted a second event)
+_Avoid_: Error handler (it handles nothing; the response is unchanged), hook, middleware, trace_error (the removed observer that emitted a second event; one letter from `trace_errors`, the builder setting that puts the error's text on the one event, which is not an observer)
 
 **Failed-delivery event**:
 The one `tracing` event at ERROR the receiver emits when a handler fails,
@@ -177,6 +211,41 @@ event. GitHub's own term, used verbatim.
 The `X-GitHub-Delivery` GUID identifying one delivery attempt; the consumer's
 idempotency key. In prose, "delivery" names one attempt ("runs for every
 delivery", "fails the delivery"); it never names the envelope or any type.
+
+**Target**:
+The resource the webhook is configured on, GitHub's *hook installation
+target*, from the `X-GitHub-Hook-Installation-Target-Type` and `-ID` headers:
+`integration` for a GitHub App, `repository` for a repository webhook,
+`organization` for an organization webhook, as `EventMeta::target_type`
+(a `TargetType`) and `target_id`. The one meta field pair read from headers
+GitHub does not always send. Distinct from the `installation_target` event
+kind, which reports a change to a target.
+_Avoid_: Hook target, installation (the App installation, `installation_id`, is a different thing), owner, scope
+
+**Refusal**:
+A request answered before any handler ran, as a `ReceiveError` and the status
+`ReceiveError::status` maps it to: unauthorized (401) for a signature that is
+absent or does not match, bad request (400) for one that is malformed, a
+missing required header, a body that is not JSON or one the transport could
+not read, payload too large (413) for a body over the limit. The receive
+span's `outcome` names the class and its `error` the refusal's text; the
+error observer never sees one.
+_Avoid_: Rejection, denial, failure (kept for a handler's), receive error as the concept (the type's name)
+
+**View**:
+A consumer-defined serde type naming only the fields its handler reads,
+decoded from the payload and indifferent to every other field GitHub sends
+or adds. A view over one kind declares it with `#[derive(Payload)]` and is a
+`Payload`; a view over fields several kinds share implements `FromEnvelope`
+itself with `Envelope::decode`. The crate's answer to one struct per kind.
+_Avoid_: Model (octocrab's structs, the whole object), DTO, schema, projection (kept for the meta types)
+
+**Wire format**:
+The one flat JSON object a serialized `Envelope` becomes, the meta's fields
+at the top level beside `raw_payload` as base64, for a trusted internal hop
+to another service, which reads it back through serde, meta as forwarded and
+nothing verified or probed. Serialized by the crate, read by anything.
+_Avoid_: Serialization format (the mechanism), envelope format, transport format, message
 
 **Verify**:
 The mechanism: HMAC comparison of `X-Hub-Signature-256` against the body,

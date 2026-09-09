@@ -673,7 +673,7 @@ recorded anywhere. The full contract, span by span and field by field, is
 - **No replay protection.** GitHub signs no timestamp. Treat
   `EventMeta::delivery_id` as an idempotency key and deduplicate downstream;
   the policy seam is where that lives.
-- **`ping` handled.** GitHub sends a `ping` when a webhook is created. A
+- **`ping` answered.** GitHub sends a `ping` when a webhook is created. A
   verified one is answered 204 before any handler runs; `.handle_ping(true)`
   passes it through instead. An unsigned one is 401 either way.
 - **Nothing leaks.** The response is a bare status; the error's text reaches

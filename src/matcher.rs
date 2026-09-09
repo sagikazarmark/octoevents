@@ -59,11 +59,11 @@ impl EventMatcher {
 
 /// What `Dispatcher::on` accepts as the matcher for a handler over `I`.
 ///
-/// Two families implement it. Every shape that converts into an
-/// [`EventMatcher`] says its kinds and works for any input: a kind, several
-/// kinds, a kind with one action or several, kind/action pairs, or an
-/// `EventMatcher` built with [`or`](EventMatcher::or). The other family says
-/// actions alone and takes the kind from the input, so it is implemented
+/// Two families implement it. An *absolute* matcher says its kinds and works
+/// for any input: every shape that converts into an [`EventMatcher`], a kind,
+/// several kinds, a kind with one action or several, kind/action pairs, or an
+/// `EventMatcher` built with [`or`](EventMatcher::or). A *relative* matcher
+/// says actions alone and takes the kind from the input, so it is implemented
 /// only where `I` is a [`Payload`]: one [`Action`], an array of them, or
 /// [`AnyAction`] for every action of the declared kind. With those the kind
 /// is said once, on the payload type, and the handler cannot be registered

@@ -133,6 +133,13 @@ use crate::{MaybeSend, MaybeSync};
 /// the caller's `Arc`: each holds its handlers behind its own, so the
 /// receiver is `Clone` for any `H` without one.
 ///
+/// The trait is not dyn-compatible: `handle` returns `impl Future`, so
+/// `Box<dyn Handler<Envelope, Error = E>>` does not compile. The dispatcher
+/// erases its handlers behind a private trait for that reason, and a
+/// consumer holding a collection of handlers of different types does the
+/// same, or registers each with the dispatcher, which is what the route table
+/// is for.
+///
 /// For one kind and nothing else, no dispatcher is needed: a handler over the
 /// envelope decodes its own view with `View::from_envelope(&envelope)`, the
 /// [`FromEnvelope`](crate::FromEnvelope) impl every [`Payload`](crate::Payload)
