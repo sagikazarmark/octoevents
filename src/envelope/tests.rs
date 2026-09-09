@@ -59,8 +59,8 @@ mod receive {
 
     use super::{BODY, headers, headers_from, verifier};
     use crate::{
-        AccountRef, Action, BodyError, Envelope, EventKind, EventMeta, ReceiveError, RepositoryRef,
-        SignatureError, TargetType,
+        AccountMeta, Action, BodyError, Envelope, EventKind, EventMeta, ReceiveError,
+        RepositoryMeta, SignatureError, TargetType,
     };
 
     #[test]
@@ -79,10 +79,10 @@ mod receive {
         assert_eq!(meta.installation_id, Some(42));
         assert_eq!(
             meta.repository,
-            Some(RepositoryRef::new(1, "repo", "octo/repo", "octo"))
+            Some(RepositoryMeta::new(1, "repo", "octo/repo", "octo"))
         );
-        assert_eq!(meta.organization, Some(AccountRef::new(9919, "github")));
-        assert_eq!(meta.sender, Some(AccountRef::new(2, "monalisa")));
+        assert_eq!(meta.organization, Some(AccountMeta::new(9919, "github")));
+        assert_eq!(meta.sender, Some(AccountMeta::new(2, "monalisa")));
         assert_eq!(meta.target_type, Some(TargetType::Repository));
         assert_eq!(meta.target_id, Some(7));
         assert_eq!(envelope.raw_payload, Bytes::from_static(BODY));
@@ -528,7 +528,9 @@ mod probe {
     use bytes::Bytes;
 
     use super::{BODY, headers, verifier};
-    use crate::{AccountRef, Action, Envelope, EventKind, EventMeta, RepositoryRef, test_support};
+    use crate::{
+        AccountMeta, Action, Envelope, EventKind, EventMeta, RepositoryMeta, test_support,
+    };
 
     #[test]
     fn invalid_json_is_preserved_without_failing_the_envelope() {
@@ -564,13 +566,13 @@ mod probe {
         assert_eq!(synthetic.meta.installation_id, Some(42));
         assert_eq!(
             synthetic.meta.repository,
-            Some(RepositoryRef::new(1, "repo", "octo/repo", "octo"))
+            Some(RepositoryMeta::new(1, "repo", "octo/repo", "octo"))
         );
         assert_eq!(
             synthetic.meta.organization,
-            Some(AccountRef::new(9919, "github"))
+            Some(AccountMeta::new(9919, "github"))
         );
-        assert_eq!(synthetic.meta.sender, Some(AccountRef::new(2, "monalisa")));
+        assert_eq!(synthetic.meta.sender, Some(AccountMeta::new(2, "monalisa")));
     }
 
     #[test]
@@ -584,25 +586,25 @@ mod probe {
                 test_support::pull_request_opened(),
                 Some(Action::Opened),
                 Some(7_777_777),
-                Some(AccountRef::new(10_496_163, "gagbo")),
+                Some(AccountMeta::new(10_496_163, "gagbo")),
             ),
             (
                 test_support::check_run_completed(),
                 Some(Action::Completed),
                 None,
-                Some(AccountRef::new(21_031_067, "Codertocat")),
+                Some(AccountMeta::new(21_031_067, "Codertocat")),
             ),
             (
                 test_support::installation_created(),
                 Some(Action::Created),
                 Some(39_593_433),
-                Some(AccountRef::new(10_496_163, "gagbo")),
+                Some(AccountMeta::new(10_496_163, "gagbo")),
             ),
             (
                 test_support::installation_repositories_removed(),
                 Some(Action::Removed),
                 Some(7_777_777),
-                Some(AccountRef::new(10_496_163, "gagbo")),
+                Some(AccountMeta::new(10_496_163, "gagbo")),
             ),
             (test_support::ping(), None, None, None),
         ];
@@ -633,23 +635,23 @@ mod probe {
 
         assert_eq!(envelope.meta.action, Some(Action::Opened));
         assert_eq!(envelope.meta.installation_id, Some(42));
-        assert_eq!(envelope.meta.sender, Some(AccountRef::new(2, "monalisa")));
+        assert_eq!(envelope.meta.sender, Some(AccountMeta::new(2, "monalisa")));
         assert_eq!(envelope.meta.repository, None);
         assert_eq!(envelope.meta.organization, None);
     }
 }
 
-/// The meta as a value: the `RepositoryRef` and `AccountRef` constructors,
+/// The meta as a value: the `RepositoryMeta` and `AccountMeta` constructors,
 /// and `EventMeta` as a set member by value.
 mod meta {
     use std::collections::HashSet;
 
     use super::BODY;
-    use crate::{AccountRef, Envelope, EventKind, EventMeta, RepositoryRef};
+    use crate::{AccountMeta, Envelope, EventKind, EventMeta, RepositoryMeta};
 
     #[test]
     fn a_repository_ref_is_built_from_its_constructor() {
-        let repository = RepositoryRef::new(1, "repo", "octo/repo", "octo");
+        let repository = RepositoryMeta::new(1, "repo", "octo/repo", "octo");
 
         assert_eq!(repository.id, 1);
         assert_eq!(repository.name, "repo");
@@ -659,7 +661,7 @@ mod meta {
 
     #[test]
     fn an_account_ref_is_built_from_its_constructor_and_displays_as_its_login() {
-        let account = AccountRef::new(583_231, "octocat");
+        let account = AccountMeta::new(583_231, "octocat");
 
         assert_eq!(account.id, 583_231);
         assert_eq!(account.login, "octocat");

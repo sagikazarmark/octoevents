@@ -675,7 +675,7 @@ matching handler and aggregates.
 | `context.id`, `context.name` | `meta.delivery_id` and `meta.kind` on the `EventMeta`; a handler gets it beside the payload as `Event<P>` |
 | `context.payload.action` | `meta.action`, an `Option<Action>`, read from the bytes before any handler runs |
 | `context.payload.installation.id` | `meta.installation_id`, an `Option<u64>`; no octocrab needed, and enough on its own for a handler over `EventMeta` |
-| `context.repo()` | `meta.repository`, an `Option<RepositoryRef>` with `id`, `name`, `full_name` and `owner`; `None` when the payload carries no complete `repository` object |
+| `context.repo()` | `meta.repository`, an `Option<RepositoryMeta>` with `id`, `name`, `full_name` and `owner`; `None` when the payload carries no complete `repository` object |
 
 ## Cargo features
 

@@ -53,16 +53,17 @@ pub struct EventMeta {
     /// The GitHub App installation ID, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installation_id: Option<u64>,
-    /// A compact repository reference, when present.
+    /// The repository's meta, when the payload carries a complete
+    /// `repository` object.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub repository: Option<RepositoryRef>,
+    pub repository: Option<RepositoryMeta>,
     /// The organization the webhook fired in, when present: an organization
     /// webhook's, or a GitHub App's installed on one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub organization: Option<AccountRef>,
+    pub organization: Option<AccountMeta>,
     /// The user or app whose act triggered the webhook, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sender: Option<AccountRef>,
+    pub sender: Option<AccountMeta>,
     /// The webhook installation target type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_type: Option<TargetType>,
@@ -137,22 +138,26 @@ impl EventMeta {
             repository: probe
                 .repository
                 .and_then(parse_probe::<RepoProbe>)
-                .map(RepositoryRef::from),
-            organization: probe.organization.and_then(parse_probe::<AccountRef>),
-            sender: probe.sender.and_then(parse_probe::<AccountRef>),
+                .map(RepositoryMeta::from),
+            organization: probe.organization.and_then(parse_probe::<AccountMeta>),
+            sender: probe.sender.and_then(parse_probe::<AccountMeta>),
             target_type: None,
             target_id: None,
         }
     }
 }
 
-/// A compact repository reference read without decoding a full payload model.
+/// The repository's meta: the fields the probe keeps of the payload's
+/// `repository` object, read without decoding a full payload model.
 ///
-/// `#[non_exhaustive]` for the same reason as [`EventMeta`]. Build one in tests
-/// with [`RepositoryRef::new`], which takes every field the crate probes.
+/// What [`EventMeta::repository`] holds. Named as the meta of the repository,
+/// not as the repository: it is the four fields routing and a policy read,
+/// where octocrab's `Repository` is the whole object, and a consumer with
+/// both in scope should not confuse them. It is a plain struct: a test builds
+/// one as a literal or with [`RepositoryMeta::new`], and a field GitHub adds
+/// here would be a breaking change, as it would to a literal.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct RepositoryRef {
+pub struct RepositoryMeta {
     /// GitHub's numeric repository ID.
     pub id: u64,
     /// The unqualified repository name.
@@ -163,15 +168,15 @@ pub struct RepositoryRef {
     pub owner: String,
 }
 
-impl RepositoryRef {
-    /// Creates a reference from the fields GitHub sends in every payload's
-    /// `repository` object.
+impl RepositoryMeta {
+    /// Creates the meta from the fields GitHub sends in every payload's
+    /// `repository` object; a literal spells the same with three `.into()`s.
     ///
     /// ```
-    /// use octoevents::{EventKind, EventMeta, RepositoryRef};
+    /// use octoevents::{EventKind, EventMeta, RepositoryMeta};
     ///
     /// let mut meta = EventMeta::new("72d3162e-cc78-11e3-81ab-4c9367dc0958", EventKind::Push);
-    /// meta.repository = Some(RepositoryRef::new(1296269, "Hello-World", "octocat/Hello-World", "octocat"));
+    /// meta.repository = Some(RepositoryMeta::new(1296269, "Hello-World", "octocat/Hello-World", "octocat"));
     /// # let _ = meta;
     /// ```
     #[must_use]
@@ -190,37 +195,35 @@ impl RepositoryRef {
     }
 }
 
-/// A compact reference to a GitHub account, a user, an organization or an
-/// app, read without decoding a full payload model: the numeric ID and the
-/// login.
+/// An account's meta, a user's, an organization's or an app's: the fields
+/// the probe keeps of the payload's account objects, read without decoding a
+/// full payload model, the numeric ID and the login.
 ///
 /// What [`EventMeta::organization`] and [`EventMeta::sender`] hold. The ID
 /// is the stable identity, the login the name that can be changed under it,
 /// so a policy that keys on an account (a tenant table, a rate limit, a
 /// bot allow-list) keys on `id` and shows `login`. `Display` is the login,
 /// for a log line. Every other field GitHub sends for an account (`type`,
-/// `node_id`, `avatar_url`) is left to a decoded payload.
-///
-/// `#[non_exhaustive]` for the same reason as [`EventMeta`]. Build one in
-/// tests with [`AccountRef::new`], which takes every field the crate probes.
+/// `node_id`, `avatar_url`) is left to a decoded payload. Named as
+/// [`RepositoryMeta`] is, and a plain struct like it: a test builds one as a
+/// literal or with [`AccountMeta::new`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct AccountRef {
+pub struct AccountMeta {
     /// GitHub's numeric account ID.
     pub id: u64,
     /// The account's login.
     pub login: String,
 }
 
-impl AccountRef {
-    /// Creates a reference from the fields GitHub sends in every payload's
+impl AccountMeta {
+    /// Creates the meta from the fields GitHub sends in every payload's
     /// `sender` and `organization` objects.
     ///
     /// ```
-    /// use octoevents::{AccountRef, EventKind, EventMeta};
+    /// use octoevents::{AccountMeta, EventKind, EventMeta};
     ///
     /// let mut meta = EventMeta::new("72d3162e-cc78-11e3-81ab-4c9367dc0958", EventKind::Push);
-    /// meta.sender = Some(AccountRef::new(583231, "octocat"));
+    /// meta.sender = Some(AccountMeta::new(583231, "octocat"));
     /// assert_eq!(meta.sender.unwrap().to_string(), "octocat");
     /// ```
     #[must_use]
@@ -232,7 +235,7 @@ impl AccountRef {
     }
 }
 
-impl fmt::Display for AccountRef {
+impl fmt::Display for AccountMeta {
     /// The login, for a log line or an `@`-mention.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.login)
@@ -258,7 +261,7 @@ fn parse_probe<T: serde::de::DeserializeOwned>(value: &RawValue) -> Option<T> {
 /// The top level of a payload as raw values, one per field the probe reads,
 /// so each is parsed on its own and a malformed one does not take its
 /// siblings with it. `organization` and `sender` then parse as
-/// [`AccountRef`] directly: its serde shape is the subset of GitHub's
+/// [`AccountMeta`] directly: its serde shape is the subset of GitHub's
 /// account object the meta keeps, and the fields it does not name are
 /// ignored.
 #[derive(Debug, Default, Deserialize)]
@@ -288,7 +291,7 @@ struct RepoProbe {
     owner: LoginOnly,
 }
 
-impl From<RepoProbe> for RepositoryRef {
+impl From<RepoProbe> for RepositoryMeta {
     fn from(repository: RepoProbe) -> Self {
         Self {
             id: repository.id,

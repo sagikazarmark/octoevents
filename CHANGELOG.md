@@ -64,13 +64,13 @@ reads the "Changed" and "Removed" lists first.
   `http::HeaderName` constants, for a transport's pre-body signature check
   and a test's `http::Request::builder()`. `CONTENT_TYPE` is
   `http::header::CONTENT_TYPE` re-exported, the others are GitHub's own.
-- `EventMeta::new`, `RepositoryRef::new` and `AccountRef::new` constructors.
-- `AccountRef`: the compact account reference `EventMeta::organization` and
+- `EventMeta::new`, `RepositoryMeta::new` and `AccountMeta::new` constructors.
+- `AccountMeta`: the account's meta `EventMeta::organization` and
   `EventMeta::sender` hold, the numeric `id` beside the `login`, with
   `Display` as the login.
 - `From<&str>` and `From<String>` on `EventKind`, `Action` and `TargetType`;
   `Display` on `TargetType` and `Match`; `Hash` on `Envelope`, `EventMeta`
-  and `RepositoryRef`.
+  and `RepositoryMeta`.
 - `TryFrom<Vec<u8>>` and `TryFrom<&[u8]>` on `WebhookSecret`: the fallible
   constructors for a secret that is bytes rather than a string, one read
   from a file or a secret manager, refusing empty bytes as
@@ -118,16 +118,24 @@ reads the "Changed" and "Removed" lists first.
 - **Breaking:** `Common` is `EventMeta`, which also carries the delivery ID,
   kind, action and target.
 - **Breaking:** `EventMeta::organization` and `EventMeta::sender` are
-  `Option<AccountRef>`, the account's numeric `id` beside its `login`, where
+  `Option<AccountMeta>`, the account's numeric `id` beside its `login`, where
   they were the login alone. The ID is the identity a policy keys on (a
   tenant table, a bot allow-list); the login can be renamed under it, and a
-  bare `String` could never grow a field, where `AccountRef` is
-  `#[non_exhaustive]` and can. `repository` already kept its `id`. On the
+  bare `String` could never grow a field. `repository` already kept its
+  `id`. On the
   wire the two are objects with `id` and `login`, and an account object
   without an `id` reads as absent, as a `repository` without `full_name`
-  does. `Display` on `AccountRef` is the login, so a `{sender}` in a format
+  does. `Display` on `AccountMeta` is the login, so a `{sender}` in a format
   string reads as before; `meta.sender.unwrap_or_default()` becomes
   `meta.sender.map(|s| s.login).unwrap_or_default()`.
+- **Breaking:** `RepositoryRef` is `RepositoryMeta`, and the account type
+  is `AccountMeta`: the meta of the repository or the account, the fields the
+  probe keeps, beside `EventMeta`, which holds them. "Ref" is a Rust word
+  (`&`, `std::cell::Ref`) and a GitHub word (`ref`, `ref_type`,
+  `refs/heads/..` in `push`, `create` and `delete` payloads), and neither is
+  what the type is. Neither is `#[non_exhaustive]`: they are the four and
+  two fields they are, a test builds one as a literal, and a field GitHub
+  adds is a breaking change here as it would be to the literal.
 - **Breaking:** `Envelope::parse` is `Envelope::decode` and returns
   `DecodeError`; `Envelope::parse_typed` (`octocrab` feature) is
   `Envelope::decode_event`.
@@ -236,8 +244,8 @@ reads the "Changed" and "Removed" lists first.
   runtime builds an `http::Response`. `ResponseStatus::for_receive_error(&e)`
   becomes `e.status()`, `NoContent` becomes `StatusCode::NO_CONTENT`, and
   `InternalServerError` becomes `StatusCode::INTERNAL_SERVER_ERROR`.
-- **Breaking:** `Default` on `RepositoryRef` and on the former `Common`; use
-  the `new` constructors.
+- **Breaking:** `Default` on `RepositoryMeta` (then `RepositoryRef`) and on
+  the former `Common`; use the `new` constructors or a literal.
 
 ## [0.1.0] - 2026-09-02
 

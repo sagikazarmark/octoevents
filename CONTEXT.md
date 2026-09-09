@@ -26,6 +26,17 @@ payload; the `meta` half of `Event<P>`; and what the error observer receives
 alongside the handler's error.
 _Avoid_: Common (the former nested group; its name carried no meaning), header (it also holds probed payload fields), delivery (reserved for `octodelivery`), receipt (reads as acknowledgement, and sits too close to Receiver), context (implies ambient services; this is plain data), `Routing` or `RoutingMeta` as the type (delivery ID and sender are not routing; "routing metadata" in prose is fine, since the meta is what routing reads)
 
+**RepositoryMeta, AccountMeta**:
+The fields the probe keeps of one payload object, as the types
+`EventMeta::repository`, `organization` and `sender` hold: a repository's
+`id`, `name`, `full_name` and `owner`; an account's (a user's, an
+organization's or an app's) `id` and `login`. The rule the names follow: *X
+Meta* is the meta of X, the projection routing and a policy read, never the
+object GitHub sends, which a decoded payload holds. The ID is the identity a
+policy keys on; the name or login can change under it. Plain structs, built
+as literals or with `new`.
+_Avoid_: `Ref` as the suffix (the former names; a Rust word for a borrow and a GitHub word for a git ref, `ref`, `ref_type`, `refs/heads/..`, and the types are neither), `Repository` or `Account` as the type (octocrab's names for the whole objects, live in a consumer's imports), summary, reference, projection as the type (prose for what the types are is fine)
+
 **Receiver**:
 The component that authenticates, bounds, and dispatches one HTTP request,
 owning no routing of paths or methods.
