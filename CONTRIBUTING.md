@@ -17,7 +17,7 @@ The suite is run through the `justfile` in tiers; `just` lists them.
 | `just integration` | Every test binary under `tests/` | Before a commit |
 | `just docs` | Doctests, the README's included | Before a push |
 | `just rustdoc` | `cargo doc` with warnings as errors under no features and under all | After editing a doc comment that links |
-| `just full` | Everything the suite has, under `--all-features` | Before a PR |
+| `just full` | Everything the suite has, under `--all-features`, the examples' tests included (`cargo test` builds examples but runs their tests only when asked with `--examples`) | Before a PR |
 | `just matrix` | The feature matrix: the suite under all (via `full`); `rustdoc`; `cargo hack --each-feature check --tests`, every test target under each feature alone; then the suite under none and under default | Before a PR |
 | `just wasm` | For `wasm32-unknown-unknown`: the lib at both feature extremes, every test target under one `cargo check --tests`, and the Cloudflare Worker example | Before a PR touching handler bounds or a feature gate |
 | `just msrv` | `cargo check --all-targets --locked` on Rust 1.88, the declared minimum, at the three feature extremes; skipped with a message when that toolchain is absent | Before a PR touching a dependency or using a newer std API |
@@ -25,10 +25,11 @@ The suite is run through the `justfile` in tiers; `just` lists them.
 | `just pr` | `full`, `matrix`, `wasm`, `msrv` and `lint` | Before a PR, if in doubt |
 
 A plain `cargo test` is partial. `tracing` and `octocrab` are off by default
-and the README's doctests need `tower` (beside `derive`, which is on), so it
-skips the README's programs, the fixture corpus tests in `src/octocrab.rs` and
-every test in the three `tracing_*` binaries, `tracing_hygiene` among them,
-and passes with nothing to say about them. `just full` is the complete run.
+and the README's doctests need `tower` and `octocrab` (beside `derive`, which
+is on), so it skips the README's programs, the fixture corpus tests in
+`src/octocrab.rs`, every test in the three `tracing_*` binaries,
+`tracing_hygiene` among them, and every example (each needs `tower`), and
+passes with nothing to say about them. `just full` is the complete run.
 
 A plain `cargo doc` is partial too: it builds with the default features, and
 the front page links to items that exist only under `http-body`. The comment on the
@@ -52,7 +53,7 @@ aligning the module is a matter of listing them:
 
 | Tier | Commands | The container needs |
 | --- | --- | --- |
-| `full` | `cargo test --workspace --all-features` | Nothing more |
+| `full` | `cargo test --workspace --all-features`; `cargo test --workspace --all-features --examples` | Nothing more |
 | `matrix` | `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps` under `--no-default-features` and under `--all-features`; `cargo hack --workspace --each-feature check --tests`; `cargo test --workspace --no-default-features`; `cargo test --workspace` | `cargo-hack` |
 | `wasm` | `cargo check --target wasm32-unknown-unknown` under `--no-default-features` and under `--all-features`; `cargo check --tests --target wasm32-unknown-unknown --features octocrab,tower`; `cargo check --manifest-path examples/worker/Cargo.toml --target wasm32-unknown-unknown` | The `wasm32-unknown-unknown` target |
 | `msrv` | `cargo check --workspace --all-targets --locked` under `--all-features`, `--no-default-features` and default | A Rust 1.88 toolchain, the `rust-version` in `Cargo.toml` |

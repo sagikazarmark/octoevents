@@ -8,28 +8,31 @@
 //! event and the `error` a receive span records for a refusal, lives with the
 //! receiver in `receiver`.
 //!
-//! The recording functions exist under every feature set, as no-ops without
-//! `tracing`, so their call sites carry no `cfg`.
-//!
 //! The spans this crate opens (`octoevents.verify`, `octoevents.receive`,
 //! `octoevents.dispatch`) declare their late-bound fields empty and fill them
-//! through [`record`] on the way out. Without the feature the functions are
-//! no-ops, so call sites carry no `cfg`; the only conditional code left at
-//! them is the `#[instrument]` attribute that opens the span.
+//! through [`record`] on the way out. The recording functions exist under
+//! every feature set, as no-ops without `tracing`, so call sites carry no
+//! `cfg`; the only conditional code left at them is the `#[instrument]`
+//! attribute that opens the span.
 //!
 //! A field recorded on more than one span is the same field to a subscriber
 //! only if every span records it in the same form, so the shared fields have
 //! one type each: `delivery_id` and `event` are `&str` on the receive and
 //! dispatch spans (the header values on one, the envelope's on the other),
 //! and `outcome` is a `&'static str` label on all three, with the receive
-//! span's HTTP code in its own `status` field. A `Display` value goes through
-//! [`record_display`] for the same reason. `error` is the one name recorded
-//! in two forms, and to every subscriber it is the error's text in both: the
-//! receive span records a refusal's text alone, its source deliberately
-//! withheld (`receiver::record_refusal` says why), and the failed-delivery
-//! event records the handler's error as an error value, so a subscriber that
-//! walks sources renders the chain beneath it as `error.sources`, a field of
-//! its own beside the text.
+//! span's HTTP code in its own `status` field. A `Display` value recorded as
+//! one of those string fields (the dispatch span's `registration_site`) goes
+//! through [`record_display`], which formats it to a `&str` first, for the
+//! same reason.
+//!
+//! `error` is the one name recorded in two forms, neither of them a `&str`,
+//! and to every subscriber it is the error's text in both: the receive span
+//! records a refusal's text alone, as a display value, its source
+//! deliberately withheld (`receiver::record_refusal` says why, and why it
+//! bypasses `record_display`), and the failed-delivery event records the
+//! handler's error as an error value, so a subscriber that walks sources
+//! renders the chain beneath it as `error.sources`, a field of its own beside
+//! the text.
 //!
 //! Nothing secret-derived may pass through here: signature header values,
 //! computed MACs, and secrets are never recorded. `tests/tracing_hygiene.rs`

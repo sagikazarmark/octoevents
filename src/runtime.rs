@@ -20,13 +20,13 @@ use std::{error::Error, future::Future, pin::Pin};
 /// and axum name `BoxError`; `Box<dyn Error>` on `wasm32`, where a Worker's
 /// error holds a `JsValue` and is neither `Send` nor `Sync`. A handler
 /// returning `Result<(), BoxError>` needs no error enum: `?` converts any
-/// `Error + Send + Sync + 'static` into it through std's blanket `From`.
-/// A `String`, a `&str` and an `anyhow::Error` also convert through separate implementations.
-/// error type of its own keeps it, and the dispatcher and the receiver ask
-/// `Into<BoxError>` of it where it is registered, which every `Error + Send +
-/// Sync + 'static` type is, and on `wasm32` every `Error + 'static`; an
-/// error holding an `Rc` converts there and is refused natively, where the
-/// box it would go into is `Send`.
+/// `Error + Send + Sync + 'static` into it through std's blanket `From`, and
+/// a `String`, a `&str` and an `anyhow::Error` through conversions of their
+/// own. A handler with an error type of its own keeps it, and the dispatcher
+/// and the receiver ask `Into<BoxError>` of it where it is registered, which
+/// every `Error + Send + Sync + 'static` type is, and on `wasm32` every
+/// `Error + 'static`; an error holding an `Rc` converts there and is refused
+/// natively, where the box it would go into is `Send`.
 ///
 /// One alias rather than the spelled-out box so a consumer's `Result<(),
 /// octoevents::BoxError>` compiles for a Worker and for a native server
@@ -60,24 +60,30 @@ pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 /// `Send` on native targets; no requirement on `wasm32`.
 ///
 /// The handler trait declares its future `impl Future + MaybeSend`, so a
-/// handler holding single-threaded state compiles for a Worker and is
-/// rejected natively at its own `impl`, where the diagnostic names the
-/// field's type:
+/// handler whose future holds single-threaded state across an await compiles
+/// for a Worker and is rejected natively at its own `impl`, where the
+/// diagnostic names the held type. The handler itself holds nothing, so that
+/// this bound and not [`MaybeSync`] is the one refusing it:
 ///
 /// ```compile_fail
-/// use std::{cell::Cell, rc::Rc};
+/// use std::rc::Rc;
 /// use octoevents::{Envelope, Handler};
 ///
-/// struct Counter { calls: Rc<Cell<u32>> }
+/// struct Counter;
 ///
 /// impl Handler<Envelope> for Counter {
 ///     type Error = ();
 ///     async fn handle(&self, _envelope: Envelope) -> Result<(), ()> {
-///         self.calls.set(self.calls.get() + 1);
+///         let calls = Rc::new(1);
+///         std::future::ready(()).await; // `calls` is held across the await
+///         drop(calls);
 ///         Ok(())
 ///     }
 /// }
 /// ```
+// No error code on the block: rustc reports a future that is not `Send`
+// as "future cannot be sent between threads safely", a rendering of E0277
+// it emits without the code, so there is none to state.
 #[cfg(not(target_arch = "wasm32"))]
 pub trait MaybeSend: Send {}
 

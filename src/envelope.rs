@@ -11,13 +11,13 @@ use crate::{EventKind, EventMeta, SignatureError, TargetType, Verifier, header};
 /// The verified unit of receipt: the exact payload bytes and their metadata.
 ///
 /// An envelope is the composition of its routing metadata and the exact
-/// payload bytes: `meta` is everything a handler needs to route, deduplicate,
-/// and authenticate against GitHub, and `raw_payload` is the payload as it
-/// arrived, undecoded. A handler over a decoded payload receives
-/// [`EventMeta`] beside it, as [`Event<P>`](crate::Event), so the metadata
-/// has one home rather than being duplicated onto every decoded view; the two
-/// types hold the same document in its two states, `raw_payload` here and
-/// `payload` there.
+/// payload bytes: `meta` is what a handler routes and deduplicates by, and
+/// what a GitHub App acts on the API with (the `installation_id` it mints its
+/// token for); `raw_payload` is the payload as it arrived, undecoded. A
+/// handler over a decoded payload receives [`EventMeta`] beside it, as
+/// [`Event<P>`](crate::Event), so the metadata has one home rather than
+/// being duplicated onto every decoded view; the two types hold the same
+/// document in its two states, `raw_payload` here and `payload` there.
 ///
 /// The crate produces envelopes and consumers read them. Outside the crate
 /// one comes from [`Envelope::from_signed`], which authenticates an untrusted
@@ -27,8 +27,7 @@ use crate::{EventKind, EventMeta, SignatureError, TargetType, Verifier, header};
 /// forwarded (see the wire format below). Only the first carries an
 /// authentication claim. The struct is `#[non_exhaustive]` so that a struct
 /// literal cannot pair a meta with a payload that says something else; the
-/// fields stay public, so reading them and destructuring with `..` work as
-/// before:
+/// fields stay public, so reading them and destructuring with `..` work:
 ///
 /// ```
 /// use octoevents::{Action, Envelope, EventKind};
@@ -122,6 +121,13 @@ use crate::{EventKind, EventMeta, SignatureError, TargetType, Verifier, header};
 /// omitted rather than written as `null`. Unknown fields are ignored, so a
 /// producer may annotate the document for its own transport, and a producer
 /// on a newer version of this crate does not break an older consumer.
+///
+/// The meta is read back as forwarded: nothing is verified, and the payload
+/// is not probed again, so a document whose `action` disagrees with the
+/// `action` inside its `raw_payload` reads back disagreeing. The producer is
+/// trusted to have built the envelope through one of the two constructors,
+/// which is what the wire format is for: a hop between services of one
+/// deployment, not an input from outside it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Envelope {
@@ -151,15 +157,18 @@ impl Envelope {
     /// receiver is built on it. A transport calls it directly when it wants
     /// the envelope and not the receiver's answer: to forward the envelope
     /// over the wire format, to persist it before any handler runs, or to
-    /// route it itself. It takes the request's `http::HeaderMap` and the body
-    /// as [`Bytes`], the shape every surveyed Rust runtime hands over: a
-    /// consumer hand-parsing a raw invocation event collects its `(name,
-    /// value)` pairs into a `HeaderMap`, and header-name case is
-    /// `HeaderName`'s to handle, not theirs. A failure is answered with
-    /// [`ReceiveError::status`], the receiver's contract. For the whole
-    /// contract over the same two arguments, the header-only refusal, the
-    /// body limit, the `ping` short-circuit, the handler, the observer and
-    /// the tracing, call
+    /// route it itself.
+    ///
+    /// It takes the request's `http::HeaderMap` and the body as [`Bytes`],
+    /// the shape every surveyed Rust runtime hands over. A consumer
+    /// hand-parsing a raw invocation event collects its `(name, value)` pairs
+    /// into a `HeaderMap`; header-name case is `HeaderName`'s to handle. A
+    /// failure is answered with [`ReceiveError::status`], the receiver's
+    /// contract.
+    ///
+    /// For the whole contract over the same two arguments (the header-only
+    /// refusal, the body limit, the `ping` short-circuit, the handler, the
+    /// observer and the tracing), call
     /// [`WebhookReceiver::receive_bytes`](crate::WebhookReceiver::receive_bytes)
     /// instead, which is in the core beside this.
     ///
@@ -175,7 +184,11 @@ impl Envelope {
     /// construction; the rules are on [`Envelope::new`], which reads the
     /// payload the same way. Once the body is authenticated and the headers
     /// are read, this constructor adds what only the headers carry: the
-    /// target type and ID.
+    /// target type and ID. A target type this crate does not know is
+    /// [`TargetType::Unknown`] with the value intact; a target ID that is
+    /// present but not a number reads as `None`, since the header is
+    /// optional and refusing an authenticated delivery over it would serve
+    /// nothing.
     ///
     /// The body must be `application/json`, which is a setting on the GitHub
     /// webhook; anything else is [`ReceiveError::UnsupportedContentType`]. The
@@ -183,6 +196,31 @@ impl Envelope {
     /// `payload` form parameter and signs the form body, so the signed input
     /// would no longer be the payload every decode reads. Refusing it is what
     /// lets [`Envelope::raw_payload`] be both.
+    ///
+    /// In a test, the request is signed with the verifier the envelope is
+    /// checked against:
+    ///
+    /// ```
+    /// use http::HeaderMap;
+    /// use octoevents::{Action, Bytes, Envelope, EventKind, Verifier, WebhookSecret, header};
+    ///
+    /// let verifier = Verifier::new(WebhookSecret::new("test-secret"));
+    /// let body = Bytes::from_static(br#"{"action":"opened","installation":{"id":42}}"#);
+    ///
+    /// let mut headers = HeaderMap::new();
+    /// headers.insert(header::CONTENT_TYPE, "application/json".parse()?);
+    /// headers.insert(header::DELIVERY_ID, "delivery-1".parse()?);
+    /// headers.insert(header::EVENT_NAME, "issues".parse()?);
+    /// headers.insert(header::SIGNATURE, verifier.sign(&body).into());
+    ///
+    /// let envelope = Envelope::from_signed(&verifier, &headers, body)?;
+    ///
+    /// assert_eq!(envelope.meta.delivery_id, "delivery-1");
+    /// assert_eq!(envelope.meta.kind, EventKind::Issues);
+    /// assert_eq!(envelope.meta.action, Some(Action::Opened));
+    /// assert_eq!(envelope.meta.installation_id, Some(42));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     ///
     /// # What the receiver adds
     ///
@@ -203,7 +241,7 @@ impl Envelope {
     ///
     /// ```
     /// use http::{HeaderMap, StatusCode};
-    /// use octoevents::{Bytes, Envelope, ReceiveError, Signature, SignatureError, Verifier, header};
+    /// use octoevents::{Bytes, Envelope, ReceiveError, Signature, SignatureError, Verifier, WebhookSecret, header};
     ///
     /// fn envelope_or_status(
     ///     verifier: &Verifier,
@@ -220,6 +258,14 @@ impl Envelope {
     ///
     ///     Envelope::from_signed(verifier, headers, body).map_err(|error| error.status())
     /// }
+    ///
+    /// // An unsigned request is refused at the header check, before the body is read.
+    /// let verifier = Verifier::new(WebhookSecret::new("test-secret"));
+    /// let unsigned = HeaderMap::new();
+    /// assert_eq!(
+    ///     envelope_or_status(&verifier, &unsigned, Bytes::from_static(b"{}")).unwrap_err(),
+    ///     StatusCode::UNAUTHORIZED
+    /// );
     /// ```
     ///
     /// # Errors
@@ -274,11 +320,11 @@ impl Envelope {
     /// stay `None`; assign them if the handler reads them.
     ///
     /// The read of the payload is best-effort and never fails the
-    /// construction. Malformed top-level JSON leaves every payload-derived
-    /// field empty; one malformed field (a `repository` object missing
-    /// `full_name`, say) clears only that field and leaves its siblings
-    /// intact. In both cases [`Envelope::raw_payload`] holds the bytes as
-    /// given.
+    /// construction. Top-level JSON that is malformed, or that is not an
+    /// object (`[]`, `42`), leaves every payload-derived field empty; one
+    /// malformed field (a `repository` object missing `full_name`, say)
+    /// clears only that field and leaves its siblings intact. In both cases
+    /// [`Envelope::raw_payload`] holds the bytes as given.
     ///
     /// The payload is anything that views as bytes, a byte-string literal
     /// included, and is copied into [`Envelope::raw_payload`]; a test's
@@ -314,7 +360,30 @@ impl Envelope {
     /// from an envelope of any kind. For a view bound to one kind, implement
     /// [`Payload`](crate::Payload) and decode with
     /// [`FromEnvelope::from_envelope`](crate::FromEnvelope::from_envelope),
-    /// which refuses an envelope of another kind before decoding.
+    /// which refuses an envelope of another kind before decoding. This is the
+    /// one decoding primitive on the envelope: a consumer's own
+    /// [`FromEnvelope`](crate::FromEnvelope) impl decodes with it, and so does
+    /// every serde `Payload`, after its kind check.
+    ///
+    /// ```
+    /// use octoevents::{Envelope, EventKind};
+    ///
+    /// /// The sender's account type, which every kind carries.
+    /// #[derive(serde::Deserialize)]
+    /// struct SenderType { sender: Sender }
+    /// #[derive(serde::Deserialize)]
+    /// struct Sender { r#type: String }
+    ///
+    /// let envelope = Envelope::new(
+    ///     "delivery-1",
+    ///     EventKind::Push,
+    ///     br#"{"ref":"refs/heads/main","sender":{"id":1,"login":"octocat","type":"User"}}"#,
+    /// );
+    ///
+    /// let view: SenderType = envelope.decode()?;
+    /// assert_eq!(view.sender.r#type, "User");
+    /// # Ok::<(), octoevents::DecodeError>(())
+    /// ```
     ///
     /// # Errors
     ///
@@ -331,7 +400,8 @@ impl Envelope {
 /// when the signature header is absent, malformed or does not match;
 /// [`MissingHeader`](Self::MissingHeader), when a required delivery header is
 /// absent or empty; [`UnsupportedContentType`](Self::UnsupportedContentType),
-/// when the webhook is not configured as JSON; [`BodyRead`](Self::BodyRead),
+/// when the request's content type is not `application/json`;
+/// [`BodyRead`](Self::BodyRead),
 /// when the transport failed while the body was being read; and
 /// [`BodyTooLarge`](Self::BodyTooLarge), when the body ran past the
 /// configured limit. [`status`](Self::status) is the `http::StatusCode` the
@@ -354,7 +424,8 @@ pub enum ReceiveError {
         /// x-github-delivery header`.
         name: HeaderName,
     },
-    /// The request was not configured as JSON.
+    /// The request's content type is not `application/json`, the content
+    /// type the GitHub webhook must be configured to send.
     #[error(
         "unsupported content type; configure the GitHub webhook content type as application/json"
     )]
@@ -510,13 +581,9 @@ pub enum DecodeError {
     /// use. [`Display`](fmt::Display) is the consumer's message, verbatim;
     /// an underlying error the consumer attached is the
     /// [`source`](std::error::Error::source). Built with
-    /// [`DecodeError::input`] or [`DecodeError::input_with_source`].
-    ///
-    /// Named for what reports the reason, as `KindMismatch` and `Json` are
-    /// named for what went wrong. `Custom` was considered and rejected as
-    /// naming the mechanism (serde's `Error::custom`) rather than the
-    /// concept, and `Missing { field }` as covering the meta-derived case
-    /// exactly while leaving a cross-kind view's other reasons unnameable.
+    /// [`DecodeError::input`] or [`DecodeError::input_with_source`]. Named
+    /// for what reports the reason, as `KindMismatch` and `Json` are named
+    /// for what went wrong.
     #[error("{message}")]
     Input {
         /// The consumer's own reason, as `Display` shows it.

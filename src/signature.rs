@@ -62,8 +62,9 @@ impl WebhookSecret {
     /// Creates a secret from raw bytes.
     ///
     /// For a deployment that reads its secret at startup, where an empty one
-    /// should stop the process. [`str::parse`] and `TryFrom<Vec<u8>>` report
-    /// the same failure as a value, for one that reads it per request.
+    /// should stop the process. [`str::parse`], `TryFrom<Vec<u8>>` and
+    /// `TryFrom<&[u8]>` report the same failure as a value, for one that
+    /// reads it per request.
     ///
     /// # Panics
     ///
@@ -210,8 +211,8 @@ pub enum SignatureError {
 /// `HeaderMap` holds it, through `TryFrom<&[u8]>` for a transport that has
 /// the header's bytes in another shape, or through [`str::parse`] for a
 /// string, and each refuses anything that is not `sha256=` followed by 64
-/// hexadecimal digits as [`SignatureError::Malformed`]; the digits are read
-/// in either case, the prefix in lowercase only, as GitHub sends it. A
+/// hexadecimal digits as [`SignatureError::Malformed`]; the hex digits may
+/// be upper- or lowercase, the prefix lowercase only, as GitHub sends it. A
 /// `HeaderValue` is parsed from its bytes, since it need not be a string, so
 /// one that is not visible ASCII is malformed like any other. [`Verifier::sign`]
 /// produces one, and [`Verifier::verify`] takes one, so what reaches the
@@ -222,17 +223,11 @@ pub enum SignatureError {
 /// `From<Signature> for HeaderValue` is the same text as the header a test
 /// puts on its synthetic request; both are the inverse of parsing. `Debug`
 /// is redacted: the value is secret-derived, and the crate records nothing
-/// computed from the secret. There is no comparison: no `PartialEq`, and no
-/// `ConstantTimeEq` either; the verifier compares the MAC bytes inside
-/// [`Verifier::verify`], in constant time over every configured secret with
-/// no early exit. Not for timing: a constant-time `==` would be safe, and
-/// `digest::CtOutput`, the type the MAC is finalized as, has one. It is so
-/// that the crate offers one verification path, `verify`, and
-/// `signature == verifier.sign(body)`, which would check one secret and skip
-/// the verify span, is not a second one it hands out. Rendering two
-/// signatures with `Display` and comparing the strings remains possible, as
-/// it must while the value is printable; it is a way around the crate's
-/// path, not a path the crate offers.
+/// computed from the secret. There is no comparison, neither `PartialEq` nor
+/// `ConstantTimeEq`, so that [`Verifier::verify`], in constant time over
+/// every configured secret, is the one verification path the crate offers;
+/// `signature == verifier.sign(body)` would check one secret and skip the
+/// verify span.
 ///
 /// ```
 /// use http::HeaderValue;
@@ -416,11 +411,15 @@ impl Verifier {
     /// authentication but not replay protection; deduplicate downstream using
     /// `X-GitHub-Delivery`.
     ///
-    /// The signature arrives parsed: a header value becomes a [`Signature`]
-    /// through [`str::parse`], which is where a value that is not `sha256=`
-    /// and 64 hexadecimal digits is refused as [`SignatureError::Malformed`].
-    /// By the time a signature reaches this method its format is settled, so
-    /// the only failure left is that no secret produced it.
+    /// The signature arrives parsed. A header value becomes a [`Signature`]
+    /// through `TryFrom<&HeaderValue>`, the conversion the receiving path
+    /// runs on the header as an `http::HeaderMap` holds it, through
+    /// `TryFrom<&[u8]>` for the bytes in another shape, or through
+    /// [`str::parse`] for a string, and each is where a value that is not
+    /// `sha256=` and 64 hexadecimal digits is refused as
+    /// [`SignatureError::Malformed`]. By the time a signature reaches this
+    /// method its format is settled, so the only failure left is that no
+    /// secret produced it.
     ///
     /// ```
     /// use octoevents::{Signature, Verifier, WebhookSecret};

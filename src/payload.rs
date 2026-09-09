@@ -5,13 +5,15 @@ use crate::{DecodeError, Envelope, EventKind, EventMeta};
 /// A handler's input, decoded from an [`Envelope`].
 ///
 /// This is the bound on what a [`Handler`](crate::Handler) receives, and what
-/// `Dispatcher::on` accepts a handler over. The decode sees the whole
-/// envelope, kind included, so an input can check the kind, read the payload,
-/// copy the meta, or take the envelope whole. The shipped impls:
+/// [`DispatcherBuilder::on`](crate::DispatcherBuilder::on) accepts a handler
+/// over. The decode sees the whole envelope, kind included, so an input can
+/// check the kind, read the payload, copy the meta, or take the envelope
+/// whole. The shipped impls:
 ///
 /// - [`Envelope`] is its own input: a clone, the meta plus a refcount bump on
-///   the bytes. The receiver and the `always` and `fallback` tiers take a
-///   handler over it and move the envelope in without going through here.
+///   the bytes. The receiver takes a handler over it and moves the envelope
+///   in; the `always` and `fallback` tiers clone it once themselves. Neither
+///   goes through here.
 /// - [`EventMeta`] is a clone of the meta the envelope was built with, read
 ///   from the headers and the payload at receipt, so its decode does nothing
 ///   and cannot fail: a handler over it is routed by kind and action and
@@ -57,10 +59,10 @@ use crate::{DecodeError, Envelope, EventKind, EventMeta};
 ///
 /// An input need not decode the payload at all. One read off the meta makes a
 /// field the handler requires part of its type, so a delivery without it fails
-/// at the decode, at the handler's registration, instead of every handler
-/// unwrapping an `Option`. The failure is neither a kind mismatch nor a JSON
-/// error, so the input reports its own reason as [`DecodeError::Input`],
-/// whose `Display` is the message verbatim:
+/// at the decode, reported against that handler's registration site, instead
+/// of every handler unwrapping an `Option`. The failure is neither a kind
+/// mismatch nor a JSON error, so the input reports its own reason as
+/// [`DecodeError::Input`], whose `Display` is the message verbatim:
 ///
 /// ```
 /// use octoevents::{DecodeError, Envelope, FromEnvelope};
@@ -80,7 +82,7 @@ use crate::{DecodeError, Envelope, EventKind, EventMeta};
 /// ```
 ///
 /// A serde type that implements neither `Payload` nor `FromEnvelope` is
-/// reported with both routes to becoming an input:
+/// reported with both ways of becoming an input:
 ///
 /// ```compile_fail,E0277
 /// use octoevents::FromEnvelope;
@@ -103,10 +105,12 @@ pub trait FromEnvelope: Sized {
     /// # Errors
     ///
     /// Returns the [`DecodeError`] the dispatcher reports at the handler
-    /// that needed this input, converted into the application error through
-    /// `From`: a serde [`Payload`]'s decode produces the kind mismatch,
-    /// [`Envelope::decode`] and that decode the JSON error, and
-    /// [`DecodeError::input`] a reason of the input's own.
+    /// that needed this input, boxed as a `BoxError` and put where the
+    /// handler's own error would go, as the source of the `DispatchError`. A
+    /// serde [`Payload`]'s decode produces the kind mismatch;
+    /// [`Envelope::decode`], which that decode runs after the kind check,
+    /// produces the JSON error; and [`DecodeError::input`] produces a reason
+    /// of the input's own.
     fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError>;
 }
 
@@ -149,7 +153,8 @@ pub trait FromEnvelope: Sized {
 ///
 /// The serde bound is here rather than on `Payload` so that `Event<P>`, which
 /// is a `Payload` but not a serde type, has its own impl without overlapping
-/// this one; the struct says why it never derives `Deserialize`.
+/// this one; that is why `Event` never derives `Deserialize`, as its docs
+/// say.
 // `do_not_recommend` keeps rustc from explaining a type that is neither a
 // payload nor a `FromEnvelope` as "not a payload" through this impl: the
 // trait's own message names both routes to becoming one.
@@ -216,12 +221,11 @@ impl FromEnvelope for Envelope {
 /// Both fields are public and the struct is not `#[non_exhaustive]`, so a
 /// test builds one by hand and a consumer crate destructures it without
 /// `..`. There is no `Deref` to `P`: the payload is `payload`, so a view
-/// field named `meta` is never shadowed.
-// Never `Deserialize`, on purpose. The `FromEnvelope` impl for `Event<P>`
-// below is disjoint from the blanket over `Payload + DeserializeOwned` only
-// because `Event<P>: DeserializeOwned` is knowably false: `Event` is local and
-// derives no `Deserialize`. Deriving it would make the two impls overlap and
-// the crate stop compiling.
+/// field named `meta` is never shadowed. And there is no `Deserialize`, on
+/// purpose: the `FromEnvelope` impl for `Event<P>` is disjoint from the
+/// blanket over `Payload + DeserializeOwned` only because `Event<P>` is
+/// knowably not a serde type, so deriving it would make the two impls
+/// overlap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Event<P> {
     /// The delivery's routing metadata.
@@ -251,10 +255,16 @@ impl<P: Payload> Payload for Event<P> {
 /// [`Handler`](crate::Handler) over it, or over [`Event<P>`] of it, is bound
 /// to that kind by its type: `on` takes it under actions alone, an
 /// [`Action`](crate::Action), an array of them or [`AnyAction`](crate::AnyAction),
-/// with no kind said, and it cannot be registered under the wrong kind. The whole JSON
-/// document GitHub sends is decoded into the type, so a payload type is free
-/// to name only the fields it needs. Every serde payload is a
-/// [`FromEnvelope`] whose decode checks the kind first.
+/// with no kind said, and under those matchers it cannot land on another
+/// kind. Under a matcher that names a different kind, every delivery it
+/// routes fails at the decode as
+/// [`DecodeError::KindMismatch`](crate::DecodeError::KindMismatch). The whole
+/// JSON document GitHub sends is decoded into the type, and serde ignores
+/// the fields the type does not name (unless the type opts out with
+/// `#[serde(deny_unknown_fields)]`, which a view over GitHub's payloads
+/// should not), so a payload type is free to name only the fields it needs.
+/// Every serde payload is a [`FromEnvelope`] whose decode checks the kind
+/// first.
 ///
 /// Derive it on your own serde view, naming the kind in the `#[payload]`
 /// attribute beside the fields it describes; with the `octocrab` feature,

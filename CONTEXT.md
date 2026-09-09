@@ -105,7 +105,7 @@ The handler over the envelope that wraps `Dispatcher::dispatch` and holds
 the policy the tiers cannot express: persist first, answer a redelivery of a
 stored delivery ID with success without dispatching, read the outcome to
 dead-letter or forward an unmatched delivery. Where deduplication and
-dead-lettering live; the dispatcher only routes. The `dispatcher` example
+dead-lettering live; the dispatcher only routes. The `policy_seam` example
 shows one.
 _Avoid_: Middleware, interceptor, wrapper as the term (prose for what the seam is, fine), pre-dispatch hook
 
@@ -118,7 +118,8 @@ _Avoid_: Routing table (network vocabulary), registry, handler map
 
 **Redelivery**:
 GitHub's second attempt at a delivery, carrying the same delivery ID, sent
-when the first was not answered 2xx or when an operator asks for one. The one
+when an operator or the app's own automation asks for one, usually because
+the first was not answered 2xx; GitHub never sends one on its own. The one
 sending-side word this side needs: a receiver observes one and the policy
 seam answers it, with success for a delivery it has stored, and the crate
 itself never asks for one.

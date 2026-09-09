@@ -21,12 +21,13 @@ use crate::{Action, EventKind, events::string_enum};
 /// from the payload when the envelope is built, by
 /// [`Envelope::from_signed`](crate::Envelope::from_signed) once the body is
 /// authenticated and by [`Envelope::new`](crate::Envelope::new) alike. That
-/// read is one pass over the bytes that keeps those five top-level values and
-/// skips everything else: linear in the body, as the signature check over the
-/// same bytes is, with no model built of the rest of the document. It runs for
-/// every envelope whatever the handler's input will be, because the dispatcher
-/// routes by the action, and the action is in the payload, not in a header.
-/// It is best-effort and cannot fail; the rules are on `Envelope::new`.
+/// read, the *probe*, is one pass over the bytes that keeps those five
+/// top-level values and skips everything else: linear in the body, as the
+/// signature check over the same bytes is, with no model built of the rest of
+/// the document. It runs for every envelope whatever the handler's input will
+/// be, because the dispatcher routes by the action, and the action is in the
+/// payload, not in a header. It is best-effort and cannot fail; the rules are
+/// on `Envelope::new`.
 ///
 /// So "decodes nothing", said of a handler over this type, means no decode on
 /// the handler's behalf, not that the payload went unread. A decode is the
@@ -114,9 +115,10 @@ impl EventMeta {
     /// here, so the test path and the receiving path read a payload alike.
     ///
     /// Best-effort and never fatal: the top level is read as a map of raw
-    /// values, so malformed JSON leaves every probed field empty and one
-    /// malformed field (a `repository` missing `full_name`, say) clears only
-    /// itself. The rest of the document is not decoded.
+    /// values, so JSON that is malformed, or whose top level is not an
+    /// object, leaves every probed field empty, and one malformed field (a
+    /// `repository` missing `full_name`, say) clears only itself. The rest of
+    /// the document is not decoded.
     pub(crate) fn probe(
         delivery_id: impl Into<String>,
         kind: EventKind,
@@ -147,15 +149,18 @@ impl EventMeta {
     }
 }
 
-/// The repository's meta: the fields the probe keeps of the payload's
+/// The repository's meta: the fields the probe (the read of the payload
+/// described under [Where the fields come
+/// from](EventMeta#where-the-fields-come-from)) keeps of the payload's
 /// `repository` object, read without decoding a full payload model.
 ///
 /// What [`EventMeta::repository`] holds. Named as the meta of the repository,
 /// not as the repository: it is the four fields that routing and a policy read,
 /// where octocrab's `Repository` is the whole object, and a consumer with
 /// both in scope should not confuse them. It is a plain struct: a test builds
-/// one as a literal or with [`RepositoryMeta::new`], and a field GitHub adds
-/// here would be a breaking change, as it would to a literal.
+/// one as a literal or with [`RepositoryMeta::new`], so a field GitHub adds
+/// here would be a breaking change, as adding a field to any struct built as
+/// a literal is.
 ///
 /// ```
 /// use octoevents::RepositoryMeta;
@@ -211,9 +216,9 @@ impl RepositoryMeta {
     }
 }
 
-/// An account's meta, a user's, an organization's or an app's: the fields
-/// the probe keeps of the payload's account objects, read without decoding a
-/// full payload model, the numeric ID and the login.
+/// An account's meta, the numeric ID and the login: the two fields the probe
+/// keeps of the payload's account objects, a user's, an organization's or an
+/// app's, read without decoding a full payload model.
 ///
 /// What [`EventMeta::organization`] and [`EventMeta::sender`] hold. The ID
 /// is the stable identity, the login the name that can be changed under it,

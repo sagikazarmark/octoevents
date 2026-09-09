@@ -101,12 +101,28 @@ pre-release-replacements = [
   { file = "README.md", search = "octoevents = \\{ version = \"[^\"]+\"", replace = "octoevents = { version = \"{{version}}\"", exactly = 1 },
 ]
 
+# The examples, in the order to read them: the README's quickstart, a receiver
+# with no dispatcher, a dispatcher with every tier, and the policy seam around
+# one. Each carries `#[cfg(test)]` tests; `cargo test --examples
+# --all-features` runs them (cargo builds examples on `cargo test` but does
+# not run their tests unless asked, and skips an example whose required
+# features are off, which without `tower` is all of them). The Cloudflare
+# Worker example is a package of its own under
+# `examples/worker`, excluded from the workspace above.
+[[example]]
+name = "quickstart"
+required-features = ["tower"]
+
 [[example]]
 name = "axum"
 required-features = ["tower"]
 
 [[example]]
 name = "dispatcher"
+required-features = ["tower", "derive"]
+
+[[example]]
+name = "policy_seam"
 required-features = ["tower", "octocrab"]
 
 [lints]

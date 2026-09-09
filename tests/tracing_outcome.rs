@@ -579,8 +579,9 @@ fn the_receive_span_records_one_of_five_outcomes_beside_the_status_answered() {
 
 /// A request refused before any handler ran has an error value, the
 /// `ReceiveError` that selected its status, and the receive span carries its
-/// text as `error`, in the form the failed-delivery event records the same
-/// field. `outcome` says the class of the answer; `error` says which refusal
+/// text as `error`: a display value, the text alone, where the
+/// failed-delivery event records the same name as an error value with its
+/// chain. `outcome` says the class of the answer; `error` says which refusal
 /// it was. The error's source is not on the span: beneath `BodyRead` it is
 /// the transport's own text, which `tests/tracing_hygiene.rs` holds off it.
 #[cfg(feature = "http-body")]

@@ -4,3 +4,16 @@ compatibility_date = "2026-08-26"
 
 [build]
 command = "worker-build --release"
+
+# The Restate ingress URL of the virtual object envelopes are forwarded to,
+# read by `src/lib.rs` as `RESTATE_OBJECT_URL`. The value below is a local
+# Restate's ingress, for `wrangler dev`; a deployed Worker cannot reach it, so
+# a deployment sets its own, `wrangler deploy --var RESTATE_OBJECT_URL:<url>`
+# or an `[env.<name>.vars]` block (see README.md). While it points at nothing,
+# every verified delivery that reaches the dispatcher answers 500; a refused
+# request is still 401 or 400, and a verified `ping` still 204. The other
+# binding, `GITHUB_WEBHOOK_SECRET`, is a
+# secret and never goes here: `.dev.vars` for `wrangler dev`, and
+# `wrangler secret put GITHUB_WEBHOOK_SECRET` for a deployment.
+[vars]
+RESTATE_OBJECT_URL = "http://localhost:8080/GitHubInstallation"

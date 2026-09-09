@@ -112,6 +112,28 @@ string_enum! {
     /// was not built with. The header names the kind outright, and a name
     /// this crate does not know arrives as [`Unknown`](Self::Unknown) with
     /// the wire value intact, so it can still be routed, logged, or rejected.
+    /// The enum is `#[non_exhaustive]`: a kind GitHub adds becomes a variant
+    /// without that being a breaking change, so a `match` over it keeps a
+    /// wildcard arm.
+    ///
+    /// The conversions are the wire string's: `From<&str>` and `From<String>`
+    /// never fail, [`as_str`](Self::as_str) and `Display` give the string
+    /// back, and serde reads and writes it as a bare string, as the
+    /// [wire format](crate::Envelope#wire-format) does.
+    ///
+    /// ```
+    /// use octoevents::EventKind;
+    ///
+    /// let kind = EventKind::from("pull_request");
+    /// assert_eq!(kind, EventKind::PullRequest);
+    /// assert_eq!(kind.as_str(), "pull_request");
+    /// assert_eq!(kind.to_string(), "pull_request");
+    ///
+    /// // A name this version does not know is kept, not refused.
+    /// let future = EventKind::from("future_event");
+    /// assert_eq!(future, EventKind::Unknown("future_event".into()));
+    /// assert_eq!(future.as_str(), "future_event");
+    /// ```
     pub enum EventKind {
         BranchProtectionConfiguration => "branch_protection_configuration",
         BranchProtectionRule => "branch_protection_rule",
@@ -193,7 +215,45 @@ string_enum! {
 
 // Known top-level action names shared across GitHub webhook events.
 string_enum! {
-    /// An action extracted from a webhook payload.
+    /// The payload's top-level `action` value: GitHub's sub-classification of
+    /// an event, `opened` or `closed` for `issues`, `created` for
+    /// `installation`.
+    ///
+    /// Read from the payload when the envelope is built, into
+    /// [`EventMeta::action`](crate::EventMeta::action), and what the
+    /// dispatcher routes by beside the kind. Some kinds have no action
+    /// (`push`, `ping`, `create`, `delete`, `fork`, `gollum`, `page_build`,
+    /// `public`, `repository_import`), and a delivery of one carries `None`;
+    /// a delivery whose action this version does not know carries
+    /// [`Unknown`](Self::Unknown) with the wire value intact. One kind's
+    /// action is the caller's: a `repository_dispatch` payload's `action` is
+    /// the `event_type` the `POST /repos/{owner}/{repo}/dispatches` request
+    /// gave, parsed like any other, so `"deploy"` arrives as `Unknown`
+    /// carrying that string and `"opened"` as `Opened`. A handler for one
+    /// is registered with the matcher built through `Action::from`,
+    /// `on((EventKind::RepositoryDispatch, Action::from("deploy")), h)`,
+    /// which stays correct should the string become a variant. The variants
+    /// are the actions
+    /// GitHub's webhook reference lists across every kind, plus
+    /// [`Performed`](Self::Performed), which earlier schemas listed for
+    /// `security_advisory` and this crate keeps. The enum is
+    /// `#[non_exhaustive]`, so a `match` over it keeps a wildcard arm.
+    ///
+    /// The conversions are the wire string's, as [`EventKind`]'s are:
+    ///
+    /// ```
+    /// use octoevents::{Action, Envelope, EventKind};
+    ///
+    /// assert_eq!(Action::from("ready_for_review"), Action::ReadyForReview);
+    /// assert_eq!(Action::ReadyForReview.as_str(), "ready_for_review");
+    /// assert_eq!(Action::from("future_action"), Action::Unknown("future_action".into()));
+    ///
+    /// // What the envelope reads off the payload.
+    /// let opened = Envelope::new("delivery-1", EventKind::Issues, br#"{"action":"opened"}"#);
+    /// assert_eq!(opened.meta.action, Some(Action::Opened));
+    /// let pushed = Envelope::new("delivery-2", EventKind::Push, br#"{"ref":"refs/heads/main"}"#);
+    /// assert_eq!(pushed.meta.action, None);
+    /// ```
     pub enum Action {
         Added => "added",
         AddedToRepository => "added_to_repository",
