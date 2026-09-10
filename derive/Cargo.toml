@@ -20,6 +20,8 @@ quote = "1.0.40"
 syn = { version = "3.0.4", default-features = false, features = [
   "clone-impls",
   "derive",
+  # `#[payload(..)]` accepts any expression valid in an associated constant.
+  "full",
   "parsing",
   "printing",
   "proc-macro",
