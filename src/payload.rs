@@ -315,9 +315,37 @@ impl<P: Payload> Payload for Event<P> {
 /// its where clause, and nothing else. The bound is what makes a serde type a
 /// `FromEnvelope`, so a view generic over the shape of a field is a payload
 /// wherever it deserializes, with nothing said about its parameter beyond
-/// what the type declares. It comes with the `derive` feature, on by
-/// default; without the feature, the impl is written by hand, and on a type
-/// with no generics the bound goes without saying:
+/// what the type declares:
+///
+#[cfg_attr(feature = "derive", doc = "```")]
+#[cfg_attr(not(feature = "derive"), doc = "```ignore")]
+/// use octoevents::{EventKind, Payload};
+///
+/// #[derive(serde::Deserialize, Payload)]
+/// #[payload(EventKind::Issues)]
+/// struct IssueOpened {
+///     issue: Number,
+/// }
+///
+/// /// Generic over the shape of one field, with no bound on `T`.
+/// #[derive(serde::Deserialize, Payload)]
+/// #[payload(EventKind::PullRequest)]
+/// struct PullRequest<T> {
+///     pull_request: T,
+/// }
+///
+/// #[derive(serde::Deserialize)]
+/// struct Number {
+///     number: u64,
+/// }
+///
+/// assert_eq!(IssueOpened::KIND, EventKind::Issues);
+/// assert_eq!(<PullRequest<Number>>::KIND, EventKind::PullRequest);
+/// ```
+///
+/// The derive comes with the `derive` feature, on by default; without the
+/// feature, the impl is written by hand, and on a type with no generics the
+/// bound goes without saying:
 ///
 /// ```
 /// use octoevents::{EventKind, Payload};

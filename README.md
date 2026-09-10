@@ -847,7 +847,9 @@ The octoevents check, Clippy and rustdoc matrices explicitly pass
 test backend from dev-dependencies. The weak dependency feature leaves
 core-only builds free of octocrab. For a direct all-feature documentation build,
 use `cargo doc --workspace --all-features --features octocrab/jwt-rust-crypto`.
-Tests run across both workspace crates, including the derive crate's doctests.
+Tests run across both workspace crates. The derive crate tests parsing and
+expansion; consumer derive tests and executable examples live in octoevents,
+so the derive crate can be published first without depending on its parent.
 
 - Native compilation checks every feature combination and all Cargo targets.
 - Unit, integration, doc and example tests run with no features, defaults, all

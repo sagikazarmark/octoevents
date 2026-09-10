@@ -12,8 +12,8 @@ use syn::{DeriveInput, Error, Expr, Meta, Result, parse_macro_input, parse_quote
 /// carrying the type's own generics and bounds and adding one:
 /// `Self: serde::de::DeserializeOwned`. Nothing else is generated: the serde
 /// derive stays yours, and so does every field. The added bound is what
-/// makes a serde type a `FromEnvelope`, which `Payload` requires, so the
-/// `PullRequest<T>` below is a payload wherever `PullRequest<T>` deserializes,
+/// makes a serde type a `FromEnvelope`, which `Payload` requires, so
+/// a generic `PullRequest<T>` is a payload wherever it deserializes,
 /// with nothing said about `T` beyond what the type itself declares. A
 /// misspelled variant is reported by rustc at the path, as any expression
 /// would be.
@@ -31,30 +31,8 @@ use syn::{DeriveInput, Error, Expr, Meta, Result, parse_macro_input, parse_quote
 /// expected under those names, as they are wherever `serde::Deserialize` is
 /// derived and `octoevents` is depended on.
 ///
-/// ```
-/// use octoevents::{EventKind, Payload};
-///
-/// #[derive(serde::Deserialize, Payload)]
-/// #[payload(EventKind::Issues)]
-/// struct IssueOpened {
-///     issue: Number,
-/// }
-///
-/// /// Generic over the shape of one field, with no bound on `T`.
-/// #[derive(serde::Deserialize, Payload)]
-/// #[payload(EventKind::PullRequest)]
-/// struct PullRequest<T> {
-///     pull_request: T,
-/// }
-///
-/// #[derive(serde::Deserialize)]
-/// struct Number {
-///     number: u64,
-/// }
-///
-/// assert_eq!(IssueOpened::KIND, EventKind::Issues);
-/// assert_eq!(<PullRequest<Number>>::KIND, EventKind::PullRequest);
-/// ```
+/// See [`octoevents::Payload`](https://docs.rs/octoevents/latest/octoevents/trait.Payload.html)
+/// for examples, including generic views.
 #[proc_macro_derive(Payload, attributes(payload))]
 pub fn derive_payload(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -69,7 +47,7 @@ pub fn derive_payload(input: proc_macro::TokenStream) -> proc_macro::TokenStream
 /// DeserializeOwned`. `Payload` requires `FromEnvelope`, which a serde type
 /// has through the blanket impl over `Payload + DeserializeOwned`; without
 /// the bound spelled on the impl, a generic view such as the `PullRequest<T>`
-/// in the derive's docs would owe `FromEnvelope` for every `T`, including
+/// in the trait's docs would owe `FromEnvelope` for every `T`, including
 /// the ones that do not deserialize, and the impl would be refused. With it,
 /// `PullRequest<T>` is a payload wherever `PullRequest<T>` deserializes, and
 /// nothing further is said about `T`.

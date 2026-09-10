@@ -27,12 +27,8 @@ syn = { version = "3.0.4", default-features = false, features = [
   "proc-macro",
 ] }
 
-# For the tests of the derive, which expands to `impl octoevents::Payload`.
-# A dev-dependency may point back at the crate that depends on this one.
-# Keep the lockstep version so Cargo retains it in the published manifest.
-[dev-dependencies]
-octoevents = { version = "=0.1.0", path = "..", default-features = false, features = ["derive"] }
-serde = { version = "1.0.219", features = ["derive"] }
+# Consumer tests and executable examples live in octoevents, keeping the
+# dependency graph one-way so this crate can be published first.
 
 [lints]
 workspace = true

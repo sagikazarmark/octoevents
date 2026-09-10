@@ -1098,10 +1098,8 @@ dependencies = [
 name = "octoevents-derive"
 version = "0.1.0"
 dependencies = [
- "octoevents",
  "proc-macro2",
  "quote",
- "serde",
  "syn 3.0.5",
 ]
 

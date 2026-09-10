@@ -1,8 +1,10 @@
 //! Consumer coverage for kind expressions valid in an associated constant.
 //!
-//! Kept independent of the root crate's test helpers and dev-dependencies so
+//! Kept independent of the other test helpers and dev-dependencies so
 //! this file can also run as an isolated consumer's test target, without
 //! unrelated Syn feature unification supplying expression support.
+
+#![cfg(feature = "derive")]
 
 use octoevents::{EventKind, Payload};
 
