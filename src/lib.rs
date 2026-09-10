@@ -220,6 +220,15 @@
 //! `organization` objects, which its `WebhookEvent` carries and
 //! [`EventMeta`] summarizes.
 //!
+//! **Known decoding limitation in octocrab 0.54.1:** `code_scanning_alert`
+//! and `repository_advisory` fail as `WebhookEvent` or `Event<WebhookEvent>`
+//! even when their payloads fit the per-kind models. The decoder removes
+//! common fields that those models require, producing `DecodeError::Json`
+//! (500 through the receiver, before the routed handler runs). For these
+//! kinds, use `CodeScanningAlertWebhookEventPayload` or
+//! `RepositoryAdvisoryWebhookEventPayload`, optionally inside `Event`, or a
+//! consumer-defined view. These inputs decode the original payload directly.
+//!
 // `WebhookReceiver::receive` exists only under `http-body`, and the front page
 // names it under every feature set, so its link definition is chosen by cfg:
 // an intra-doc path when the method is compiled in, so a renamed or removed
@@ -257,10 +266,10 @@ mod trace;
 
 pub use dispatch::{DispatchError, Dispatcher, DispatcherBuilder, Match, Outcome, Tier};
 pub use envelope::{BodyError, DecodeError, Envelope, ReceiveError};
-pub use events::{Action, EventKind};
+pub use events::{Action, EventKind, UnknownAction, UnknownEventKind};
 pub use handler::Handler;
 pub use matcher::{AnyAction, EventMatcher, IntoMatcher};
-pub use meta::{AccountMeta, EventMeta, RepositoryMeta, TargetType};
+pub use meta::{AccountMeta, EventMeta, RepositoryMeta, TargetType, UnknownTargetType};
 /// Derives [`Payload`] for a serde type, declaring its kind:
 /// `#[derive(Payload)] #[payload(EventKind::..)]`. See the trait.
 #[cfg(feature = "derive")]

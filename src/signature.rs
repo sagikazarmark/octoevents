@@ -46,6 +46,9 @@ pub enum WebhookSecretError {
 /// and `TryFrom<&[u8]>` with a [`WebhookSecretError`], so a [`Verifier`]
 /// cannot be handed one and has nothing left to check.
 ///
+/// Consumers must supply a high-entropy secret. Nonempty validation does not
+/// establish secret strength; a nonempty but guessable value is still accepted.
+///
 /// `Display` is deliberately not implemented: interpolating a secret into a
 /// format string is a compile error rather than silently redacted output.
 /// `Debug` output is redacted.
@@ -350,7 +353,9 @@ impl fmt::Debug for Signature {
 ///
 /// A verifier is required to receive a webhook: it is constructed from one
 /// secret, so a deployment without a secret cannot be expressed, and a
-/// [`WebhookSecret`] is never empty, so neither can one with a guessable key.
+/// [`WebhookSecret`] is never empty, so an empty key cannot be configured.
+/// Consumers must supply a high-entropy secret; nonempty validation does not
+/// establish secret strength.
 /// Additional secrets are added with [`Verifier::also`] to open a client-side
 /// rotation window.
 ///
@@ -405,9 +410,14 @@ impl Verifier {
     /// bytes.
     ///
     /// Every secret is evaluated even after a match, so timing reveals
-    /// neither the secret nor which one matched. This provides
-    /// authentication but not replay protection; deduplicate downstream using
-    /// `X-GitHub-Delivery`.
+    /// neither the secret nor which one matched. Only the payload bytes are
+    /// authenticated: GitHub's signature does not cover the delivery ID,
+    /// event name, or target headers. Authorization decisions must use
+    /// authenticated payload data or independently trusted configuration.
+    ///
+    /// This provides no replay protection. Deduplicating downstream using
+    /// `X-GitHub-Delivery` handles GitHub redelivery, but an attacker can
+    /// resubmit a captured signed payload under a different delivery ID.
     ///
     /// The signature arrives parsed. A header value becomes a [`Signature`]
     /// through `TryFrom<&HeaderValue>`, the conversion the receiving path

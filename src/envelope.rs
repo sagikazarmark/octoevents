@@ -3,10 +3,13 @@ use std::{borrow::Cow, fmt};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, StatusCode};
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 
-use crate::{BoxError, EventKind, EventMeta, SignatureError, TargetType, Verifier, header};
+use crate::{
+    AccountMeta, Action, BoxError, EventKind, EventMeta, RepositoryMeta, SignatureError,
+    TargetType, Verifier, header,
+};
 
 /// The verified unit of receipt: the exact payload bytes and their metadata.
 ///
@@ -135,7 +138,7 @@ use crate::{BoxError, EventKind, EventMeta, SignatureError, TargetType, Verifier
 /// trusted to have built the envelope through one of the two constructors,
 /// which is what the wire format is for: a hop between services of one
 /// deployment, not an input from outside it.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[non_exhaustive]
 pub struct Envelope {
     /// The routing metadata extracted from the headers and the payload probe.
@@ -150,11 +153,70 @@ pub struct Envelope {
     /// decode reads. Serialized as standard base64 so an envelope survives a
     /// JSON hop to an internal service without the payload being re-encoded;
     /// the encoded field is 4/3 of the payload's size.
-    #[serde(
-        serialize_with = "serialize_bytes",
-        deserialize_with = "deserialize_bytes"
-    )]
+    #[serde(serialize_with = "serialize_bytes")]
     pub raw_payload: Bytes,
+}
+
+// Keep this flat: serde's `flatten` buffers unknown values before ignoring
+// them, imposing numeric, string and nesting limits on transport annotations.
+// Listing the fields here lets derived deserialization skip them instead.
+// Keep the metadata fields in sync with EventMeta; the round-trip tests cover
+// every current field. Conversion preserves forwarded meta without probing.
+#[derive(Deserialize)]
+struct EnvelopeWire {
+    delivery_id: String,
+    kind: EventKind,
+    action: Option<Action>,
+    installation_id: Option<u64>,
+    repository: Option<RepositoryMeta>,
+    organization: Option<AccountMeta>,
+    sender: Option<AccountMeta>,
+    target_type: Option<TargetType>,
+    target_id: Option<u64>,
+    #[serde(deserialize_with = "deserialize_bytes")]
+    raw_payload: Bytes,
+}
+
+impl From<EnvelopeWire> for Envelope {
+    fn from(wire: EnvelopeWire) -> Self {
+        Self {
+            meta: EventMeta {
+                delivery_id: wire.delivery_id,
+                kind: wire.kind,
+                action: wire.action,
+                installation_id: wire.installation_id,
+                repository: wire.repository,
+                organization: wire.organization,
+                sender: wire.sender,
+                target_type: wire.target_type,
+                target_id: wire.target_id,
+            },
+            raw_payload: wire.raw_payload,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Envelope {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // The wire format is an object. A derived struct also accepts a
+        // positional array, so restrict the entry point to a map as before.
+        struct EnvelopeVisitor;
+
+        impl<'de> de::Visitor<'de> for EnvelopeVisitor {
+            type Value = Envelope;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an envelope object")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+                EnvelopeWire::deserialize(de::value::MapAccessDeserializer::new(map))
+                    .map(Into::into)
+            }
+        }
+
+        deserializer.deserialize_map(EnvelopeVisitor)
+    }
 }
 
 impl Envelope {
@@ -172,6 +234,13 @@ impl Envelope {
     /// into a `HeaderMap`; header-name case is `HeaderName`'s to handle. A
     /// failure is answered with [`ReceiveError::status`], the receiver's
     /// contract.
+    ///
+    /// Verification authenticates only the payload bytes. GitHub's signature
+    /// does not cover the delivery ID, event name, or target headers, so
+    /// their metadata is not an authenticated authorization claim. Use
+    /// authenticated payload data or independently trusted configuration for
+    /// authorization. Delivery-ID deduplication handles GitHub redelivery,
+    /// not an attacker resubmitting a captured signed payload with a new ID.
     ///
     /// For the whole contract over the same two arguments (the header-only
     /// refusal, the body limit, the `ping` short-circuit, the handler, the

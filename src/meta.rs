@@ -31,6 +31,12 @@ use crate::{Action, EventKind, events::string_enum};
 /// payload, not in a header. It is best-effort and cannot fail; the rules are
 /// on `Envelope::new`.
 ///
+/// On the receiving path, verification authenticates the payload bytes, not
+/// the delivery ID, event name, or target headers. Header-derived fields
+/// alone must not authorize security-sensitive actions; use authenticated
+/// payload data or independently trusted configuration. Delivery-ID
+/// deduplication handles GitHub redelivery, not adversarial replay.
+///
 /// So "decodes nothing", said of a handler over this type, means no decode on
 /// the handler's behalf, not that the payload went unread. A decode is the
 /// fallible turn of the bytes into an input that asks for it, and it happens
@@ -288,7 +294,27 @@ string_enum! {
     /// `X-GitHub-Hook-Installation-Target-Type`: `integration` for a GitHub
     /// App, `repository` for a repository webhook and `organization` for an
     /// organization webhook.
-    pub enum TargetType {
+    ///
+    /// Unknown strings cannot be edited in place; replace the whole target
+    /// type through `TargetType::from` instead.
+    ///
+    /// ```compile_fail,E0277
+    /// use octoevents::TargetType;
+    /// let mut target = TargetType::from("future_target");
+    /// if let TargetType::Unknown { value, .. } = &mut target {
+    ///     *value = "integration".into();
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail,E0308
+    /// use octoevents::{EventKind, TargetType};
+    /// let EventKind::Unknown { value: kind, .. } = EventKind::from("integration") else { return };
+    /// let mut target = TargetType::from("future_target");
+    /// if let TargetType::Unknown { value, .. } = &mut target {
+    ///     *value = kind;
+    /// }
+    /// ```
+    pub enum TargetType, UnknownTargetType {
         Integration => "integration",
         Repository => "repository",
         Organization => "organization",

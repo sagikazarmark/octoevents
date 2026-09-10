@@ -1098,6 +1098,68 @@ mod wire_format {
         assert_eq!(envelope.meta, EventMeta::new("delivery", EventKind::Push));
         assert_eq!(envelope.raw_payload, Bytes::from_static(b"{}"));
     }
+
+    #[test]
+    fn skips_unknown_annotations_without_decoding_their_values() {
+        for annotation in [
+            "1e400".to_owned(),
+            format!("{}0{}", "[".repeat(150), "]".repeat(150)),
+            r#""\uD800""#.to_owned(),
+        ] {
+            let document = format!(
+                r#"{{"annotation":{annotation},"delivery_id":"delivery","kind":"push","raw_payload":"e30="}}"#
+            );
+            let received: Envelope = serde_json::from_str(&document).unwrap();
+            assert_eq!(received, Envelope::new("delivery", EventKind::Push, b"{}"));
+        }
+    }
+
+    #[test]
+    fn preserves_forwarded_meta_without_probing_the_payload() {
+        let document = r#"{
+            "delivery_id":"delivery", "kind":"issues", "action":"closed",
+            "raw_payload":"eyJhY3Rpb24iOiJvcGVuZWQifQ=="
+        }"#;
+        let received: Envelope = serde_json::from_str(document).unwrap();
+        assert_eq!(received.meta.action, Some(crate::Action::Closed));
+        assert_eq!(received.raw_payload.as_ref(), br#"{"action":"opened"}"#);
+    }
+
+    #[test]
+    fn refuses_malformed_and_duplicate_known_wire_fields() {
+        for field in [
+            r#""action": 42"#,
+            r#""installation_id": -1"#,
+            r#""repository": {}"#,
+            r#""sender": false"#,
+            r#""organization": []"#,
+            r#""target_type": 1"#,
+            r#""target_id": "1"#,
+            r#""action": null, "action": "opened""#,
+            r#""delivery_id": "second""#,
+            r#""raw_payload": "e30=""#,
+            r#""annotation": [1,]"#,
+        ] {
+            let document = format!(
+                r#"{{"delivery_id":"delivery","kind":"push","raw_payload":"e30=",{field}}}"#
+            );
+            assert!(
+                serde_json::from_str::<Envelope>(&document).is_err(),
+                "{field}"
+            );
+        }
+        for document in [
+            "null",
+            "[]",
+            r#"["delivery","push",null,null,null,null,null,null,null,"e30="]"#,
+            r#"{"delivery_id":"delivery","kind":"push","raw_payload":"!"}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<Envelope>(document).is_err(),
+                "{document}"
+            );
+        }
+    }
 }
 
 /// The kind-free `decode` and what a `DecodeError` says.

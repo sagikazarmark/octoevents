@@ -113,10 +113,26 @@ octocrab_payloads! {
 /// Best-effort: octocrab's webhook models are hand-maintained and
 /// self-described as beta. An event kind octocrab does not know still
 /// decodes, arriving as [`WebhookEventPayload::Unknown`] carrying the generic
-/// JSON, so a [`DecodeError::Json`] here means the payload was not a JSON
-/// object or a known kind's payload drifted. [`Envelope::raw_payload`] is
+/// JSON; the common fields must still fit octocrab's models. A
+/// [`DecodeError::Json`] means the payload could not be decoded by those
+/// models, including the limitation below. [`Envelope::raw_payload`] is
 /// unaffected either way, and a consumer view decoded with
 /// [`Envelope::decode`] breaks only on the fields it names.
+///
+/// # Known decoding limitation
+///
+/// With octocrab 0.54.1, `code_scanning_alert` and `repository_advisory`
+/// cannot decode as `WebhookEvent` or `Event<WebhookEvent>`, even when the
+/// payload fits the per-kind model. Its decoder removes common fields
+/// before decoding the kind-specific payload, but both models require
+/// `repository` and code-scanning alerts also require `sender`. The decode
+/// fails with `DecodeError::Json`; through a receiver this answers 500
+/// before the routed handler runs.
+///
+/// For these kinds, take [`payload::CodeScanningAlertWebhookEventPayload`]
+/// or [`payload::RepositoryAdvisoryWebhookEventPayload`] directly (optionally
+/// inside [`Event`](crate::Event)), or define a consumer view. Those inputs
+/// decode the original payload and avoid this common-field extraction.
 ///
 /// Decodes [`Envelope::raw_payload`] on every call. Bind the result rather
 /// than calling it repeatedly: a delivery can carry megabytes of JSON.
@@ -206,7 +222,7 @@ mod tests {
 
             assert!(matches!(
                 &event.meta.kind,
-                EventKind::Unknown { value, .. } if value == name
+                EventKind::Unknown { value, .. } if value.as_str() == name
             ));
             assert_eq!(
                 event.payload.kind,

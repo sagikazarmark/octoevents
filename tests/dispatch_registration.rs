@@ -11,6 +11,36 @@ use tokio::sync::Mutex;
 
 type Calls = Arc<Mutex<Vec<&'static str>>>;
 
+#[tokio::test]
+async fn static_and_forwarded_wire_names_route_with_the_same_identity() {
+    for (kind, action, payload) in [
+        (
+            EventKind::from_static("issues"),
+            Action::from_static("opened"),
+            br#"{"action":"opened"}"#.as_slice(),
+        ),
+        (
+            EventKind::from_static("future_event"),
+            Action::from_static("future_action"),
+            br#"{"action":"future_action"}"#.as_slice(),
+        ),
+    ] {
+        let calls = Calls::default();
+        let dispatcher = Dispatcher::builder()
+            .on((kind.clone(), action), recording(&calls, "registered"))
+            .build();
+        let envelope = Envelope::new("delivery-1", EventKind::from(kind.to_string()), payload);
+        let forwarded = serde_json::to_string(&envelope).unwrap();
+        let received: Envelope = serde_json::from_str(&forwarded).unwrap();
+        assert_eq!(received, envelope);
+
+        let outcome = dispatcher.dispatch(received).await;
+        assert_eq!(outcome.matched, Match::Matched);
+        outcome.result.unwrap();
+        assert_eq!(calls.lock().await.as_slice(), ["registered"]);
+    }
+}
+
 fn recording(
     calls: &Calls,
     name: &'static str,

@@ -1,6 +1,6 @@
 /// An enum over one GitHub wire vocabulary: a variant per known string, an
-/// `Unknown { value: Cow<'static, str> }` for the rest, and the conversions every such enum
-/// needs: `as_str`, `From<&str>`, an infallible `FromStr`, `Display` as the
+/// opaque, vocabulary-specific `Unknown` value for the rest, and the
+/// conversions every such enum needs: `as_str`, `From<&str>`, an infallible `FromStr`, `Display` as the
 /// wire string, and serde as a bare string. The three wire vocabularies the
 /// crate parses are generated with it: [`EventKind`] and [`Action`] here,
 /// and [`TargetType`](crate::TargetType) beside the meta that holds it.
@@ -10,7 +10,7 @@
 macro_rules! string_enum {
     (
         $(#[$meta:meta])*
-        pub enum $name:ident {
+        pub enum $name:ident, $unknown:ident {
             $($variant:ident => $wire:literal,)*
         }
     ) => {
@@ -27,12 +27,42 @@ macro_rules! string_enum {
             /// Build values with `From<&str>`, `From<String>`, or
             /// [`from_static`](Self::from_static), so a known string becomes
             /// its named variant. Match this variant with `Unknown { value, .. }`;
-            /// its payload is a borrowed or owned wire string.
+            /// its payload exposes the wire string through `as_str()` and
+            /// `Display`, but cannot be constructed or edited independently.
             #[non_exhaustive]
             Unknown {
                 /// The wire string, kept verbatim.
-                value: ::std::borrow::Cow<'static, str>,
+                value: $unknown,
             },
+        }
+
+        #[doc = concat!("A wire string unknown to [`", stringify!($name), "`].")]
+        ///
+        /// Obtained by matching the enum's `Unknown { value, .. }` variant.
+        /// Read the string with `as_str()` or `Display`. Construction and
+        /// string mutation are private so a recognized name cannot acquire
+        /// an unknown identity. To change the name, construct the enum again
+        /// through its normalizing conversions or `from_static`.
+        ///
+        /// Each vocabulary has its own unknown-value type: a string unknown
+        /// to one vocabulary may already be recognized by another.
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        pub struct $unknown {
+            value: ::std::borrow::Cow<'static, str>,
+        }
+
+        impl $unknown {
+            /// Returns the wire string verbatim.
+            #[must_use]
+            pub fn as_str(&self) -> &str {
+                &self.value
+            }
+        }
+
+        impl ::std::fmt::Display for $unknown {
+            fn fmt(&self, formatter: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                formatter.write_str(self.as_str())
+            }
         }
 
         impl $name {
@@ -50,7 +80,7 @@ macro_rules! string_enum {
                         return Self::$variant;
                     }
                 )*
-                Self::Unknown { value: ::std::borrow::Cow::Borrowed(value) }
+                Self::Unknown { value: $unknown { value: ::std::borrow::Cow::Borrowed(value) } }
             }
 
             /// Returns the original GitHub wire value.
@@ -58,7 +88,7 @@ macro_rules! string_enum {
             pub fn as_str(&self) -> &str {
                 match self {
                     $(Self::$variant => $wire,)*
-                    Self::Unknown { value, .. } => value,
+                    Self::Unknown { value, .. } => value.as_str(),
                 }
             }
 
@@ -76,7 +106,7 @@ macro_rules! string_enum {
             fn from(value: &str) -> Self {
                 match value {
                     $($wire => Self::$variant,)*
-                    value => Self::Unknown { value: value.to_owned().into() },
+                    value => Self::Unknown { value: $unknown { value: value.to_owned().into() } },
                 }
             }
         }
@@ -87,7 +117,7 @@ macro_rules! string_enum {
             fn from(value: ::std::string::String) -> Self {
                 match value.as_str() {
                     $($wire => Self::$variant,)*
-                    _ => Self::Unknown { value: value.into() },
+                    _ => Self::Unknown { value: $unknown { value: value.into() } },
                 }
             }
         }
@@ -180,7 +210,7 @@ string_enum! {
     /// assert_eq!(future.as_str(), "future_event");
     /// const FUTURE: EventKind = EventKind::from_static("future_event");
     /// assert_eq!(future, FUTURE);
-    /// assert!(matches!(future, EventKind::Unknown { value, .. } if value == "future_event"));
+    /// assert!(matches!(future, EventKind::Unknown { value, .. } if value.as_str() == "future_event"));
     /// ```
     ///
     /// Construct through a conversion or `from_static`, rather than an
@@ -190,7 +220,30 @@ string_enum! {
     /// use octoevents::EventKind;
     /// let kind = EventKind::Unknown { value: "issues".into() };
     /// ```
-    pub enum EventKind {
+    ///
+    /// The unknown value is read-only. Replace the whole kind through a
+    /// conversion to change its name, so known names stay normalized:
+    ///
+    /// ```compile_fail,E0277
+    /// use octoevents::EventKind;
+    /// let mut kind = EventKind::from("future_event");
+    /// if let EventKind::Unknown { value, .. } = &mut kind {
+    ///     *value = "issues".into();
+    /// }
+    /// ```
+    ///
+    /// Unknown values belong to one vocabulary: an unknown action may name
+    /// a known kind, so it cannot be substituted into a kind.
+    ///
+    /// ```compile_fail,E0308
+    /// use octoevents::{Action, EventKind};
+    /// let Action::Unknown { value: action, .. } = Action::from("issues") else { return };
+    /// let mut kind = EventKind::from("future_event");
+    /// if let EventKind::Unknown { value, .. } = &mut kind {
+    ///     *value = action;
+    /// }
+    /// ```
+    pub enum EventKind, UnknownEventKind {
         BranchProtectionConfiguration => "branch_protection_configuration",
         BranchProtectionRule => "branch_protection_rule",
         CheckRun => "check_run",
@@ -310,7 +363,27 @@ string_enum! {
     /// let pushed = Envelope::new("delivery-2", EventKind::Push, br#"{"ref":"refs/heads/main"}"#);
     /// assert_eq!(pushed.meta.action, None);
     /// ```
-    pub enum Action {
+    ///
+    /// Unknown strings cannot be edited in place; replace the whole action
+    /// through `Action::from` instead.
+    ///
+    /// ```compile_fail,E0277
+    /// use octoevents::Action;
+    /// let mut action = Action::from("future_action");
+    /// if let Action::Unknown { value, .. } = &mut action {
+    ///     *value = "opened".into();
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail,E0308
+    /// use octoevents::{Action, TargetType};
+    /// let TargetType::Unknown { value: target, .. } = TargetType::from("opened") else { return };
+    /// let mut action = Action::from("future_action");
+    /// if let Action::Unknown { value, .. } = &mut action {
+    ///     *value = target;
+    /// }
+    /// ```
+    pub enum Action, UnknownAction {
         Added => "added",
         AddedToRepository => "added_to_repository",
         Answered => "answered",
@@ -501,6 +574,22 @@ mod tests {
             serde_json::from_str::<TargetType>(r#""enterprise""#).unwrap(),
             target_type
         );
+
+        let EventKind::Unknown { value, .. } = event else {
+            panic!("expected an unknown kind");
+        };
+        assert_eq!(value.as_str(), "future_event");
+        assert_eq!(value.to_string(), "future_event");
+        let Action::Unknown { value, .. } = action else {
+            panic!("expected an unknown action");
+        };
+        assert_eq!(value.as_str(), "future_action");
+        assert_eq!(value.to_string(), "future_action");
+        let TargetType::Unknown { value, .. } = target_type else {
+            panic!("expected an unknown target type");
+        };
+        assert_eq!(value.as_str(), "enterprise");
+        assert_eq!(value.to_string(), "enterprise");
     }
 
     #[test]

@@ -17,7 +17,11 @@ from `Envelope::from_signed` (the receiving path, verified) or `Envelope::new`
 (a test's path, unverified, the meta probed from the same bytes), never from
 a struct literal, so the two halves cannot disagree at birth. The third way,
 serde over the *wire format*, reads back an envelope a trusted transport
-forwarded, meta as forwarded, neither verified nor probed.
+forwarded, meta as forwarded, neither verified nor probed. Verification
+authenticates the payload bytes, not the delivery ID, event name, or target
+headers. Authorization uses authenticated payload data or independently
+trusted configuration; delivery-ID deduplication handles GitHub redelivery,
+not adversarial replay under a different ID.
 _Avoid_: Delivery (reserved for the outbound `octodelivery` project), event (the decoded unit, `Event<P>`, is the envelope decoded for one handler), message
 
 **EventMeta**:
@@ -224,9 +228,14 @@ _Avoid_: Filter, selector, route (a route is what a matcher registers), wildcard
 The parsed identity of an event, as the `EventKind` enum.
 The three wire vocabularies (`EventKind`, `Action`, `TargetType`) are built
 through `From<&str>`, `From<String>`, or the const `from_static`, so recognized
-strings become named variants. `Unknown` holds `Cow<'static, str>` and is
-variant-level `#[non_exhaustive]`: consumers match `Unknown { value, .. }` but
-cannot construct it directly. `from_static` borrows an unknown name and lets
+strings become named variants. `Unknown` holds a vocabulary-specific opaque
+value (`UnknownEventKind`, `UnknownAction`, or `UnknownTargetType`) with a
+private `Cow<'static, str>` and is variant-level `#[non_exhaustive]`:
+consumers match `Unknown { value, .. }` and read `value.as_str()` or display
+it, but cannot construct it directly or edit its string. Separate value types
+prevent moving a string unknown to one vocabulary into another that already
+recognizes it. To change a name, construct the enum again through a normalizing
+conversion. `from_static` borrows an unknown name and lets
 a `Payload::KIND` declare a kind the crate does not yet know; upgrading to a
 version that knows it normalizes the same declaration to the named variant.
 _Avoid_: Category, type (the Rust keyword and GitHub's overloaded "event type")
@@ -340,8 +349,9 @@ mode, not a configuration, and every constructor refuses it, `new` by
 panicking, for a deployment that reads its secret at startup, and
 `str::parse`, `TryFrom<Vec<u8>>` and `TryFrom<&[u8]>` with a
 `WebhookSecretError`, for one that reads it per request or as bytes, so the
-verifier has nothing left to check. In prose, "secret" alone is fine once the webhook is
-in context.
+verifier has nothing left to check for emptiness. Consumers supply a
+high-entropy secret; nonempty validation does not establish secret strength.
+In prose, "secret" alone is fine once the webhook is in context.
 _Avoid_: Token, `Key` or `SigningKey` as the type (it is a secret to GitHub and to the crate; "HMAC key" in prose, for what the bytes are to the MAC, is fine), `Secret` as the type (the former name; generic at the root and a live collision), signing secret (Stripe's and Svix's term; the crate's is GitHub's)
 
 **SignatureError**:

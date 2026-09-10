@@ -316,6 +316,12 @@ impl<E> Clone for WebhookReceiverBuilder<E> {
 /// delivery record GitHub stores, and the builder's `on_error` observer is
 /// where they are handed over.
 ///
+/// Verification authenticates the payload bytes, not the delivery ID, event
+/// name, or target headers. Authorization decisions must use authenticated
+/// payload data or independently trusted configuration. Delivery-ID
+/// deduplication handles GitHub redelivery, but does not prevent an attacker
+/// from resubmitting a captured signed payload under a different ID.
+///
 // `receive` exists only under `http-body`; its link is an intra-doc path when
 // it is compiled in and its docs.rs URL when it is not, as the front page does.
 #[cfg_attr(feature = "http-body", doc = "[`receive`]: WebhookReceiver::receive")]

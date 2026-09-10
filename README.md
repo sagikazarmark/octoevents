@@ -332,6 +332,15 @@ view. And many structs leave their main object as an untyped
 [Feature caveats](https://docs.rs/octoevents/latest/octoevents/#feature-caveats);
 the `policy_seam` example routes octocrab's payloads.
 
+**Known decoding limitation in octocrab 0.54.1:** `code_scanning_alert` and
+`repository_advisory` fail as `WebhookEvent` or `Event<WebhookEvent>`, even
+when their payloads fit the per-kind models. The decoder removes common
+fields that those models require, resulting in `DecodeError::Json` and a
+500 through the receiver before the routed handler runs. For these kinds,
+use `CodeScanningAlertWebhookEventPayload` or
+`RepositoryAdvisoryWebhookEventPayload`, optionally inside `Event`, or a
+consumer-defined view. Those inputs decode the original payload directly.
+
 ## Dispatcher
 
 A `Dispatcher` is itself a handler over the envelope. Per delivery it runs
@@ -732,6 +741,10 @@ full contract, span by span and field by field, is
   signature header is absent or malformed is refused before its body is read;
   a signed one is verified against the exact bytes GitHub sent. Only
   `X-Hub-Signature-256` is checked, never the SHA-1 header beside it.
+- **Payload authentication.** GitHub's signature covers the exact payload
+  bytes, not the delivery ID, event name, or target headers. Header-derived
+  metadata alone must not authorize security-sensitive actions; use
+  authenticated payload data or independently trusted configuration.
 - **Constant-time comparison.** Every configured secret is evaluated against
   a well-formed signature, a match included, so timing reveals neither the
   secret nor which one matched. The header is parsed into a `Signature`
@@ -742,11 +755,13 @@ full contract, span by span and field by field, is
   under `also`, change the secret in the webhook's settings, then drop the
   `also` once deliveries signed with the old one have drained. The order
   matters only to `Verifier::sign`, which signs under the first secret. A
-  `WebhookSecret` is never empty, so a verifier over a guessable key cannot
-  be expressed: `WebhookSecret::new` panics at construction, for a deployment
+  `WebhookSecret` is never empty, so an empty key cannot be configured:
+  `WebhookSecret::new` panics at construction, for a deployment
   that reads its secret at startup, and `str::parse::<WebhookSecret>` returns
   `WebhookSecretError::Empty` for one that reads it per request, where a
   panic is the wrong answer.
+  Consumers must supply a high-entropy secret; nonempty validation does not
+  establish secret strength.
 - **Bounded payload length.** On `receive`, accumulated payload length never
   exceeds the configured limit, GitHub's 25 MiB maximum by default;
   `.body_limit(..)` on the receiver builder lowers it when your events are
@@ -758,8 +773,10 @@ full contract, span by span and field by field, is
 - **JSON only.** Form-encoded deliveries are refused, so the bytes that were
   signed are the bytes that are decoded, and the payload is never re-encoded.
 - **No replay protection.** GitHub signs no timestamp. Treat
-  `EventMeta::delivery_id` as an idempotency key and deduplicate downstream;
-  the policy seam is where that lives.
+  `EventMeta::delivery_id` as an idempotency key to deduplicate GitHub
+  redelivery downstream; the policy seam is where that lives. The ID is not
+  signed, so this does not prevent an attacker from resubmitting a captured
+  signed payload under a different ID.
 - **`ping` answered.** GitHub sends a `ping` when a webhook is created. A
   verified one is answered 204 before any handler runs; `.handle_ping(true)`
   passes it through instead. An unsigned one is 401 either way.
