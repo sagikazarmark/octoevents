@@ -550,26 +550,37 @@ where
     /// unsigned traffic from occupying `body_limit` bytes of memory; on the
     /// bytes path the caller holds them already, and the refusal spares the
     /// verification.
-    #[cfg_attr(
-        feature = "tracing",
-        tracing::instrument(
-            name = "octoevents.receive",
-            skip_all,
-            fields(
-                delivery_id = tracing::field::Empty,
-                event = tracing::field::Empty,
-                outcome = tracing::field::Empty,
-                status = tracing::field::Empty,
-                error = tracing::field::Empty,
-            )
-        )
-    )]
     async fn process(
         &self,
         headers: &HeaderMap,
         body: impl Future<Output = Result<Bytes, ReceiveError>>,
     ) -> StatusCode {
-        record_headers(headers);
+        #[cfg(feature = "tracing")]
+        let span = tracing::info_span!(
+            "octoevents.receive",
+            delivery_id = tracing::field::Empty,
+            event = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+            status = tracing::field::Empty,
+            error = tracing::field::Empty,
+        );
+        #[cfg(not(feature = "tracing"))]
+        let span = trace::Span;
+
+        let receive = self.process_in_span(headers, body, &span);
+        #[cfg(feature = "tracing")]
+        let receive = tracing::Instrument::instrument(receive, span.clone());
+        receive.await
+    }
+
+    /// Records through the receive span's handle, even when it is disabled.
+    async fn process_in_span(
+        &self,
+        headers: &HeaderMap,
+        body: impl Future<Output = Result<Bytes, ReceiveError>>,
+        span: &trace::Span,
+    ) -> StatusCode {
+        record_headers(span, headers);
 
         // A request whose signature header is absent or not a signature is
         // refused on the headers alone. `Envelope::from_signed` repeats the
@@ -577,7 +588,7 @@ where
         // the header again for the verifier; the header is 71 bytes, so the
         // second parse is cheaper than handing the first one across.
         if let Err(error) = header::signature(headers) {
-            return refuse(&error.into());
+            return refuse(span, &error.into());
         }
 
         let Config {
@@ -589,16 +600,16 @@ where
 
         let bytes = match body.await {
             Ok(bytes) => bytes,
-            Err(error) => return refuse(&error),
+            Err(error) => return refuse(span, &error),
         };
 
         let envelope = match Envelope::from_signed(verifier, headers, bytes) {
             Ok(envelope) => envelope,
-            Err(error) => return refuse(&error),
+            Err(error) => return refuse(span, &error),
         };
 
         if !handle_ping && matches!(envelope.meta.kind, EventKind::Ping) {
-            return record_outcome("ok", StatusCode::NO_CONTENT);
+            return record_outcome(span, "ok", StatusCode::NO_CONTENT);
         }
 
         // The handler takes the envelope by value, so the meta a failure is
@@ -608,13 +619,14 @@ where
         let reporting = observer.is_some() || cfg!(feature = "tracing");
         let meta = reporting.then(|| envelope.meta.clone());
         match self.handler.handle(envelope).await {
-            Ok(()) => record_outcome("ok", StatusCode::NO_CONTENT),
+            Ok(()) => record_outcome(span, "ok", StatusCode::NO_CONTENT),
             Err(error) => {
                 // The outcome goes on the span first, so the observer and the
                 // event run inside a span that already says how the delivery
                 // ended. The observer sees the error as the handler returned
                 // it, so it runs before the conversion the event needs.
-                let status = record_outcome("handler_error", StatusCode::INTERNAL_SERVER_ERROR);
+                let status =
+                    record_outcome(span, "handler_error", StatusCode::INTERNAL_SERVER_ERROR);
                 if let Some(meta) = &meta {
                     if let Some(observer) = observer {
                         observer(meta, &error);
@@ -740,12 +752,12 @@ where
 /// headers are read, before verification, so a refused request is still
 /// identifiable. Nothing else off the headers is recorded, the signature
 /// least of all.
-fn record_headers(headers: &HeaderMap) {
+fn record_headers(span: &trace::Span, headers: &HeaderMap) {
     if let Some(delivery_id) = header::read(headers, &header::DELIVERY_ID) {
-        trace::record("delivery_id", delivery_id);
+        span.record("delivery_id", delivery_id);
     }
     if let Some(event) = header::read(headers, &header::EVENT_NAME) {
-        trace::record("event", event);
+        span.record("event", event);
     }
 }
 
@@ -754,9 +766,9 @@ fn record_headers(headers: &HeaderMap) {
 /// it is answered with. The two are chosen together at the site that knows
 /// why the delivery ended, and neither is derived from the other: the label
 /// says the reason, the code what the reason is answered with.
-fn record_outcome(outcome: &'static str, status: StatusCode) -> StatusCode {
-    trace::record("outcome", outcome);
-    trace::record("status", status.as_u16());
+fn record_outcome(span: &trace::Span, outcome: &'static str, status: StatusCode) -> StatusCode {
+    span.record("outcome", outcome);
+    span.record("status", status.as_u16());
     status
 }
 
@@ -768,10 +780,10 @@ fn record_outcome(outcome: &'static str, status: StatusCode) -> StatusCode {
 /// on its own; the label and the status are read off the one `Refusal` the
 /// error partitions into, so a dashboard's `outcome` and the code cannot
 /// drift apart.
-fn refuse(error: &ReceiveError) -> StatusCode {
+fn refuse(span: &trace::Span, error: &ReceiveError) -> StatusCode {
     let refusal = error.refusal();
-    let status = record_outcome(refusal_label(refusal), refusal.status());
-    record_refusal(error);
+    let status = record_outcome(span, refusal_label(refusal), refusal.status());
+    record_refusal(span, error);
     status
 }
 
@@ -806,13 +818,13 @@ const fn refusal_label(refusal: Refusal) -> &'static str {
 /// is the application's own text, and the chain is what an operator reads it
 /// for.
 #[cfg(feature = "tracing")]
-fn record_refusal(error: &ReceiveError) {
-    trace::record("error", tracing::field::display(error));
+fn record_refusal(span: &trace::Span, error: &ReceiveError) {
+    span.record("error", tracing::field::display(error));
 }
 
 /// Records nothing: the `tracing` feature is disabled.
 #[cfg(not(feature = "tracing"))]
-fn record_refusal(_error: &ReceiveError) {}
+fn record_refusal(_span: &trace::Span, _error: &ReceiveError) {}
 
 /// The one `tracing::error!` for a failed delivery, so the event's fields
 /// are declared in one place.

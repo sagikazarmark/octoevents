@@ -12,8 +12,6 @@ use subtle::{Choice, ConstantTimeEq};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
-use crate::trace;
-
 const SHA256_PREFIX: &str = "sha256=";
 const SHA256_BYTES: usize = 32;
 const SHA256_HEX_CHARS: usize = SHA256_BYTES * 2;
@@ -436,26 +434,28 @@ impl Verifier {
     /// Returns [`SignatureError::Mismatch`] when no configured secret
     /// produced the signature for `body`. Nothing else: the format was
     /// checked when the signature was parsed.
-    #[cfg_attr(
-        feature = "tracing",
-        tracing::instrument(
-            name = "octoevents.verify",
-            level = "debug",
-            skip_all,
-            fields(secret_count = self.secrets.len(), body_len = body.len(), outcome = tracing::field::Empty)
-        )
-    )]
     pub fn verify(&self, signature: &Signature, body: &[u8]) -> Result<(), SignatureError> {
+        #[cfg(feature = "tracing")]
+        let span = tracing::debug_span!(
+            "octoevents.verify",
+            secret_count = self.secrets.len(),
+            body_len = body.len(),
+            outcome = tracing::field::Empty,
+        );
+        #[cfg(feature = "tracing")]
+        let _entered = span.enter();
         let mut matched = Choice::from(0);
         for secret in self.secrets.iter() {
             matched |= secret.sign(body).0.ct_eq(&signature.0);
         }
 
         if bool::from(matched) {
-            trace::record("outcome", "verified");
+            #[cfg(feature = "tracing")]
+            span.record("outcome", "verified");
             Ok(())
         } else {
-            trace::record("outcome", "mismatch");
+            #[cfg(feature = "tracing")]
+            span.record("outcome", "mismatch");
             Err(SignatureError::Mismatch)
         }
     }

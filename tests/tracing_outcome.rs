@@ -437,6 +437,161 @@ fn the_verify_span_records_the_secret_count_the_body_length_and_one_of_two_outco
     }
 }
 
+#[test]
+fn info_filtered_verification_leaves_the_callers_outcome_unchanged() {
+    for (signature, expected) in [
+        (verifier().sign(BODY), Ok(())),
+        (another_verifier().sign(BODY), Err(SignatureError::Mismatch)),
+    ] {
+        let (recording, result) = common::traced_at(tracing::Level::INFO, async {
+            let caller = tracing::info_span!("application", outcome = "pending", status = 102_u64);
+            caller.in_scope(|| verifier().verify(&signature, BODY))
+        });
+        assert_eq!(result, expected);
+        assert!(!recording.has_span("octoevents.verify"), "{recording}");
+        let caller = recording.span("application");
+        assert_eq!(caller.at_close, caller.at_open, "{recording}");
+    }
+}
+
+/// Declare every late-bound operation field, so any stray recording is visible.
+fn caller_span() -> tracing::Span {
+    tracing::info_span!(
+        "application",
+        outcome = "pending",
+        status = 102_u64,
+        delivery_id = "caller-delivery",
+        event = "caller-event",
+        error = "caller-error",
+        tier = "caller-tier",
+        handler = "caller-handler",
+        registration_site = "caller-site",
+    )
+}
+
+#[test]
+fn selectively_filtered_dispatch_leaves_the_callers_fields_unchanged() {
+    use tracing::Instrument as _;
+
+    for action in [Action::Opened, Action::Closed, Action::Reopened] {
+        let dispatcher = dispatcher();
+        let (recording, outcome) = common::traced_with_filter(
+            tracing_subscriber::filter::filter_fn(|meta| meta.name() != "octoevents.dispatch"),
+            async {
+                dispatcher
+                    .dispatch(envelope(EventKind::PullRequest, Some(action.clone())))
+                    .instrument(caller_span())
+                    .await
+            },
+        );
+        assert_eq!(outcome.result.is_err(), action == Action::Closed);
+        assert!(!recording.has_span("octoevents.dispatch"), "{recording}");
+        let caller = recording.span("application");
+        assert_eq!(caller.at_close, caller.at_open, "{recording}");
+    }
+}
+
+#[test]
+fn selectively_filtered_receive_leaves_the_callers_fields_unchanged() {
+    use octoevents::{Bytes, WebhookReceiverBuilder};
+    use tracing::Instrument as _;
+
+    // Both public entry points share the receive span. Keep the bytes path
+    // covered even when the transport feature is disabled.
+    let paths = ["bytes"];
+    #[cfg(feature = "http-body")]
+    let paths = [paths[0], "request"];
+
+    for path in paths {
+        for (event, signature, fail, expected) in [
+            (
+                "pull_request",
+                verifier().sign(BODY).to_string(),
+                false,
+                204,
+            ),
+            ("pull_request", "malformed".into(), false, 400),
+            (
+                "pull_request",
+                another_verifier().sign(BODY).to_string(),
+                false,
+                401,
+            ),
+            ("pull_request", verifier().sign(BODY).to_string(), true, 500),
+            ("ping", verifier().sign(BODY).to_string(), false, 204),
+        ] {
+            let observed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let error_count = observed.clone();
+            let receiver = WebhookReceiverBuilder::new(verifier())
+                .on_error(move |_, _: &DispatchError| {
+                    error_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                })
+                .build(
+                    Dispatcher::builder()
+                        .always(move |_: Envelope| async move {
+                            tokio::task::yield_now().await;
+                            if fail { Err("handler failed") } else { Ok(()) }
+                        })
+                        .build(),
+                );
+            let request = http::Request::builder()
+                .header("content-type", "application/json")
+                .header("x-github-delivery", "delivery")
+                .header("x-github-event", event)
+                .header("x-hub-signature-256", signature)
+                .body(Bytes::from_static(BODY))
+                .unwrap();
+
+            let (recording, status) = common::traced_with_filter(
+                tracing_subscriber::filter::filter_fn(|meta| meta.name() != "octoevents.receive"),
+                async {
+                    let receive = async {
+                        match path {
+                            "bytes" => {
+                                let (parts, body) = request.into_parts();
+                                receiver.receive_bytes(&parts.headers, body).await
+                            }
+                            #[cfg(feature = "http-body")]
+                            "request" => receiver
+                                .receive(request.map(http_body_util::Full::new))
+                                .await
+                                .status(),
+                            _ => unreachable!(),
+                        }
+                    };
+                    receive.instrument(caller_span()).await
+                },
+            );
+            assert_eq!(status, expected, "{path}");
+            assert!(!recording.has_span("octoevents.receive"), "{recording}");
+            let caller = recording.span("application");
+            assert_eq!(caller.at_close, caller.at_open, "{path}: {recording}");
+            assert_eq!(
+                observed.load(std::sync::atomic::Ordering::SeqCst),
+                usize::from(fail)
+            );
+            if fail {
+                assert_eq!(
+                    recording
+                        .event_at(tracing::Level::ERROR)
+                        .fields
+                        .debug("message"),
+                    Some("handler failed")
+                );
+                assert_eq!(
+                    recording
+                        .span("octoevents.dispatch")
+                        .at_close
+                        .str("outcome"),
+                    Some("unmatched_error")
+                );
+            } else {
+                assert!(recording.events_at(tracing::Level::ERROR).is_empty());
+            }
+        }
+    }
+}
+
 /// The receiver under test on the `http-body` paths: a dispatcher behind
 /// [`verifier`], and the `pull_request` request for [`BODY`] it accepts or
 /// refuses, depending on the signature the request carries.

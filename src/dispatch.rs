@@ -369,34 +369,37 @@ impl Dispatcher {
     /// `registration_site`, the [`DispatchError`]'s, so the span alone says
     /// which handler failed the delivery. The crate's tracing contract as a
     /// whole is under [Tracing](crate#tracing).
-    #[cfg_attr(
-        feature = "tracing",
-        tracing::instrument(
-            name = "octoevents.dispatch",
-            skip_all,
-            fields(
-                delivery_id = envelope.meta.delivery_id.as_str(),
-                event = envelope.meta.kind.as_str(),
-                action = envelope.meta.action.as_ref().map(Action::as_str),
-                installation_id = envelope.meta.installation_id,
-                outcome = tracing::field::Empty,
-                tier = tracing::field::Empty,
-                handler = tracing::field::Empty,
-                registration_site = tracing::field::Empty,
-            )
-        )
-    )]
     pub async fn dispatch(&self, envelope: Envelope) -> Outcome {
-        let (matched, routed) = self.routes.lookup(&envelope.meta);
-        let result = self.run_tiers(&envelope, matched, routed).await;
-        let outcome = Outcome { matched, result };
-        trace::record("outcome", outcome.label());
-        if let Err(error) = &outcome.result {
-            trace::record("tier", error.tier.as_str());
-            trace::record("handler", error.handler);
-            trace::record_display("registration_site", error.registration_site);
-        }
-        outcome
+        #[cfg(feature = "tracing")]
+        let span = tracing::info_span!(
+            "octoevents.dispatch",
+            delivery_id = envelope.meta.delivery_id.as_str(),
+            event = envelope.meta.kind.as_str(),
+            action = envelope.meta.action.as_ref().map(Action::as_str),
+            installation_id = envelope.meta.installation_id,
+            outcome = tracing::field::Empty,
+            tier = tracing::field::Empty,
+            handler = tracing::field::Empty,
+            registration_site = tracing::field::Empty,
+        );
+        #[cfg(not(feature = "tracing"))]
+        let span = trace::Span;
+
+        let dispatch = async {
+            let (matched, routed) = self.routes.lookup(&envelope.meta);
+            let result = self.run_tiers(&envelope, matched, routed).await;
+            let outcome = Outcome { matched, result };
+            span.record("outcome", outcome.label());
+            if let Err(error) = &outcome.result {
+                span.record("tier", error.tier.as_str());
+                span.record("handler", error.handler);
+                trace::record_display(&span, "registration_site", error.registration_site);
+            }
+            outcome
+        };
+        #[cfg(feature = "tracing")]
+        let dispatch = tracing::Instrument::instrument(dispatch, span.clone());
+        dispatch.await
     }
 
     /// Runs the `always` chain, then either the routed chains or the fallback

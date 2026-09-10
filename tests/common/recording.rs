@@ -370,9 +370,20 @@ pub fn traced_at<F, T>(level: Level, call: F) -> (Recording, T)
 where
     F: Future<Output = T>,
 {
+    traced_with_filter(LevelFilter::from_level(level), call)
+}
+
+/// [`traced`] with a subscriber filter, for selectively disabling an operation.
+pub fn traced_with_filter<F, T>(
+    filter: impl Layer<tracing_subscriber::Registry> + Send + Sync + 'static,
+    call: F,
+) -> (Recording, T)
+where
+    F: Future<Output = T>,
+{
     let layer = RecordingLayer::default();
     let subscriber = tracing_subscriber::registry()
-        .with(LevelFilter::from_level(level))
+        .with(filter)
         .with(layer.clone());
 
     // A current-thread runtime keeps the whole call on the thread that holds

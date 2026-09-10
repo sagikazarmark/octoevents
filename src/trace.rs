@@ -10,10 +10,12 @@
 //!
 //! The spans this crate opens (`octoevents.verify`, `octoevents.receive`,
 //! `octoevents.dispatch`) declare their late-bound fields empty and fill them
-//! through [`record`] on the way out. The recording functions exist under
-//! every feature set, as no-ops without `tracing`, so call sites carry no
-//! `cfg`; the only conditional code left at them is the `#[instrument]`
-//! attribute that opens the span.
+//! through their explicit [`Span`] handles on the way out. A disabled span
+//! discards recordings, even when an enabled caller declares the same fields.
+//! Never record through the current span: filtering can leave an ancestor
+//! current instead. Async operations instrument their futures with a clone
+//! of the handle; only synchronous verification holds an entered-span guard.
+//! The handle and recording functions are no-ops without `tracing`.
 //!
 //! A field recorded on more than one span is the same field to a subscriber
 //! only if every span records it in the same form, so the shared fields have
@@ -39,28 +41,33 @@
 //! holds that invariant; `tests/tracing_outcome.rs` holds the one above, and
 //! `tests/tracing_failed_delivery.rs` the ERROR event's.
 
-/// Records `value` into the named field of the current span.
+/// An operation's explicit span handle.
 #[cfg(feature = "tracing")]
-pub(crate) fn record(field: &str, value: impl tracing::Value) {
-    tracing::Span::current().record(field, value);
+pub(crate) use tracing::Span;
+
+/// A no-op operation span when the `tracing` feature is disabled.
+#[cfg(not(feature = "tracing"))]
+pub(crate) struct Span;
+
+#[cfg(not(feature = "tracing"))]
+impl Span {
+    // Keep the same recording interface as tracing::Span across feature sets.
+    #[expect(clippy::unused_self)]
+    pub(crate) fn record<V>(&self, _field: &str, _value: V) {}
 }
 
 /// Records `value`'s [`Display`](std::fmt::Display) form into the named field
-/// of the current span, as a string.
+/// of the given span, as a string.
 ///
 /// Wrapped in `tracing::field::display` instead, the value would reach the
 /// subscriber debug-formatted, a different field type from the `&str` the
 /// other string fields use; formatting first keeps every string field one
 /// type. The allocation happens only with the feature enabled.
 #[cfg(feature = "tracing")]
-pub(crate) fn record_display(field: &str, value: impl std::fmt::Display) {
-    record(field, value.to_string().as_str());
+pub(crate) fn record_display(span: &Span, field: &str, value: impl std::fmt::Display) {
+    span.record(field, value.to_string().as_str());
 }
 
 /// Records nothing: the `tracing` feature is disabled.
 #[cfg(not(feature = "tracing"))]
-pub(crate) fn record<V>(_field: &str, _value: V) {}
-
-/// Records nothing: the `tracing` feature is disabled.
-#[cfg(not(feature = "tracing"))]
-pub(crate) fn record_display<V>(_field: &str, _value: V) {}
+pub(crate) fn record_display<V>(_span: &Span, _field: &str, _value: V) {}

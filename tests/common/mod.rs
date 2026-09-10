@@ -16,4 +16,5 @@ mod recording;
 
 pub use recording::{
     ErrorValue, EventRecord, Fields, Recording, SpanRecord, Value, traced, traced_at,
+    traced_with_filter,
 };
