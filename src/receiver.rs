@@ -449,7 +449,7 @@ where
     /// response type is the transport's. That is the shape every surveyed
     /// Rust runtime hands over: `lambda_http`, `spin-sdk` and `wstd` give an
     /// `http::Request` with the body read, `worker` and `fastly` convert to
-    /// one (`HeaderMap::from(&request.headers())` on a Worker), and
+    /// one (`HeaderMap::from(request.headers())` on a Worker), and
     /// `aws_lambda_events` carries a `HeaderMap` and a body string in its
     /// event structs. A consumer hand-parsing a raw invocation event collects
     /// its `(name, value)` pairs into a `HeaderMap`; header-name case is
