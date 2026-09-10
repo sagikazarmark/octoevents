@@ -1,5 +1,10 @@
 use std::{
-    any::type_name, collections::HashMap, error::Error, fmt, marker::PhantomData, panic::Location,
+    any::type_name,
+    collections::{HashMap, HashSet},
+    error::Error,
+    fmt,
+    marker::PhantomData,
+    panic::Location,
     sync::Arc,
 };
 
@@ -74,6 +79,10 @@ where
 /// routed chain matched, and receives the envelope as `always` does.
 /// Handlers run one at a time: the chains in the order just given, whichever
 /// handler was registered first, and within a chain in registration order.
+/// Each `on` registration runs at most once per delivery, at its first
+/// applicable position in those chains. Duplicate selections add no calls;
+/// a registration matching both chains runs in the action-specific one.
+/// Separate registrations remain independent, even for the same handler.
 /// The first error ends the dispatch: a failing `always` handler keeps every
 /// route from running, and a failing action-specific handler keeps the
 /// kind-wide chain from running. `always` and `fallback` never count as a
@@ -396,17 +405,12 @@ impl Dispatcher {
         &self,
         envelope: &Envelope,
         matched: Match,
-        routed: impl Iterator<Item = &[Route]>,
+        routed: impl Iterator<Item = &Route>,
     ) -> Result<(), DispatchError> {
         run_chain(envelope, Tier::Always, &self.routes.always).await?;
 
         match matched {
-            Match::Matched => {
-                for chain in routed {
-                    run_chain(envelope, Tier::Route, chain).await?;
-                }
-                Ok(())
-            }
+            Match::Matched => run_chain(envelope, Tier::Route, routed).await,
             Match::UnmatchedAction | Match::UnmatchedKind => {
                 run_chain(envelope, Tier::Fallback, &self.routes.fallback).await
             }
@@ -417,7 +421,11 @@ impl Dispatcher {
 /// Runs one chain in order, stopping at the first error and wrapping it with
 /// the tier, the delivery, and the failing route's handler name and
 /// registration site. The clones for the error happen only on that path.
-async fn run_chain(envelope: &Envelope, tier: Tier, chain: &[Route]) -> Result<(), DispatchError> {
+async fn run_chain<'a>(
+    envelope: &Envelope,
+    tier: Tier,
+    chain: impl IntoIterator<Item = &'a Route>,
+) -> Result<(), DispatchError> {
     for route in chain {
         // Two failure points, one shape: a decode failure before the future
         // exists, the handler's after it ran.
@@ -877,6 +885,14 @@ impl DispatcherBuilder {
     /// handler cannot be registered under another kind. A pull-request
     /// handler under `Action::Opened` is `pull_request.opened`.
     ///
+    /// The selections in one call are a union: duplicate kinds or actions
+    /// have no additional effect, and this registration runs at most once
+    /// per delivery. If it selects both the kind and the delivery's action,
+    /// it runs at its action-specific position, before the kind-wide chain,
+    /// preserving registration order within each chain. Separate `on` calls
+    /// remain independent, even when they share an [`Arc`]-backed handler or
+    /// the same registration-site location.
+    ///
     /// The handler's input is any [`FromEnvelope`], whose docs list the
     /// shipped impls:
     ///
@@ -1203,11 +1219,14 @@ impl DispatcherBuilder {
         }
     }
 
-    /// Registers one handler under every slot; the route is shared, not
-    /// duplicated.
+    /// Registers one handler under each distinct slot; clones share the
+    /// registration's erased wrapper.
     fn insert_each(&mut self, slots: impl IntoIterator<Item = Slot>, route: &Route) {
+        let mut seen = HashSet::new();
         for slot in slots {
-            self.insert(slot, route.clone());
+            if seen.insert(slot.clone()) {
+                self.insert(slot, route.clone());
+            }
         }
     }
 
@@ -1326,13 +1345,13 @@ struct Routes {
 
 impl Routes {
     /// Looks one delivery up in the route table: the match it decides and the
-    /// routed chains it selects, the action-specific chain before the
-    /// kind-wide one.
+    /// routes it selects, the action-specific chain before the kind-wide one,
+    /// each registration at its first applicable position.
     ///
     /// This is the whole of matching: the tiers that run afterwards cannot
     /// change it. Routes are keyed by kind first so the lookup is entirely by
     /// reference: no `EventKind` or `Action` is cloned to build a key.
-    fn lookup(&self, meta: &EventMeta) -> (Match, impl Iterator<Item = &[Route]>) {
+    fn lookup(&self, meta: &EventMeta) -> (Match, impl Iterator<Item = &Route>) {
         let kind_routes = self.by_kind.get(&meta.kind);
         let specific = kind_routes.and_then(|routes| {
             meta.action
@@ -1350,8 +1369,16 @@ impl Routes {
             (Some(_), None) => Match::UnmatchedAction,
             (None, None) => Match::UnmatchedKind,
         };
-        let chains = specific.into_iter().chain(any_action).map(Vec::as_slice);
-        (matched, chains)
+        let specific = specific.map_or(&[][..], Vec::as_slice);
+        let any_action = any_action.into_iter().flatten().filter(|route| {
+            // `Route::routed` allocates a fresh erased wrapper per registration,
+            // even when the consumer passes the same Arc-backed handler at the
+            // same source location. Clones across slots share only that wrapper.
+            !specific
+                .iter()
+                .any(|earlier| Arc::ptr_eq(&earlier.handler, &route.handler))
+        });
+        (matched, specific.iter().chain(any_action))
     }
 
     /// Prints the route table under the name of the type that owns it, so

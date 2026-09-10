@@ -357,6 +357,13 @@ routes any handler. For a handler over a payload type, the matcher may say
 actions alone (an `Action`, an array of them, or `AnyAction` for every
 action) and the kind comes from the type.
 
+Selections within one `on` call are a union: duplicate kinds or actions
+have no additional effect. A registration selecting both a kind and a
+specific action runs once for that action, at its action-specific position
+before the kind-wide chain, preserving registration order within each chain.
+Separate `on` calls remain independent, even when they share an `Arc`-backed
+handler or the same registration-site location.
+
 ```rust
 use octoevents::{Action, AnyAction, BoxError, Dispatcher, Envelope, EventKind, EventMeta, Payload};
 

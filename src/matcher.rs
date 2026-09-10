@@ -11,6 +11,13 @@ use crate::{Action, EventKind, Payload};
 /// its payload type; those are `IntoMatcher` impls, not `From` impls, since
 /// they need the input type to know the kind.
 ///
+/// Selections within one registration are a union: duplicate kinds or
+/// actions add no invocations. A registration that selects both a kind and
+/// one of its actions runs once for that action, at its action-specific
+/// position before the kind-wide chain. Registration order is preserved
+/// within each chain. Separate `on` calls remain independent, even when
+/// they share a handler or registration-site location.
+///
 /// ```
 /// use octoevents::{Action, EventKind, EventMatcher};
 ///
@@ -47,6 +54,10 @@ pub struct EventMatcher {
 
 impl EventMatcher {
     /// Extends this matcher with the slots of another.
+    ///
+    /// The combined selections are a union when registered with
+    /// [`DispatcherBuilder::on`](crate::DispatcherBuilder::on): duplicates
+    /// and overlap never invoke that registration more than once per delivery.
     #[must_use]
     pub fn or(mut self, other: impl Into<Self>) -> Self {
         self.slots.extend(other.into().slots);
@@ -197,7 +208,7 @@ impl<I: Payload, const N: usize> IntoMatcher<I> for [Action; N] {
 
 /// One kind, optionally narrowed to one action: the unit a matcher expands to
 /// and the dispatcher registers a route under.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct Slot {
     pub(crate) kind: EventKind,
     pub(crate) action: Option<Action>,
