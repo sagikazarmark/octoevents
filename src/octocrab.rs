@@ -139,8 +139,10 @@ octocrab_payloads! {
 /// [`WebhookEventPayload::Unknown`]: octocrab::models::webhook_events::WebhookEventPayload::Unknown
 impl FromEnvelope for WebhookEvent {
     fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError> {
-        Self::try_from_header_and_body(envelope.meta.kind.as_str(), &envelope.raw_payload)
-            .map_err(DecodeError::Json)
+        // octocrab accepts an already-encoded JSON string; its bare-name path
+        // adds quotes without escaping, reinterpreting literal quotes and escapes.
+        let name = serde_json::to_string(envelope.meta.kind.as_str()).map_err(DecodeError::Json)?;
+        Self::try_from_header_and_body(&name, &envelope.raw_payload).map_err(DecodeError::Json)
     }
 }
 
@@ -151,7 +153,7 @@ mod tests {
 
     use super::WebhookEvent;
     use crate::{
-        DecodeError, Envelope, EventKind, FromEnvelope,
+        DecodeError, Envelope, Event, EventKind, FromEnvelope,
         test_support::{
             check_run_completed, envelope, installation_created, installation_repositories_removed,
             ping, pull_request_opened, unknown, unrepresentable,
@@ -182,6 +184,52 @@ mod tests {
             event.specific,
             WebhookEventPayload::Unknown(Box::new(serde_json::json!({"future": true})))
         );
+    }
+
+    #[test]
+    fn composed_event_preserves_literal_unknown_event_names() {
+        for name in [
+            "future_event",
+            r#""ping""#,
+            r#"future"event"#,
+            r"future\event",
+            r"future\",
+            r"\u0070ing",
+            r#""\u0070ing""#,
+            r"future\nevent",
+            r"future\\event",
+            r#"future\"event"#,
+        ] {
+            let event =
+                Event::<WebhookEvent>::from_envelope(&envelope(EventKind::from(name), b"{}"))
+                    .unwrap_or_else(|error| panic!("{name:?}: {error}"));
+
+            assert!(matches!(
+                &event.meta.kind,
+                EventKind::Unknown { value, .. } if value == name
+            ));
+            assert_eq!(
+                event.payload.kind,
+                WebhookEventType::Unknown(name.to_owned())
+            );
+            assert_eq!(
+                event.payload.specific,
+                WebhookEventPayload::Unknown(Box::new(serde_json::json!({})))
+            );
+        }
+    }
+
+    #[test]
+    fn composed_event_preserves_a_known_event_kind() {
+        let event = Event::<WebhookEvent>::from_envelope(&envelope(EventKind::from("ping"), b"{}"))
+            .unwrap();
+
+        assert_eq!(event.meta.kind, EventKind::Ping);
+        assert_eq!(event.payload.kind, WebhookEventType::Ping);
+        assert!(matches!(
+            event.payload.specific,
+            WebhookEventPayload::Ping(_)
+        ));
     }
 
     #[test]
