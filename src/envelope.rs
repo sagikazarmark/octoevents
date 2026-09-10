@@ -327,17 +327,25 @@ impl Envelope {
     /// stay `None`; assign them if the handler reads them.
     ///
     /// The read of the payload is best-effort and never fails the
-    /// construction. Top-level JSON that is malformed, or that is not an
-    /// object (`[]`, `42`), leaves every payload-derived field empty; one
-    /// malformed field (a `repository` object missing `full_name`, say)
+    /// construction. Invalid UTF-8 anywhere in the payload, malformed JSON
+    /// syntax, or a top level that is not an object (`[]`, `42`), leaves every
+    /// payload-derived field empty; one malformed field (a `repository`
+    /// object missing `full_name`, say)
     /// clears only that field and leaves its siblings intact. Installation,
     /// repository, repository owner, organization and sender must be objects,
     /// never positional arrays; a malformed owner clears the repository.
     /// A duplicated top-level metadata key clears that field, even if the
     /// values agree or one is null. A duplicate required key inside a metadata
     /// object invalidates that object, clearing its top-level metadata field.
-    /// Unknown keys are ignored. In every case [`Envelope::raw_payload`]
-    /// holds the bytes as given.
+    /// Unknown keys are ignored. Skipped string values must have valid escape
+    /// syntax (`\q` and incomplete `\uXXXX` escapes clear every payload-derived
+    /// field), but escaped surrogates need not be paired there: `\uD800` in a
+    /// skipped value leaves the metadata intact. Strings retained as metadata
+    /// must decode to Unicode scalar values; an unpaired escaped surrogate
+    /// clears only the metadata field that reads it. Valid surrogate pairs
+    /// decode normally. A handler's decode can therefore fail on a string the
+    /// probe skipped. In every case [`Envelope::raw_payload`] holds the bytes
+    /// as given.
     ///
     /// The payload is anything that views as bytes, a byte-string literal
     /// included, and is copied into [`Envelope::raw_payload`]; a test's

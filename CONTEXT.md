@@ -374,13 +374,18 @@ _Avoid_: Body (reserved for the HTTP transport layer), raw unqualified (says unp
 The best-effort read of the payload bytes that fills the payload-derived
 fields of an `EventMeta` (action, installation ID, repository, organization,
 sender) without decoding the rest of the document. Partial, and never fatal:
-malformed JSON leaves every probed field empty, one malformed field clears
-only itself, and the bytes are kept either way. It runs at receipt, for every
-envelope, whatever input its handler will take: the dispatcher routes by the
+invalid UTF-8 anywhere or malformed JSON syntax leaves every probed field
+empty, one malformed metadata field clears only itself, and the bytes are
+kept either way. Skipped string values must have valid escape syntax, but
+escaped surrogates need not be paired; an unpaired escaped surrogate in a
+string retained as metadata clears only the field that reads it. It runs at
+receipt, for every envelope, whatever input its handler will take: the dispatcher routes by the
 action, and the action is in the payload, so the probe cannot wait for a
-decode to ask for it. It is the one read of the payload before a decode, and
-the reason "decodes nothing" never means "the payload went unread". An
-implementation term for prose and internals, not an API: it runs inside both
+decode to ask for it. It validates UTF-8 in an allocation-free pass before
+scanning the JSON and decoding the retained values; the total cost stays
+linear in the payload. It is the reason "decodes nothing" never means "the
+payload went unread". An implementation term for prose and internals, not an
+API: it runs inside both
 envelope constructors and no public name says "probe".
 _Avoid_: Peek, sniff, extract (unqualified; "extracted" is fine in prose), decode (the full, fallible turn into a handler's input), parse (kept for the header-to-kind step), lazy or deferred meta (a shape considered and declined; the meta is complete when the envelope is)
 

@@ -21,8 +21,10 @@ use crate::{Action, EventKind, events::string_enum};
 /// from the payload when the envelope is built, by
 /// [`Envelope::from_signed`](crate::Envelope::from_signed) once the body is
 /// authenticated and by [`Envelope::new`](crate::Envelope::new) alike. That
-/// read, the *probe*, is one pass over the bytes that keeps those five
-/// top-level values and skips everything else: linear in the body, as the
+/// read, the *probe*, first validates UTF-8 across the bytes, then scans the
+/// JSON to keep those five top-level values and skip everything else. The
+/// retained values are decoded separately. The validation adds an
+/// allocation-free pass; the total cost stays linear in the body, as the
 /// signature check over the same bytes is, with no model built of the rest of
 /// the document. It runs for every envelope whatever the handler's input will
 /// be, because the dispatcher routes by the action, and the action is in the
@@ -114,18 +116,26 @@ impl EventMeta {
     /// caller that has the headers. Both envelope constructors come through
     /// here, so the test path and the receiving path read a payload alike.
     ///
-    /// Best-effort and never fatal: the top level is read as a map of raw
-    /// values, so JSON that is malformed, or whose top level is not an
-    /// object, leaves every probed field empty, and one malformed field (a
+    /// Best-effort and never fatal: after validating UTF-8, the top level is
+    /// read as a map of raw values, so invalid UTF-8, malformed JSON syntax,
+    /// or JSON whose top level is not an object, leaves every probed field
+    /// empty, and one malformed field (a
     /// `repository` missing `full_name`, say) clears only itself. A duplicated
     /// metadata key also clears only itself; a duplicate required key inside
-    /// an object invalidates that object. The rest of the document is not decoded.
+    /// an object invalidates that object. Skipped string values are checked
+    /// for escape syntax, not surrogate pairing; see `Envelope::new` for the
+    /// policy. The rest of the document is not decoded.
     pub(crate) fn probe(
         delivery_id: impl Into<String>,
         kind: EventKind,
         raw_payload: &[u8],
     ) -> Self {
-        let probe = serde_json::from_slice::<Probe<'_>>(raw_payload).unwrap_or_default();
+        // Skipped JSON strings do not get UTF-8 validation from serde_json.
+        // Validate the entire payload before any field can supply metadata.
+        let probe = std::str::from_utf8(raw_payload)
+            .ok()
+            .and_then(|payload| serde_json::from_str::<Probe<'_>>(payload).ok())
+            .unwrap_or_default();
 
         Self {
             delivery_id: delivery_id.into(),

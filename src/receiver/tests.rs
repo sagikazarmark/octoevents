@@ -670,7 +670,8 @@ mod receive_bytes {
 
     use super::{Recorder, WRONG_SIGNATURE, verifier};
     use crate::{
-        DispatchError, Dispatcher, Envelope, EventMeta, WebhookReceiverBuilder, header,
+        Action, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, WebhookReceiverBuilder,
+        header,
         test_support::{AppError, source_as},
     };
 
@@ -707,6 +708,47 @@ mod receive_bytes {
 
         assert_eq!(status, StatusCode::NO_CONTENT);
         assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn signed_invalid_utf8_reaches_fallback_instead_of_the_action_route_and_is_204() {
+        let seen: Arc<std::sync::Mutex<Vec<Envelope>>> = Arc::default();
+        let fallback_seen = Arc::clone(&seen);
+        let dispatcher = Dispatcher::builder()
+            .on((EventKind::Issues, Action::Opened), |_: EventMeta| async {
+                Err::<(), _>(AppError::Handler("opened route"))
+            })
+            .fallback(move |envelope: Envelope| {
+                let seen = Arc::clone(&fallback_seen);
+                async move {
+                    seen.lock().unwrap().push(envelope);
+                    Ok::<(), AppError>(())
+                }
+            })
+            .build();
+        let receiver = WebhookReceiverBuilder::new(verifier()).build(dispatcher);
+
+        for body in [
+            &b"{\"action\":\"opened\",\"extra\":\"\xff\"}"[..],
+            &b"{\"action\":\"opened\",\"extra\":{\"nested\":[\"\xff\"]}}"[..],
+        ] {
+            let status = receiver
+                .receive_bytes(&headers(body, "issues"), Bytes::copy_from_slice(body))
+                .await;
+
+            assert_eq!(status, StatusCode::NO_CONTENT);
+            let envelope = seen.lock().unwrap().pop().unwrap();
+            assert_eq!(envelope.meta, EventMeta::new("delivery", EventKind::Issues));
+            assert_eq!(envelope.raw_payload.as_ref(), body);
+        }
+
+        // A valid document still selects that same action-specific handler.
+        let body = br#"{"action":"opened","extra":"valid"}"#;
+        let status = receiver
+            .receive_bytes(&headers(body, "issues"), Bytes::from_static(body))
+            .await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(seen.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

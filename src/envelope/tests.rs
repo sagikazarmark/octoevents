@@ -528,8 +528,38 @@ mod probe {
 
     use super::{BODY, headers, verifier};
     use crate::{
-        AccountMeta, Action, Envelope, EventKind, EventMeta, RepositoryMeta, test_support,
+        AccountMeta, Action, Envelope, EventKind, EventMeta, RepositoryMeta, TargetType,
+        test_support,
     };
+
+    #[test]
+    fn invalid_utf8_in_skipped_values_clears_all_payload_meta_and_preserves_the_envelope() {
+        for extra in [
+            &b",\"extra\":\"\xff\"}"[..],
+            &b",\"extra\":{\"nested\":[\"\x80\"]}}"[..],
+            &b",\"extra\":\"\xc0\xaf\"}"[..],
+            &b",\"extra\":\"\xed\xa0\x80\"}"[..],
+            &b",\"extra\":\"\xf0\x9f\"}"[..],
+        ] {
+            let payload = [&BODY[..BODY.len() - 1], extra].concat();
+            let mut expected = EventMeta::new("delivery", EventKind::PullRequest);
+            let synthetic = Envelope::new("delivery", EventKind::PullRequest, &payload);
+            assert_eq!(synthetic.meta, expected);
+            assert_eq!(synthetic.raw_payload.as_ref(), payload);
+
+            let signature = verifier().sign(&payload).to_string();
+            let signed = Envelope::from_signed(
+                &verifier(),
+                &headers(&signature),
+                Bytes::copy_from_slice(&payload),
+            )
+            .unwrap();
+            expected.target_type = Some(TargetType::Repository);
+            expected.target_id = Some(7);
+            assert_eq!(signed.meta, expected);
+            assert_eq!(signed.raw_payload.as_ref(), payload);
+        }
+    }
 
     #[test]
     fn non_object_payloads_have_no_probed_metadata() {
@@ -576,6 +606,48 @@ mod probe {
         meta.organization = Some(AccountMeta::new(9919, "github"));
         meta.sender = Some(AccountMeta::new(2, "monalisa"));
         meta
+    }
+
+    #[test]
+    fn malformed_escapes_in_skipped_values_clear_all_payload_meta() {
+        let fields = std::str::from_utf8(BODY).unwrap().trim_end_matches('}');
+        let empty = EventMeta::new("delivery", EventKind::PullRequest);
+        for value in [r#""\q""#, r#""\u12""#, r#""\uZZZZ""#, "\"line\nbreak\""] {
+            for extra in [value.to_owned(), format!("{{\"nested\":[{value}]}}")] {
+                assert_probed_meta(&format!("{fields},\"extra\":{extra}}}"), &empty);
+            }
+        }
+    }
+
+    #[test]
+    fn escaped_surrogates_in_skipped_values_leave_metadata_intact() {
+        let fields = std::str::from_utf8(BODY).unwrap().trim_end_matches('}');
+        for value in [r#""\uD83D\uDE00""#, r#""\uD800""#, r#""\uDC00""#] {
+            // Escape syntax is checked, but skipped strings need not decode
+            // into Unicode scalar values, unlike strings the meta keeps.
+            assert_probed_meta(
+                &format!("{fields},\"extra\":{{\"nested\":[{value}]}}}}"),
+                &complete_meta(),
+            );
+        }
+    }
+
+    #[test]
+    fn unpaired_escaped_surrogates_clear_only_the_metadata_field_that_reads_them() {
+        let fields = std::str::from_utf8(BODY).unwrap();
+        for escape in [r"\uD800", r"\uDC00"] {
+            let mut expected = complete_meta();
+            expected.sender = None;
+            assert_probed_meta(&fields.replace("monalisa", escape), &expected);
+
+            let mut expected = complete_meta();
+            expected.action = None;
+            assert_probed_meta(&fields.replace("opened", escape), &expected);
+        }
+
+        let mut expected = complete_meta();
+        expected.sender = Some(AccountMeta::new(2, "😀"));
+        assert_probed_meta(&fields.replace("monalisa", r"\uD83D\uDE00"), &expected);
     }
 
     #[test]

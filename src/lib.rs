@@ -64,9 +64,9 @@
 //!   best-effort read of the payload that runs when the envelope is built,
 //!   keeps five top-level values, skips the rest, and never fails. It runs
 //!   for every envelope, whatever the handler's input will be, because the
-//!   dispatcher routes by the action and the action is in the payload; it is
-//!   the one read of the payload before a handler's input decodes it. Its
-//!   cost is stated on `EventMeta`.
+//!   dispatcher routes by the action and the action is in the payload. Its
+//!   UTF-8 validation pass and JSON scan precede a handler's decode; the cost
+//!   is stated on `EventMeta`.
 //! - [`Handler<I>`](Handler): consumer code over one input `I`, any
 //!   [`FromEnvelope`]: the `Envelope`, the `EventMeta`, a [`Payload`] view
 //!   (a serde type declaring its kind with `#[derive(Payload)]`), or

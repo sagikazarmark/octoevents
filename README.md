@@ -171,13 +171,14 @@ receives and what is decoded for it:
 
 "Decoded" is what is turned into the handler's input when its route runs,
 and where a delivery can fail before the handler sees it. "Nothing" does not
-mean the payload went unread. Every envelope constructor makes one pass over
-the bytes at receipt and keeps five top-level values: `action`,
+mean the payload went unread. Both envelope constructors validate UTF-8 across
+the bytes, then scan the JSON and keep five top-level values: `action`,
 `installation.id`, `repository`, `organization` and `sender`. That read is
-best-effort and never fails; it skips everything else in the document. It
-runs before any handler because `on` routes by the action, and the action is
-one of the five. Nothing else in the document is looked at until an input
-decodes it; the
+best-effort and never fails; invalid UTF-8 or malformed JSON syntax leaves
+all five empty. Skipped strings are checked for escape syntax, but escaped
+surrogates need not be paired until a string is decoded. The read runs before
+any handler because `on` routes by the action, and the action is one of the
+five. The rest of the document is skipped rather than decoded; the
 [`EventMeta` docs](https://docs.rs/octoevents/latest/octoevents/struct.EventMeta.html)
 state the read and its cost.
 
