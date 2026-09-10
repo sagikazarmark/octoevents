@@ -476,8 +476,8 @@ mod receive {
         // so the status alone cannot say whether the body was reached; the
         // body counts its polls instead, and none means the headers were
         // decisive alone. The header is parsed before the body is read, so
-        // a value that is not `sha256=` and 64 hex digits never costs the
-        // receiver `body_limit` bytes of memory.
+        // a value that is not `sha256=` and 64 hex digits never causes the
+        // receiver to buffer the body.
         let receiver = WebhookReceiverBuilder::new(verifier())
             .build(|_: Envelope| async { Ok::<_, Infallible>(()) });
         let body = Frames::data(&[b"{}"]);

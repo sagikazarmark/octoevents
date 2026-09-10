@@ -110,13 +110,17 @@ impl<E> WebhookReceiverBuilder<E> {
     /// [`ReceiveError::BodyTooLarge`](crate::ReceiveError::BodyTooLarge),
     /// answered 413.
     ///
-    /// On `receive` the limit bounds what the receiver accumulates from the
-    /// transport: a body whose size hint is already over is refused before
-    /// the first frame, and the read stops at the frame that would carry the
-    /// total past the limit, so the receiver holds at most the limit plus one
-    /// frame. The frame's size is the transport's own bound, not this one:
-    /// hyper's and axum's frames are small, but a body that hands over its
-    /// whole payload as one frame hands it over whatever the limit, and the
+    /// On `receive` the accumulated payload length never exceeds the limit:
+    /// a body whose size hint is already over is refused before the first
+    /// frame, and the read stops before appending a frame that would carry
+    /// the total past the limit. Buffer growth can reserve allocation
+    /// capacity beyond the payload length, including beyond the limit, so
+    /// this is not an allocation-memory ceiling.
+    ///
+    /// Transport-owned frames have separate allocation bounds, controlled by
+    /// the transport rather than this limit. A frame has already arrived
+    /// before its length can be checked: a body that hands over its whole
+    /// payload as one frame hands it over whatever the limit, and the
     /// receiver refuses it only once it has arrived.
     ///
     /// On `receive_bytes` the body is the caller's already, and the limit is
@@ -517,7 +521,7 @@ where
     H::Error: Into<BoxError>,
 {
     /// The receiving path over an `http::Request`: the body is read from the
-    /// transport, within the limit, once the headers have passed.
+    /// transport, within the payload-length limit, once the headers have passed.
     #[cfg(feature = "http-body")]
     async fn process_request<B>(&self, request: Request<B>) -> StatusCode
     where
@@ -547,7 +551,7 @@ where
     /// future so the two paths differ only in how it is produced: the
     /// header-only refusal runs first, and `body` is awaited only for a
     /// request that passed it. On the request path that is what keeps
-    /// unsigned traffic from occupying `body_limit` bytes of memory; on the
+    /// unsigned traffic from being buffered by the receiver; on the
     /// bytes path the caller holds them already, and the refusal spares the
     /// verification.
     async fn process(
@@ -701,7 +705,7 @@ fn empty_response(status: StatusCode) -> ReceiveResponse {
         .expect("an empty response with a fixed status always builds")
 }
 
-/// Reads `body` into memory, within `limit` bytes.
+/// Reads `body` with an accumulated payload length of at most `limit` bytes.
 ///
 /// The one place the receiver touches the transport, so every way a body can
 /// fail to arrive has its `ReceiveError` here. A body whose size hint is
@@ -710,9 +714,11 @@ fn empty_response(status: StatusCode) -> ReceiveResponse {
 /// [`ReceiveError::BodyTooLarge`]; a frame the transport could not produce is
 /// [`ReceiveError::BodyRead`], with the transport's error as text. Trailers
 /// are passed over and do not count toward the limit. The limit bounds the
-/// accumulator, not a frame: a frame is the transport's allocation and has
-/// arrived before its length can be read, so the crossing frame is held for
-/// the length of the check and dropped with the error.
+/// accumulator's length; buffer growth can reserve capacity beyond that
+/// length and the limit. Transport-owned frames have their own allocation
+/// bounds, independent of this limit. A frame has arrived before its length
+/// can be read, so the crossing frame is held for the length of the check and
+/// dropped with the error, without being appended.
 #[cfg(feature = "http-body")]
 async fn read_body<B>(body: B, limit: usize) -> Result<Bytes, ReceiveError>
 where

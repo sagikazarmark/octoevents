@@ -234,10 +234,11 @@ impl Envelope {
     /// Around this call the receiver refuses a request whose signature header
     /// is absent (401) or not a signature (400) from the headers alone: on
     /// `receive`, before the body is read from the transport, so unsigned
-    /// traffic never occupies memory, and on `receive_bytes`, before anything
-    /// else, the bytes being the caller's already. It bounds the body at the
-    /// configured limit (413), and answers a verified `ping` 204 before any
-    /// handler runs, unless asked to `handle_ping`. A transport
+    /// traffic is never buffered by the receiver, and on `receive_bytes`,
+    /// before anything else, the bytes being the caller's already. It bounds
+    /// the payload length at the configured limit (413), and answers a
+    /// verified `ping` 204 before any handler runs, unless asked to
+    /// `handle_ping`. A transport
     /// calling this function directly does those for itself, or decides to go
     /// without: without the first, unsigned traffic is buffered before it is
     /// refused; without the second, this function verifies whatever it is

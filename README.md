@@ -747,9 +747,14 @@ full contract, span by span and field by field, is
   that reads its secret at startup, and `str::parse::<WebhookSecret>` returns
   `WebhookSecretError::Empty` for one that reads it per request, where a
   panic is the wrong answer.
-- **Bounded bodies.** The body is capped at GitHub's 25 MiB maximum before
-  verification; `.body_limit(..)` on the receiver builder lowers it when your
-  events are smaller.
+- **Bounded payload length.** On `receive`, accumulated payload length never
+  exceeds the configured limit, GitHub's 25 MiB maximum by default;
+  `.body_limit(..)` on the receiver builder lowers it when your events are
+  smaller. Buffer growth can reserve allocation capacity beyond the length
+  and the limit. Transport-owned frames have separate allocation bounds
+  controlled by the transport, so this is not an allocation-memory ceiling.
+  On `receive_bytes`, the caller has already read the body; its length is
+  checked against the limit before verification.
 - **JSON only.** Form-encoded deliveries are refused, so the bytes that were
   signed are the bytes that are decoded, and the payload is never re-encoded.
 - **No replay protection.** GitHub signs no timestamp. Treat
