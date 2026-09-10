@@ -47,7 +47,7 @@ use crate::{Action, EventKind, Payload};
 /// There is deliberately no `|` operator: operator dispatch is on the left
 /// operand's type, so `(kind, action) | (kind, action)` could never work, and
 /// an operator that works depending on operand order is worse than none.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct EventMatcher {
     slots: Vec<Slot>,
 }
