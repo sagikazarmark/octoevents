@@ -1,6 +1,6 @@
-use std::fmt;
+use std::{fmt, marker::PhantomData};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::value::RawValue;
 
 use crate::{Action, EventKind, events::string_enum};
@@ -117,8 +117,9 @@ impl EventMeta {
     /// Best-effort and never fatal: the top level is read as a map of raw
     /// values, so JSON that is malformed, or whose top level is not an
     /// object, leaves every probed field empty, and one malformed field (a
-    /// `repository` missing `full_name`, say) clears only itself. The rest of
-    /// the document is not decoded.
+    /// `repository` missing `full_name`, say) clears only itself. A duplicated
+    /// metadata key also clears only itself; a duplicate required key inside
+    /// an object invalidates that object. The rest of the document is not decoded.
     pub(crate) fn probe(
         delivery_id: impl Into<String>,
         kind: EventKind,
@@ -135,14 +136,14 @@ impl EventMeta {
                 .map(Action::from),
             installation_id: probe
                 .installation
-                .and_then(parse_probe::<IdOnly>)
+                .and_then(parse_object::<IdOnly>)
                 .map(|installation| installation.id),
             repository: probe
                 .repository
-                .and_then(parse_probe::<RepoProbe>)
+                .and_then(parse_object::<RepoProbe>)
                 .map(RepositoryMeta::from),
-            organization: probe.organization.and_then(parse_probe::<AccountMeta>),
-            sender: probe.sender.and_then(parse_probe::<AccountMeta>),
+            organization: probe.organization.and_then(parse_object::<AccountMeta>),
+            sender: probe.sender.and_then(parse_object::<AccountMeta>),
             target_type: None,
             target_id: None,
         }
@@ -288,24 +289,96 @@ fn parse_probe<T: serde::de::DeserializeOwned>(value: &RawValue) -> Option<T> {
     serde_json::from_str(value.get()).ok()
 }
 
+fn parse_object<T: de::DeserializeOwned>(value: &RawValue) -> Option<T> {
+    parse_probe::<Object<T>>(value).map(|object| object.0)
+}
+
+/// Restricts an internal probe value to a JSON object without changing the
+/// serde behavior of the type it wraps (derived structs also accept arrays).
+#[derive(Debug)]
+struct Object<T>(T);
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Object<T> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ObjectVisitor<T>(PhantomData<T>);
+
+        impl<'de, T: Deserialize<'de>> de::Visitor<'de> for ObjectVisitor<T> {
+            type Value = Object<T>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an object")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+                T::deserialize(de::value::MapAccessDeserializer::new(map)).map(Object)
+            }
+        }
+
+        deserializer.deserialize_map(ObjectVisitor(PhantomData))
+    }
+}
+
 /// The top level of a payload as raw values, one per field the probe reads,
 /// so each is parsed on its own and a malformed one does not take its
-/// siblings with it. `organization` and `sender` then parse as
-/// [`AccountMeta`] directly: its serde shape is the subset of GitHub's
-/// account object the meta keeps, and the fields it does not name are
-/// ignored.
-#[derive(Debug, Default, Deserialize)]
+/// siblings with it. Only objects are accepted, and a repeated metadata key
+/// clears its field, even if its first value was null. Unknown keys are skipped.
+#[derive(Debug, Default)]
 struct Probe<'a> {
-    #[serde(borrow)]
     action: Option<&'a RawValue>,
-    #[serde(borrow)]
     installation: Option<&'a RawValue>,
-    #[serde(borrow)]
     repository: Option<&'a RawValue>,
-    #[serde(borrow)]
     organization: Option<&'a RawValue>,
-    #[serde(borrow)]
     sender: Option<&'a RawValue>,
+}
+
+impl<'de> Deserialize<'de> for Probe<'de> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(field_identifier, rename_all = "snake_case")]
+        enum Field {
+            Action,
+            Installation,
+            Repository,
+            Organization,
+            Sender,
+            #[serde(other)]
+            Unknown,
+        }
+
+        struct ProbeVisitor;
+
+        impl<'de> de::Visitor<'de> for ProbeVisitor {
+            type Value = Probe<'de>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a payload object")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut probe = Probe::default();
+                let mut seen = [false; 5];
+                while let Some(key) = map.next_key::<Field>()? {
+                    let (field, seen) = match key {
+                        Field::Action => (&mut probe.action, &mut seen[0]),
+                        Field::Installation => (&mut probe.installation, &mut seen[1]),
+                        Field::Repository => (&mut probe.repository, &mut seen[2]),
+                        Field::Organization => (&mut probe.organization, &mut seen[3]),
+                        Field::Sender => (&mut probe.sender, &mut seen[4]),
+                        Field::Unknown => {
+                            map.next_value::<de::IgnoredAny>()?;
+                            continue;
+                        }
+                    };
+                    let value = map.next_value::<&RawValue>()?;
+                    *field = if *seen { None } else { Some(value) };
+                    *seen = true;
+                }
+                Ok(probe)
+            }
+        }
+
+        deserializer.deserialize_map(ProbeVisitor)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -318,7 +391,7 @@ struct RepoProbe {
     id: u64,
     name: String,
     full_name: String,
-    owner: LoginOnly,
+    owner: Object<LoginOnly>,
 }
 
 impl From<RepoProbe> for RepositoryMeta {
@@ -327,7 +400,7 @@ impl From<RepoProbe> for RepositoryMeta {
             id: repository.id,
             name: repository.name,
             full_name: repository.full_name,
-            owner: repository.owner.login,
+            owner: repository.owner.0.login,
         }
     }
 }

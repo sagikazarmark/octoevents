@@ -330,8 +330,14 @@ impl Envelope {
     /// construction. Top-level JSON that is malformed, or that is not an
     /// object (`[]`, `42`), leaves every payload-derived field empty; one
     /// malformed field (a `repository` object missing `full_name`, say)
-    /// clears only that field and leaves its siblings intact. In both cases
-    /// [`Envelope::raw_payload`] holds the bytes as given.
+    /// clears only that field and leaves its siblings intact. Installation,
+    /// repository, repository owner, organization and sender must be objects,
+    /// never positional arrays; a malformed owner clears the repository.
+    /// A duplicated top-level metadata key clears that field, even if the
+    /// values agree or one is null. A duplicate required key inside a metadata
+    /// object invalidates that object, clearing its top-level metadata field.
+    /// Unknown keys are ignored. In every case [`Envelope::raw_payload`]
+    /// holds the bytes as given.
     ///
     /// The payload is anything that views as bytes, a byte-string literal
     /// included, and is copied into [`Envelope::raw_payload`]; a test's

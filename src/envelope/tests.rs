@@ -522,12 +522,199 @@ mod header_map {
 /// The probe: best-effort and never fatal, the same on the receiving path
 /// and in `Envelope::new`, and reading what the corpus fixtures carry.
 mod probe {
+    use std::fmt::Write as _;
+
     use bytes::Bytes;
 
     use super::{BODY, headers, verifier};
     use crate::{
         AccountMeta, Action, Envelope, EventKind, EventMeta, RepositoryMeta, test_support,
     };
+
+    #[test]
+    fn non_object_payloads_have_no_probed_metadata() {
+        for payload in [
+            r#"["opened",{"id":42},null,null,{"id":2,"login":"monalisa"}]"#,
+            "[]",
+            "null",
+            "true",
+            "42",
+            r#""opened""#,
+        ] {
+            assert_probed_meta(payload, &EventMeta::new("delivery", EventKind::PullRequest));
+        }
+    }
+
+    fn assert_probed_meta(payload: &str, expected: &EventMeta) {
+        let signature = verifier().sign(payload.as_bytes()).to_string();
+        let mut signed_headers = headers(&signature);
+        signed_headers.remove("x-github-hook-installation-target-type");
+        signed_headers.remove("x-github-hook-installation-target-id");
+        let signed = Envelope::from_signed(
+            &verifier(),
+            &signed_headers,
+            Bytes::copy_from_slice(payload.as_bytes()),
+        )
+        .unwrap();
+        let synthetic = Envelope::new("delivery", EventKind::PullRequest, payload.as_bytes());
+
+        for envelope in [synthetic, signed] {
+            assert_eq!(&envelope.meta, expected, "{payload}");
+            assert_eq!(
+                envelope.raw_payload.as_ref(),
+                payload.as_bytes(),
+                "{payload}"
+            );
+        }
+    }
+
+    fn complete_meta() -> EventMeta {
+        let mut meta = EventMeta::new("delivery", EventKind::PullRequest);
+        meta.action = Some(Action::Opened);
+        meta.installation_id = Some(42);
+        meta.repository = Some(RepositoryMeta::new(1, "repo", "octo/repo", "octo"));
+        meta.organization = Some(AccountMeta::new(9919, "github"));
+        meta.sender = Some(AccountMeta::new(2, "monalisa"));
+        meta
+    }
+
+    #[test]
+    fn wrong_shaped_metadata_objects_clear_only_their_top_level_field() {
+        for (field, array) in [
+            ("installation", "[42]"),
+            ("repository", r#"[1,"repo","octo/repo",{"login":"octo"}]"#),
+            ("owner", r#"["octo"]"#),
+            ("organization", r#"[9919,"github"]"#),
+            ("sender", r#"[2,"monalisa"]"#),
+        ] {
+            for shape in [array, "null", "true", "42", r#""object""#] {
+                let mut payload: serde_json::Value = serde_json::from_slice(BODY).unwrap();
+                let mut expected = complete_meta();
+                let value = serde_json::from_str(shape).unwrap();
+                match field {
+                    "installation" => expected.installation_id = None,
+                    "repository" | "owner" => expected.repository = None,
+                    "organization" => expected.organization = None,
+                    "sender" => expected.sender = None,
+                    _ => unreachable!(),
+                }
+                if field == "owner" {
+                    payload["repository"]["owner"] = value;
+                } else {
+                    payload[field] = value;
+                }
+                assert_probed_meta(&payload.to_string(), &expected);
+            }
+        }
+    }
+
+    #[test]
+    fn duplicate_metadata_keys_clear_only_that_field_even_after_null_or_a_third_value() {
+        let fields: serde_json::Value = serde_json::from_slice(BODY).unwrap();
+        for field in [
+            "action",
+            "installation",
+            "repository",
+            "organization",
+            "sender",
+        ] {
+            let mut expected = complete_meta();
+            match field {
+                "action" => expected.action = None,
+                "installation" => expected.installation_id = None,
+                "repository" => expected.repository = None,
+                "organization" => expected.organization = None,
+                "sender" => expected.sender = None,
+                _ => unreachable!(),
+            }
+            let valid = fields[field].to_string();
+            let mut siblings = fields.clone();
+            siblings.as_object_mut().unwrap().remove(field);
+            let siblings = siblings.to_string();
+            let siblings = siblings.trim_start_matches('{');
+            for values in [
+                vec![valid.as_str(), valid.as_str()],
+                vec!["null", valid.as_str()],
+                vec![valid.as_str(), "null"],
+                vec![valid.as_str(), "null", valid.as_str()],
+            ] {
+                // Raw JSON keeps duplicate keys that a Value would collapse.
+                let mut entries = String::new();
+                for value in values {
+                    write!(entries, "{field:?}:{value},").unwrap();
+                }
+                assert_probed_meta(&format!("{{{entries}{siblings}"), &expected);
+            }
+        }
+    }
+
+    #[test]
+    fn duplicate_required_keys_in_metadata_objects_clear_only_their_top_level_field() {
+        for (field, object) in [
+            ("installation", r#"{"id":42,"id":43}"#),
+            (
+                "repository",
+                r#"{"id":1,"id":2,"name":"repo","full_name":"octo/repo","owner":{"login":"octo"}}"#,
+            ),
+            (
+                "repository",
+                r#"{"id":1,"name":"repo","name":"other","full_name":"octo/repo","owner":{"login":"octo"}}"#,
+            ),
+            (
+                "repository",
+                r#"{"id":1,"name":"repo","full_name":"octo/repo","full_name":"octo/other","owner":{"login":"octo"}}"#,
+            ),
+            (
+                "repository",
+                r#"{"id":1,"name":"repo","full_name":"octo/repo","owner":{"login":"octo"},"owner":{"login":"other"}}"#,
+            ),
+            (
+                "repository",
+                r#"{"id":1,"name":"repo","full_name":"octo/repo","owner":{"login":"octo","login":"other"}}"#,
+            ),
+            ("organization", r#"{"id":9919,"id":9920,"login":"github"}"#),
+            (
+                "organization",
+                r#"{"id":9919,"login":"github","login":"other"}"#,
+            ),
+            ("sender", r#"{"id":2,"id":3,"login":"monalisa"}"#),
+            ("sender", r#"{"id":2,"login":"monalisa","login":"other"}"#),
+        ] {
+            let mut siblings: serde_json::Value = serde_json::from_slice(BODY).unwrap();
+            siblings.as_object_mut().unwrap().remove(field);
+            let siblings = siblings.to_string();
+            let mut expected = complete_meta();
+            match field {
+                "installation" => expected.installation_id = None,
+                "repository" => expected.repository = None,
+                "organization" => expected.organization = None,
+                "sender" => expected.sender = None,
+                _ => unreachable!(),
+            }
+            let payload = format!("{{{field:?}:{object},{}", siblings.trim_start_matches('{'));
+            assert_probed_meta(&payload, &expected);
+        }
+    }
+
+    #[test]
+    fn unknown_duplicate_keys_are_ignored_but_invalid_json_clears_every_field() {
+        let mut expected = EventMeta::new("delivery", EventKind::PullRequest);
+        expected.action = Some(Action::Opened);
+        expected.sender = Some(AccountMeta::new(2, "monalisa"));
+        assert_probed_meta(
+            r#"{"action":"opened","extra":[],"extra":{},"sender":{"id":2,"login":"monalisa","extra":0,"extra":1}}"#,
+            &expected,
+        );
+
+        let empty = EventMeta::new("delivery", EventKind::PullRequest);
+        for payload in [
+            r#"{"action":"opened","extra":[}"#,
+            r#"{"action":"opened","sender":{},"sender":[}"#,
+            r#"{"action":"opened"} trailing"#,
+        ] {
+            assert_probed_meta(payload, &empty);
+        }
+    }
 
     #[test]
     fn invalid_json_is_preserved_without_failing_the_envelope() {
