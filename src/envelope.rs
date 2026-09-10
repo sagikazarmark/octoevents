@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt};
+use std::{borrow::Cow, fmt, marker::PhantomData};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bytes::Bytes;
@@ -168,13 +168,37 @@ struct EnvelopeWire {
     kind: EventKind,
     action: Option<Action>,
     installation_id: Option<u64>,
-    repository: Option<RepositoryMeta>,
-    organization: Option<AccountMeta>,
-    sender: Option<AccountMeta>,
+    repository: Option<WireObject<RepositoryMeta>>,
+    organization: Option<WireObject<AccountMeta>>,
+    sender: Option<WireObject<AccountMeta>>,
     target_type: Option<TargetType>,
     target_id: Option<u64>,
     #[serde(deserialize_with = "deserialize_bytes")]
     raw_payload: Bytes,
+}
+
+// A derived metadata struct accepts positional sequences too. The wire
+// format commits only to named fields, including inside optional objects.
+struct WireObject<T>(T);
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for WireObject<T> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ObjectVisitor<T>(PhantomData<T>);
+
+        impl<'de, T: Deserialize<'de>> de::Visitor<'de> for ObjectVisitor<T> {
+            type Value = WireObject<T>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a metadata object")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+                T::deserialize(de::value::MapAccessDeserializer::new(map)).map(WireObject)
+            }
+        }
+
+        deserializer.deserialize_map(ObjectVisitor(PhantomData))
+    }
 }
 
 impl From<EnvelopeWire> for Envelope {
@@ -185,9 +209,9 @@ impl From<EnvelopeWire> for Envelope {
                 kind: wire.kind,
                 action: wire.action,
                 installation_id: wire.installation_id,
-                repository: wire.repository,
-                organization: wire.organization,
-                sender: wire.sender,
+                repository: wire.repository.map(|object| object.0),
+                organization: wire.organization.map(|object| object.0),
+                sender: wire.sender.map(|object| object.0),
                 target_type: wire.target_type,
                 target_id: wire.target_id,
             },
@@ -456,6 +480,10 @@ impl Envelope {
     /// [`FromEnvelope`](crate::FromEnvelope) impl decodes with it, and so does
     /// every serde `Payload`, after its kind check.
     ///
+    /// A view may borrow from the raw payload for as long as the envelope is
+    /// borrowed, for example with `&str` or `&serde_json::value::RawValue`
+    /// fields. Routed inputs still use the owned decode through `FromEnvelope`.
+    ///
     /// ```
     /// use octoevents::{Envelope, EventKind};
     ///
@@ -479,7 +507,7 @@ impl Envelope {
     /// # Errors
     ///
     /// Returns [`DecodeError::Json`] when the payload does not fit `T`.
-    pub fn decode<T: serde::de::DeserializeOwned>(&self) -> Result<T, DecodeError> {
+    pub fn decode<'de, T: Deserialize<'de>>(&'de self) -> Result<T, DecodeError> {
         serde_json::from_slice(&self.raw_payload).map_err(DecodeError::Json)
     }
 }

@@ -9,6 +9,10 @@ tier, then routes it to a handler over a consumer-defined view of the
 go to and is answered 500; the `ping` GitHub sends on creating the webhook is
 answered 204 by the receiver before the dispatcher.
 
+An `on_error` observer logs each failed delivery's ID, dispatch error and
+source chain to the Worker console before answering 500. Read these in
+`wrangler dev` locally or with `npx wrangler tail` for a deployed Worker.
+
 This is a package of its own, not a member of the repository's workspace:
 it has a `cdylib` target, its own lockfile and a wasm-only dependency
 (`worker`), so `cargo run --example worker` from the repository root does not

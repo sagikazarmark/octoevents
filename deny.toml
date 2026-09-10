@@ -8,7 +8,8 @@ all-features = true
 # for `models::webhook_events` and nothing else -- it never builds a client,
 # never authenticates, and never signs. The alternative backends put a C
 # toolchain (ring or aws-lc-sys) back in the tree and break the wasm build, so
-# this is the deliberate trade; revisit when RustCrypto lands constant-time RSA.
+# tests and examples select RustCrypto through a dev-dependency; consumers
+# choose their own backend. Revisit when RustCrypto lands constant-time RSA.
 ignore = ["RUSTSEC-2023-0071"]
 
 [licenses]

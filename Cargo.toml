@@ -52,9 +52,7 @@ hmac = "0.13.0"
 http = "1.3.1"
 http-body = { version = "1.0.1", optional = true }
 http-body-util = { version = "0.1.3", optional = true }
-octocrab = { version = "0.54.1", default-features = false, features = [
-  "jwt-rust-crypto",
-], optional = true }
+octocrab = { version = "0.54.1", default-features = false, optional = true }
 # The derive expands to `impl octoevents::Payload`, so the two crates move in
 # lockstep: pinned exactly, released together.
 octoevents-derive = { version = "=0.1.0", path = "derive", optional = true }
@@ -67,6 +65,10 @@ tower-service = { version = "0.3.3", optional = true }
 tracing = { version = "0.1.41", optional = true }
 zeroize = "1.8.1"
 
+[dev-dependencies]
+# Tests and examples need a backend; consumers choose theirs on octocrab.
+octocrab = { version = "0.54.1", default-features = false, features = ["jwt-rust-crypto"] }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 anyhow = "1.0.104"
 axum = "0.8.4"
@@ -76,6 +78,7 @@ tracing-subscriber = { version = "0.3.20", features = ["registry"] }
 
 [package.metadata.docs.rs]
 all-features = true
+features = ["octocrab/jwt-rust-crypto"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 # The examples, in the order to read them: the README's quickstart, a receiver
@@ -138,9 +141,13 @@ tag-name = "v{{version}}"
 # not here: cargo-hack preserves their position relative to the subcommand.
 # Each-feature includes no features, defaults, all features, and each feature
 # alone. Check the powerset too, to catch interactions between optional features.
+# Library-only commands select a backend explicitly, without enabling octocrab
+# in core-only runs. Scope those matrices to octoevents: cargo-hack forwards
+# dependency feature flags to every selected package, but the derive crate has
+# no octocrab dependency. Workspace tests cover the derive crate and its docs.
 [[workspace.metadata.dagger.modules]]
 name = "rust"
-hack.check = ["--workspace", "--feature-powerset", "--locked"]
+hack.check = ["--package", "octoevents", "--feature-powerset", "--features", "octocrab?/jwt-rust-crypto", "--locked"]
 hack.test = ["--workspace", "--each-feature", "--locked"]
-hack.clippy = ["--workspace", "--each-feature", "--locked"]
-hack.doc = ["--workspace", "--each-feature", "--locked"]
+hack.clippy = ["--package", "octoevents", "--each-feature", "--features", "octocrab?/jwt-rust-crypto", "--locked"]
+hack.doc = ["--package", "octoevents", "--each-feature", "--features", "octocrab?/jwt-rust-crypto", "--locked"]

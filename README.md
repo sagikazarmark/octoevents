@@ -292,6 +292,18 @@ own or inside `Event`) and its per-kind payload structs
 written for a handler over a whole event. octocrab goes in your own
 `[dependencies]` to name its types.
 
+Use octocrab `0.54`. Its default features already select a JWT backend.
+octoevents selects none, so an application can use either of octocrab's
+backends without a feature conflict. If you disable octocrab's defaults,
+select exactly one backend yourself, even when you only use its models:
+
+```toml
+octocrab = { version = "0.54", default-features = false, features = ["jwt-rust-crypto"] }
+```
+
+`jwt-rust-crypto` supports wasm; native applications can instead select
+`jwt-aws-lc-rs`. Do not enable both.
+
 ```rust
 use octocrab::models::webhook_events::{WebhookEvent, payload::PullRequestWebhookEventPayload};
 use octoevents::{Action, BoxError, Dispatcher, Event, EventKind};
@@ -829,6 +841,13 @@ wasm target and cargo-hack in containers.
 
 `dagger.toml` configures the upstream Rust module, with its
 cargo-hack arguments in `Cargo.toml` under `workspace.metadata.dagger`:
+
+The octoevents check, Clippy and rustdoc matrices explicitly pass
+`--features 'octocrab?/jwt-rust-crypto'`: library-only builds do not use the
+test backend from dev-dependencies. The weak dependency feature leaves
+core-only builds free of octocrab. For a direct all-feature documentation build,
+use `cargo doc --workspace --all-features --features octocrab/jwt-rust-crypto`.
+Tests run across both workspace crates, including the derive crate's doctests.
 
 - Native compilation checks every feature combination and all Cargo targets.
 - Unit, integration, doc and example tests run with no features, defaults, all

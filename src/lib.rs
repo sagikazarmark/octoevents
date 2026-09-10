@@ -206,6 +206,11 @@
 //! handler trait and its inputs, and the whole dispatcher) does not depend on
 //! it.
 //!
+//! octoevents selects no octocrab JWT backend. octocrab's defaults select
+//! `jwt-rust-crypto`; when disabling its defaults, enable exactly one of
+//! `jwt-rust-crypto` (also supported on wasm) or `jwt-aws-lc-rs` in your own
+//! octocrab dependency. octocrab requires a backend even for model-only use.
+//!
 //! The trade-off of octocrab's types is whole-model decode: the struct names
 //! far more of the payload than a handler reads, and an incompatible change
 //! to any field it names (removed, renamed, retyped, or made null) fails the

@@ -52,13 +52,16 @@
 // body has an `.await`.
 #![expect(clippy::unused_async_trait_impl)]
 
-use std::convert::Infallible;
+use std::{convert::Infallible, error::Error as _};
 
 use octoevents::{
-    AnyAction, Dispatcher, Envelope, Event, EventKind, Handler, Verifier, WebhookReceiverBuilder,
-    WebhookSecret, WebhookSecretError,
+    AnyAction, DispatchError, Dispatcher, Envelope, Event, EventKind, EventMeta, Handler, Verifier,
+    WebhookReceiverBuilder, WebhookSecret, WebhookSecretError,
 };
-use worker::{Context, Env, Fetch, HttpRequest, Method, Request, RequestInit, console_log, event};
+use worker::{
+    Context, Env, Fetch, HttpRequest, Method, Request, RequestInit, console_error, console_log,
+    event,
+};
 
 /// The forwarder's error: its serialization, and its fetch. A `worker::Error`
 /// holds a `JsValue` and is not `Send`, which the crate's `BoxError` admits on
@@ -178,7 +181,16 @@ async fn fetch(
         .on(AnyAction, InstallationLog)
         .build();
 
-    let receiver = WebhookReceiverBuilder::new(verifier).build(dispatcher);
+    let receiver = WebhookReceiverBuilder::new(verifier)
+        .on_error(|meta: &EventMeta, error: &DispatchError| {
+            console_error!("{}: {error}", meta.delivery_id);
+            let mut cause = error.source();
+            while let Some(error) = cause {
+                console_error!("{}: caused by: {error}", meta.delivery_id);
+                cause = error.source();
+            }
+        })
+        .build(dispatcher);
 
     Ok(receiver.receive(request).await)
 }

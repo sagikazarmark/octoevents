@@ -1131,8 +1131,11 @@ mod wire_format {
             r#""action": 42"#,
             r#""installation_id": -1"#,
             r#""repository": {}"#,
+            r#""repository": [1, "repo", "octo/repo", "octo"]"#,
             r#""sender": false"#,
+            r#""sender": [2, "monalisa"]"#,
             r#""organization": []"#,
+            r#""organization": [9919, "github"]"#,
             r#""target_type": 1"#,
             r#""target_id": "1"#,
             r#""action": null, "action": "opened""#,
@@ -1165,6 +1168,28 @@ mod wire_format {
 /// The kind-free `decode` and what a `DecodeError` says.
 mod decode {
     use crate::{DecodeError, EventKind, test_support};
+
+    #[test]
+    fn a_view_borrows_strings_and_raw_json_from_the_payload() {
+        #[derive(serde::Deserialize)]
+        struct View<'a> {
+            action: &'a str,
+            #[serde(borrow)]
+            issue: &'a serde_json::value::RawValue,
+        }
+
+        let envelope = test_support::envelope(
+            EventKind::Issues,
+            br#"{"action":"opened","issue":{ "number": 7 }}"#,
+        );
+        let view: View<'_> = envelope.decode().unwrap();
+
+        assert_eq!(view.action, "opened");
+        assert_eq!(view.issue.get(), r#"{ "number": 7 }"#);
+        let bytes = envelope.raw_payload.as_ptr_range();
+        assert!(bytes.contains(&view.action.as_ptr()));
+        assert!(bytes.contains(&view.issue.get().as_ptr()));
+    }
 
     /// A view over an `issues` payload. Not a `Payload`: `decode` ties
     /// nothing to the kind, so the view declares none; the kind-checked
