@@ -2,8 +2,9 @@ ignore = [".devenv", "target"]
 
 [modules.rust]
 source = "github.com/sagikazarmark/daggerverse-beta/rust"
-
 settings.version = "1.98-slim-trixie"
+# Tests already build the native artifacts; clippy checks without rewriting.
+check.skip = ["build", "fix:*"]
 
 [modules.dagger-gha]
 source = "github.com/sagikazarmark/daggerverse-beta/dagger-gha"

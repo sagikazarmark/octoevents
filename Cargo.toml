@@ -80,26 +80,29 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 # The examples, in the order to read them: the README's quickstart, a receiver
 # with no dispatcher, a dispatcher with every tier, and the policy seam around
-# one. Each carries `#[cfg(test)]` tests; `cargo test --examples
-# --all-features` runs them (cargo builds examples on `cargo test` but does
-# not run their tests unless asked, and skips an example whose required
-# features are off, which without `tower` is all of them). The Cloudflare
+# one. Each carries `#[cfg(test)]` tests; `test = true` includes them in the
+# default `cargo test` selection whenever their required features are enabled.
+# `cargo test --all-features` runs all of them. The Cloudflare
 # Worker example is a package of its own under
 # `examples/worker`, excluded from the workspace above.
 [[example]]
 name = "quickstart"
+test = true
 required-features = ["tower"]
 
 [[example]]
 name = "axum"
+test = true
 required-features = ["tower"]
 
 [[example]]
 name = "dispatcher"
+test = true
 required-features = ["tower", "derive"]
 
 [[example]]
 name = "policy_seam"
+test = true
 required-features = ["tower", "octocrab"]
 
 [lints]
@@ -129,3 +132,15 @@ sign-tag = true
 shared-version = true
 tag-message = "Release {{version}}"
 tag-name = "v{{version}}"
+
+# Dagger's upstream Rust module forwards these arguments before the subcommand
+# to cargo-hack. Cargo target flags belong on Dagger's API calls (justfile),
+# not here: cargo-hack preserves their position relative to the subcommand.
+# Each-feature includes no features, defaults, all features, and each feature
+# alone. Check the powerset too, to catch interactions between optional features.
+[[workspace.metadata.dagger.modules]]
+name = "rust"
+hack.check = ["--workspace", "--feature-powerset", "--locked"]
+hack.test = ["--workspace", "--each-feature", "--locked"]
+hack.clippy = ["--workspace", "--each-feature", "--locked"]
+hack.doc = ["--workspace", "--each-feature", "--locked"]

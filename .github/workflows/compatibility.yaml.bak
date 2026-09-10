@@ -1,0 +1,39 @@
+name: Compatibility
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# These are the target-specific calls in `just pr`. The generated Dagger
+# workflow runs the default checks; check discovery cannot pass these flags.
+jobs:
+  check:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Native targets
+            args: rust check --all-targets
+          - name: Clippy targets
+            args: rust clippy --all-targets --deny warnings
+          - name: MSRV
+            args: rust --toolchain msrv check --all-targets
+          - name: wasm32
+            args: rust --targets wasm32-unknown-unknown check --exclude octoevents-derive --lib --test=* --target wasm32-unknown-unknown
+          - name: Worker
+            args: rust --targets wasm32-unknown-unknown container with-exec --args cargo,check,--manifest-path,examples/worker/Cargo.toml,--target,wasm32-unknown-unknown,--locked combined-output
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+      - name: Check
+        uses: dagger/dagger-for-github@v8.4.1
+        with:
+          verb: api
+          args: call ${{ matrix.args }}
+          version: v1.0.0-beta.11

@@ -791,6 +791,39 @@ constants and `ReceiveError::status` as an `http::StatusCode` are part of it:
 the `http` crate is not optional, since every surveyed Rust runtime hands over
 its types, and it adds one entry to the dependency tree.
 
+## Developing
+
+Run `just pr` for the same checks as CI. The development
+shell provides the pinned Dagger CLI; Dagger supplies the Rust toolchains,
+wasm target and cargo-hack in containers.
+
+`dagger.toml` configures the upstream Rust module, with its
+cargo-hack arguments in `Cargo.toml` under `workspace.metadata.dagger`:
+
+- Native compilation checks every feature combination and all Cargo targets.
+- Unit, integration, doc and example tests run with no features, defaults, all
+  features and each feature alone (examples require their declared features).
+- Clippy checks all Cargo targets across features, with warnings as errors.
+  Rustdoc also runs across features with warnings as errors to check links.
+- MSRV checks use the manifest's `rust-version` across the feature powerset
+  and all Cargo targets, without requiring a local installation of that toolchain.
+- wasm32 checks the library and test targets across every feature combination,
+  including the non-`Send` handler tests, and checks the standalone Worker
+  example with its own lockfile. These are compile checks, not wasm test runs.
+- Formatting, dependency auditing and generated workflow freshness are checked.
+
+`dagger check` runs the module's default checks. The additional Cargo target
+and MSRV checks use `dagger api call`: the current Dagger beta deduplicates
+multiple registrations of the same module, and check discovery cannot pass
+function arguments. `just pr` and `.github/workflows/compatibility.yaml`
+include those calls. The excluded Worker package is checked through the
+module's container API, preserving access to its path dependency on this crate.
+
+List default checks with `dagger check -l`, or select one, for example
+`dagger check rust:test`. `just --list` lists the convenient subsets.
+For the fast local loop, use `just core` or `just watch`; `just integration`
+and `just docs` also run directly through the local Cargo toolchain.
+
 ## License
 
 Licensed under either of

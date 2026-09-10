@@ -18,7 +18,9 @@
 
 use std::{cell::Cell, rc::Rc};
 
-use octoevents::{AnyAction, Envelope, Handler};
+#[cfg(feature = "octocrab")]
+use octoevents::AnyAction;
+use octoevents::{Envelope, Handler};
 
 /// A Worker-shaped handler: holds a non-`Send`, non-`Sync` value.
 struct Counter {

@@ -1,101 +1,49 @@
-# The test suite in tiers, cheapest first; `pr` is what a change should pass
-# and `core` the loop while editing. The four test tiers pass
-# `--all-features` so that nothing is skipped; rustdoc, matrix, wasm, msrv and
-# lint then vary the feature set, the target and the toolchain on purpose.
-#
-# The rustdoc tier exists because a doctest run does not resolve links: the
-# front page links to items behind `http-body`, and only `cargo doc` under
-# `--no-default-features` says whether they still resolve without it.
-#
-# The matrix tier runs the suite at the three feature extremes, and between
-# them `cargo hack --each-feature` (from devenv) type-checks every test target
-# under each feature alone, where an import gated on one feature but used under
-# another goes stale unseen by the extremes; the suite itself runs only at the
-# extremes because nine runs of it would be slow for what a check catches.
-#
-# The wasm tier checks the lib at both feature extremes, then every test target
-# under one command (the unit test modules on tokio gate themselves off the
-# target; `tests/wasm_handlers.rs` is never run and does not compile natively),
-# then the Cloudflare Worker example. The lint tier runs clippy at both feature
-# extremes, with the workspace's pedantic lints as errors.
-#
-# The msrv tier needs Rust 1.88.0, which devenv (stable only) does not ship.
-# Install it with `rustup toolchain install 1.88.0 --profile minimal`, or put
-# that toolchain's bin first on PATH. `rustup run` works even when devenv's
-# cargo precedes rustup's proxy. A missing toolchain fails the required tier.
-#
-# CI runs the checks provided by the Dagger Rust module in `dagger.toml`;
-# this file defines the local verification tiers.
+# Dagger runs the PR gate, locally and in CI. The upstream Rust module lives
+# in dagger.toml; its cargo-hack matrices live in Cargo.toml. Target-selection
+# flags need API calls until `dagger check` supports function arguments.
+# Keep direct Cargo commands for the fast edit-to-green loop.
 
 # List the tiers.
 default:
-  @just --list --unsorted
+    @just --list --unsorted
 
-# Lib unit tests of both crates, ~1s: the loop while editing.
+# Lib unit tests of both crates: the loop while editing.
 core:
-  cargo test --workspace --lib --all-features
+    cargo test --workspace --lib --all-features
 
 # Re-run the core tier on every save.
 watch:
-  cargo watch --clear --shell 'just core'
+    cargo watch --clear --shell 'just core'
 
 # Every integration test binary under tests/.
 integration:
-  cargo test --workspace --test '*' --all-features
+    cargo test --workspace --test '*' --all-features
 
 # Doctests, the README's included.
 docs:
-  cargo test --workspace --doc --all-features
+    cargo test --workspace --doc --all-features
 
-# Rustdoc under no features and under all, warnings as errors.
-rustdoc:
-  RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --no-default-features
-  RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --all-features
+# Native feature powerset, tests, examples and rustdoc.
+matrix:
+    dagger check rust:test rust:doc
+    dagger api call rust check --all-targets
 
-# Everything the suite has, under one feature set; the examples' tests need asking for.
-full:
-  cargo test --workspace --all-features
-  cargo test --workspace --all-features --examples
-
-# The suite at the three feature extremes, rustdoc, and each feature alone with cargo hack.
-matrix: full rustdoc
-  cargo hack --workspace --each-feature check --tests
-  cargo test --workspace --no-default-features
-  cargo test --workspace
-
-# The wasm32 target: the lib at both extremes, every test target, then the Worker example.
+# wasm32 feature powerset and non-Send test coverage, then the Worker example.
 wasm:
-  cargo check --target wasm32-unknown-unknown --no-default-features
-  cargo check --target wasm32-unknown-unknown --all-features
-  cargo check --tests --target wasm32-unknown-unknown --features octocrab,tower
-  cargo check --manifest-path examples/worker/Cargo.toml --target wasm32-unknown-unknown
+    dagger api call rust --targets wasm32-unknown-unknown check --exclude octoevents-derive --lib --test '*' --target wasm32-unknown-unknown
+    dagger api call rust --targets wasm32-unknown-unknown container with-exec --args cargo,check,--manifest-path,examples/worker/Cargo.toml,--target,wasm32-unknown-unknown,--locked combined-output
 
-# Rust 1.88.0, the declared minimum, at the three feature extremes; required.
+# The declared minimum Rust version, installed by Dagger, across the powerset.
 msrv:
-  #!/usr/bin/env sh
-  set -eu
-  export RUSTUP_AUTO_INSTALL=0
-  if rustup run 1.88.0 cargo --version >/dev/null 2>&1; then
-    set -- rustup run 1.88.0 cargo
-  else
-    case "$(cargo --version) / $(rustc --version)" in
-      'cargo 1.88.0 '*'/ rustc 1.88.0 '*) set -- cargo ;;
-      *)
-        echo 'msrv: Rust 1.88.0 is required; run `rustup toolchain install 1.88.0 --profile minimal`, or put its bin first on PATH' >&2
-        exit 1
-        ;;
-    esac
-  fi
-  set -x
-  "$@" check --workspace --all-targets --locked --all-features
-  "$@" check --workspace --all-targets --locked --no-default-features
-  "$@" check --workspace --all-targets --locked
+    dagger api call rust --toolchain msrv check --all-targets
 
-# Formatting, then clippy pedantic as errors under all and under no features.
+# Formatting and clippy across features, warnings as errors.
 lint:
-  cargo fmt --all --check
-  cargo clippy --workspace --all-features --all-targets -- -D warnings
-  cargo clippy --workspace --no-default-features --all-targets -- -D warnings
+    dagger check rust:fmt
+    dagger api call rust clippy --all-targets --deny warnings
 
-# What a PR should pass: full, matrix, wasm, msrv and lint.
-pr: matrix wasm msrv lint
+# Both CI workflows' checks, including the dependency audit and generated files.
+pr: wasm msrv
+    dagger check
+    dagger api call rust check --all-targets
+    dagger api call rust clippy --all-targets --deny warnings
