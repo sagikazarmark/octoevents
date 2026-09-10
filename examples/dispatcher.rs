@@ -35,8 +35,8 @@
 //! Each handler keeps its own error type, and the dispatcher boxes it where
 //! the handler is registered. A payload the view does not fit fails the
 //! delivery at the handler that needed the decode, and the `DispatchError`
-//! names that handler and the line that registered it; the `on_error`
-//! observer prints it, then walks the chain of sources for the why.
+//! names that handler and the line that registered it. The receiver's handler
+//! prints it, then walks the chain of sources for the why.
 //!
 //! The tests at the bottom drive the dispatcher with envelopes from
 //! [`Envelope::new`] and read the [`Match`](octoevents::Match) each reports;
@@ -47,7 +47,7 @@ use std::error::Error as _;
 use axum::{Router, routing::post_service};
 use octoevents::{
     Action, BoxError, DecodeError, DispatchError, Dispatcher, Envelope, Event, EventKind,
-    EventMeta, Payload, Verifier, WebhookReceiver, WebhookReceiverBuilder, WebhookSecret,
+    EventMeta, Handler, Payload, Verifier, WebhookReceiver, WebhookReceiverBuilder, WebhookSecret,
 };
 
 /// A view over an `issues` payload: the fields the handlers read, and the
@@ -126,28 +126,38 @@ fn dispatcher() -> Dispatcher {
 }
 
 /// The receiver around the dispatcher, with its knobs set: a body limit under
-/// GitHub's 25 MiB cap, the `ping` passed through to the `always` tier, and
-/// an observer that prints where a delivery failed and why.
-fn receiver(verifier: Verifier) -> WebhookReceiver<Dispatcher> {
+/// GitHub's 25 MiB cap and the `ping` passed through to the `always` tier.
+/// Its handler reports dispatch errors before returning them for a bare 500.
+fn receiver(verifier: Verifier) -> WebhookReceiver<impl Handler<Envelope, Error = DispatchError>> {
+    let dispatcher = dispatcher();
     WebhookReceiverBuilder::new(verifier)
         // `issues` payloads are small; GitHub never sends more than 25 MiB.
         .body_limit(1024 * 1024)
         // The `ping` GitHub sends on creating the webhook reaches `audit` too,
         // instead of being answered 204 before any handler runs.
         .handle_ping(true)
-        // The response is a bare 500; this is where the error reaches code.
-        .on_error(|_: &EventMeta, error: &DispatchError| {
-            eprintln!("{error}");
-            let mut cause = error.source();
-            while let Some(error) = cause {
-                eprintln!("  caused by: {error}");
-                cause = error.source();
-            }
-            if error.source.is::<DecodeError>() {
-                eprintln!("  (a view no longer fits GitHub's payload: a deploy, not a page)");
+        .build(move |envelope: Envelope| {
+            let dispatcher = dispatcher.clone();
+            async move {
+                dispatcher
+                    .dispatch(envelope)
+                    .await
+                    .result
+                    .inspect_err(|error| {
+                        eprintln!("{error}");
+                        let mut cause = error.source();
+                        while let Some(error) = cause {
+                            eprintln!("  caused by: {error}");
+                            cause = error.source();
+                        }
+                        if error.source.is::<DecodeError>() {
+                            eprintln!(
+                                "  (a view no longer fits GitHub's payload: a deploy, not a page)"
+                            );
+                        }
+                    })
             }
         })
-        .build(dispatcher())
 }
 
 #[tokio::main]

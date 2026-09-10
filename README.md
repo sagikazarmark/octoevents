@@ -91,9 +91,8 @@ Every request goes through three steps:
 
 A 500 is a bare status: with the `tracing` feature the receiver emits one
 event at ERROR per failed delivery, error and cause chain included, as
-[Tracing](#tracing) describes, and an observer registered with `on_error` is
-where the error reaches your code, as [Error handling](#error-handling)
-shows.
+[Tracing](#tracing) describes. For custom reporting, inspect the result in
+the handler before returning it, as [Error handling](#error-handling) shows.
 
 The dispatcher is optional. `WebhookReceiverBuilder::new(verifier).build(thank)`
 builds the receiver around the handler alone, and `thank` then receives every
@@ -140,7 +139,7 @@ same `--features`):
 - `axum`: a receiver around one struct handler and no dispatcher, the
   simplest shape.
 - `dispatcher`: every tier and a handler over every input, behind a receiver
-  with its knobs set (`body_limit`, `handle_ping`, `on_error`, a rotation
+  with its knobs set (`body_limit`, `handle_ping`, a rotation
   window with `Verifier::also`). Forward `issues` events to it.
 - `policy_seam`: the production shape, a persisting, deduplicating,
   dead-lettering handler wrapping a dispatcher that routes octocrab's
@@ -495,7 +494,7 @@ source chain says *why*:
 ```rust
 use std::error::Error as _;
 
-use octoevents::{Action, BoxError, DispatchError, Dispatcher, EventKind, EventMeta, Payload, Verifier, WebhookReceiverBuilder, WebhookSecret};
+use octoevents::{Action, BoxError, DispatchError, Dispatcher, Envelope, EventKind, Payload, Verifier, WebhookReceiverBuilder, WebhookSecret};
 
 #[derive(serde::Deserialize, Payload)]
 #[payload(EventKind::Issues)]
@@ -510,7 +509,7 @@ async fn label(issue: IssueOpened) -> Result<(), BoxError> {
 
 /// Runs when a handler failed, before the 500 is answered: where, then why,
 /// one cause per line.
-fn report(_: &EventMeta, error: &DispatchError) {
+fn report(error: &DispatchError) {
     eprintln!("{error}");
     let mut cause = error.source();
     while let Some(error) = cause {
@@ -524,8 +523,12 @@ let dispatcher = Dispatcher::builder()
     .build();
 
 let webhook = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("development-secret")))
-    .on_error(report)
-    .build(dispatcher);
+    .build(move |envelope: Envelope| {
+        let dispatcher = dispatcher.clone();
+        async move {
+            dispatcher.dispatch(envelope).await.result.inspect_err(report)
+        }
+    });
 ```
 
 When an `issues.opened` payload lacks the `title` the view names, `report`
@@ -537,14 +540,16 @@ delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (issues.opened) failed in the rout
   caused by: missing field `title` at line 1 column 39
 ```
 
-The response stays a bare 500 either way: it is GitHub's delivery record, not
-a log. The `on_error` observer is synchronous. It receives the error exactly
-as the receiver's handler returned it: a `DispatchError` when that handler is
-a dispatcher, as above, or your own enum when it is a plain handler, matched
-on without a downcast. It runs whenever the receiver's handler fails: with a
-dispatcher, that includes a payload that could not be decoded for a routed
-handler, as above. It never runs for a refused request, which is a status
-code, or for a short-circuited `ping`, which reaches no handler.
+The handler reports the error and returns it unchanged, so the receiver
+answers a bare 500: GitHub's delivery record, not a log. This is the policy
+seam: code around `dispatch` can record metrics, classify errors, or retain
+the envelope and await storage of a failed delivery. A handler wrapping
+another handler can inspect its own error enum without a downcast. Refused
+requests and short-circuited `ping` deliveries reach no handler.
+
+For ordinary logging, enable the `tracing` feature and configure a subscriber;
+the receiver emits the error and its source chain automatically. The custom
+reporting above works without `tracing`.
 
 **Your own error type.** A handler with dependencies usually has one, and
 `thiserror` derives it; the dispatcher asks nothing more of it than `Error +
@@ -553,7 +558,7 @@ Behind a `DispatchError` it is boxed, and a policy that wants it back
 downcasts the source:
 
 ```rust
-use octoevents::{Action, DecodeError, DispatchError, Dispatcher, Envelope, EventKind, EventMeta, Verifier, WebhookReceiverBuilder, WebhookSecret};
+use octoevents::{Action, DecodeError, Dispatcher, Envelope, EventKind, Verifier, WebhookReceiverBuilder, WebhookSecret};
 
 #[derive(Debug, thiserror::Error)]
 enum LabelError {
@@ -571,14 +576,18 @@ let dispatcher = Dispatcher::builder()
     .build();
 
 let webhook = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("development-secret")))
-    .on_error(|_: &EventMeta, error: &DispatchError| {
-        if let Some(LabelError::Api) = error.source.downcast_ref::<LabelError>() {
-            // page the on-call
-        } else if error.source.is::<DecodeError>() {
-            // a view GitHub's payload no longer fits: a deploy, not a page
+    .build(move |envelope: Envelope| {
+        let dispatcher = dispatcher.clone();
+        async move {
+            dispatcher.dispatch(envelope).await.result.inspect_err(|error| {
+                if let Some(LabelError::Api) = error.source.downcast_ref::<LabelError>() {
+                    // page the on-call
+                } else if error.source.is::<DecodeError>() {
+                    // a view GitHub's payload no longer fits: a deploy, not a page
+                }
+            })
         }
-    })
-    .build(dispatcher);
+    });
 ```
 
 ## Testing without GitHub
@@ -685,7 +694,7 @@ let app: Router = Router::new().route("/webhook", post(move |request: Request| {
 headers and the body already read: `receive_bytes` takes the request's
 `http::HeaderMap` and the body as `Bytes` and answers with the
 `http::StatusCode`, the same contract as `receive` (the header-only refusal,
-the body limit, `ping`, the handler, the observer, the tracing) for a
+the body limit, `ping`, the handler, the tracing) for a
 transport with no `http_body::Body`. That is the shape every surveyed Rust
 runtime hands over (`lambda_http`, `spin-sdk`, `wstd`, `worker`, `fastly`,
 `aws_lambda_events`); the
@@ -792,8 +801,8 @@ full contract, span by span and field by field, is
 - **`ping` answered.** GitHub sends a `ping` when a webhook is created. A
   verified one is answered 204 before any handler runs; `.handle_ping(true)`
   passes it through instead. An unsigned one is 401 either way.
-- **Nothing leaks.** The response is a bare status; the error's text reaches
-  only the observer and the tracing event. No span records the secret, the
+- **Nothing leaks.** The response is a bare status; handler errors belong in
+  application reporting and the tracing event. No span records the secret, the
   signature header, or a computed MAC.
 
 ## Migrating from Probot
@@ -807,7 +816,7 @@ matching handler and aggregates their errors.
 | `app.on('issues.opened', h)` | `on((EventKind::Issues, Action::Opened), h)`, or `on(Action::Opened, h)` with the kind taken from `h`'s payload type. There is no string route form |
 | `app.on('issues', h)` | `on(EventKind::Issues, h)`, or `on(AnyAction, h)` with the kind taken from `h`'s payload type |
 | `app.onAny(h)` | `always(h)`: first, for every delivery, over the envelope; its error fails the delivery. Sees `ping` only with `handle_ping(true)` |
-| `app.onError(h)` | `on_error(h)` on the receiver builder, called with the meta and the receiver's handler's error. With a dispatcher as that handler, the error is a `DispatchError`: `{error}` says where (tier, handler, registration site), `error.source()` says why. Unlike `onError`, it never sees a refused request: a bad signature is a 401, not an error |
+| `app.onError(h)` | Inspect `dispatcher.dispatch(envelope).await.result` in the policy seam; see [Error handling](#error-handling). A `DispatchError` says where (tier, handler, registration site), and its source chain says why. Refused requests reach no handler |
 | `app.receive(event)` | `dispatcher.dispatch(envelope)` with an envelope from `Envelope::new`; see [Testing without GitHub](#testing-without-github) |
 | `context.payload` | The handler's input: a serde view of your own (`#[derive(Payload)]`), or octocrab's structs with the `octocrab` feature |
 | `context.id`, `context.name` | `meta.delivery_id` and `meta.kind` on the `EventMeta`; a handler gets it beside the payload as `Event<P>` |

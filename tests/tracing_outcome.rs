@@ -520,20 +520,14 @@ fn selectively_filtered_receive_leaves_the_callers_fields_unchanged() {
             ("pull_request", verifier().sign(BODY).to_string(), true, 500),
             ("ping", verifier().sign(BODY).to_string(), false, 204),
         ] {
-            let observed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let error_count = observed.clone();
-            let receiver = WebhookReceiverBuilder::new(verifier())
-                .on_error(move |_, _: &DispatchError| {
-                    error_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                })
-                .build(
-                    Dispatcher::builder()
-                        .always(move |_: Envelope| async move {
-                            tokio::task::yield_now().await;
-                            if fail { Err("handler failed") } else { Ok(()) }
-                        })
-                        .build(),
-                );
+            let receiver = WebhookReceiverBuilder::new(verifier()).build(
+                Dispatcher::builder()
+                    .always(move |_: Envelope| async move {
+                        tokio::task::yield_now().await;
+                        if fail { Err("handler failed") } else { Ok(()) }
+                    })
+                    .build(),
+            );
             let request = http::Request::builder()
                 .header("content-type", "application/json")
                 .header("x-github-delivery", "delivery")
@@ -566,10 +560,6 @@ fn selectively_filtered_receive_leaves_the_callers_fields_unchanged() {
             assert!(!recording.has_span("octoevents.receive"), "{recording}");
             let caller = recording.span("application");
             assert_eq!(caller.at_close, caller.at_open, "{path}: {recording}");
-            assert_eq!(
-                observed.load(std::sync::atomic::Ordering::SeqCst),
-                usize::from(fail)
-            );
             if fail {
                 assert_eq!(
                     recording
@@ -606,13 +596,13 @@ mod receiving {
     use http::Request;
     use http_body::Frame;
     use http_body_util::Full;
-    use octoevents::{DispatchError, Dispatcher, WebhookReceiver, WebhookReceiverBuilder};
+    use octoevents::{Dispatcher, WebhookReceiver, WebhookReceiverBuilder};
 
     use super::{BODY, verifier};
 
     /// The receiver's builder, for a test that changes a setting before it
     /// builds.
-    pub(super) fn builder() -> WebhookReceiverBuilder<DispatchError> {
+    pub(super) fn builder() -> WebhookReceiverBuilder {
         WebhookReceiverBuilder::new(verifier())
     }
 

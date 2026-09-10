@@ -688,9 +688,8 @@ impl fmt::Display for Match {
 ///
 /// A wrapping handler that passes the dispatcher's result through keeps the
 /// tier, handler name and registration site by making this its error type;
-/// the receiver accepts it as it does any error, and hands it to the
-/// observer registered with `WebhookReceiverBuilder::on_error` before
-/// answering 500.
+/// the receiver accepts it as it does any error and answers 500. Custom
+/// reporting belongs in that handler, before it returns the error.
 ///
 /// The dispatcher produces this and consumers only read it, so it is
 /// `#[non_exhaustive]`: another field can be added without that becoming a

@@ -55,8 +55,8 @@
 use std::{convert::Infallible, error::Error as _};
 
 use octoevents::{
-    AnyAction, DispatchError, Dispatcher, Envelope, Event, EventKind, EventMeta, Handler, Verifier,
-    WebhookReceiverBuilder, WebhookSecret, WebhookSecretError,
+    AnyAction, Dispatcher, Envelope, Event, EventKind, Handler, Verifier, WebhookReceiverBuilder,
+    WebhookSecret, WebhookSecretError,
 };
 use worker::{
     Context, Env, Fetch, HttpRequest, Method, Request, RequestInit, console_error, console_log,
@@ -181,16 +181,24 @@ async fn fetch(
         .on(AnyAction, InstallationLog)
         .build();
 
-    let receiver = WebhookReceiverBuilder::new(verifier)
-        .on_error(|meta: &EventMeta, error: &DispatchError| {
-            console_error!("{}: {error}", meta.delivery_id);
-            let mut cause = error.source();
-            while let Some(error) = cause {
-                console_error!("{}: caused by: {error}", meta.delivery_id);
-                cause = error.source();
-            }
-        })
-        .build(dispatcher);
+    // Report errors in the handler, then return them for the receiver's 500.
+    let receiver = WebhookReceiverBuilder::new(verifier).build(move |envelope: Envelope| {
+        let dispatcher = dispatcher.clone();
+        async move {
+            dispatcher
+                .dispatch(envelope)
+                .await
+                .result
+                .inspect_err(|error| {
+                    console_error!("{}: {error}", error.delivery_id);
+                    let mut cause = error.source();
+                    while let Some(source) = cause {
+                        console_error!("{}: caused by: {source}", error.delivery_id);
+                        cause = source.source();
+                    }
+                })
+        }
+    });
 
     Ok(receiver.receive(request).await)
 }

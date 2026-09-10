@@ -267,8 +267,8 @@ impl Envelope {
     /// not an attacker resubmitting a captured signed payload with a new ID.
     ///
     /// For the whole contract over the same two arguments (the header-only
-    /// refusal, the body limit, the `ping` short-circuit, the handler, the
-    /// observer and the tracing), call
+    /// refusal, the body limit, the `ping` short-circuit, the handler and the
+    /// tracing), call
     /// [`WebhookReceiver::receive_bytes`](crate::WebhookReceiver::receive_bytes)
     /// instead, which is in the core beside this.
     ///
@@ -751,7 +751,7 @@ impl DecodeError {
     /// `source` as the underlying error.
     ///
     /// `Display` is the message; the source is one `source()` hop down, where
-    /// an observer that walks the chain finds it. Any error convertible to
+    /// a reporter that walks the chain finds it. Any error convertible to
     /// [`BoxError`] is accepted, including non-`Send` errors on `wasm32`.
     /// For a view that reads a field the payload
     /// carries as text and parses it further, the parse error is the source:

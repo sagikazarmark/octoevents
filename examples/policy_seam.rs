@@ -63,12 +63,12 @@
 //!   *absolute* matcher). The input type is what needs the `octocrab`
 //!   feature, not the registration.
 //!
-//! The receiver is built with an `on_error` observer that logs every failed
-//! delivery, source chain included, since the receiver answers a handler
+//! [`Inbox`] logs every failed delivery, source chain included, before
+//! returning the error, since the receiver answers a handler
 //! error with a bare 500 and says nothing else: the dispatcher's
 //! `DispatchError` names the tier, the delivery, the failing handler and the
 //! line that registered it, and its source is the handler's error, which the
-//! observer downcasts to tell a decode failure from the application's own.
+//! reporting code downcasts to tell a decode failure from the application's own.
 //!
 //! The tests at the bottom drive [`Inbox`] with envelopes from
 //! [`Envelope::new`], including a redelivery after a handler failure; run
@@ -89,8 +89,8 @@ use std::{
 use axum::{Router, routing::post_service};
 use octocrab::models::webhook_events::{WebhookEvent, payload::PullRequestWebhookEventPayload};
 use octoevents::{
-    Action, BoxError, DecodeError, DispatchError, Dispatcher, Envelope, Event, EventKind,
-    EventMeta, Handler, Match, Verifier, WebhookReceiverBuilder, WebhookSecret,
+    Action, BoxError, DecodeError, DispatchError, Dispatcher, Envelope, Event, EventKind, Handler,
+    Match, Verifier, WebhookReceiverBuilder, WebhookSecret,
 };
 
 /// A stand-in for a database: every envelope stored, by delivery ID, and the
@@ -170,6 +170,12 @@ impl Handler<Envelope> for Inbox {
     type Error = InboxError;
 
     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
+        self.process(envelope).await.inspect_err(report)
+    }
+}
+
+impl Inbox {
+    async fn process(&self, envelope: Envelope) -> Result<(), InboxError> {
         // Stored first, so a delivery whose envelope could not be stored is
         // never routed, and a redelivery is recognized before any handler
         // runs for it a second time.
@@ -299,12 +305,12 @@ fn dispatcher() -> Dispatcher {
 
 /// Prints where a delivery failed and why, before the receiver answers 500.
 ///
-/// The receiver's response is GitHub's delivery record, not a log, so the
-/// observer is where an operator without a `tracing` subscriber learns why a
-/// delivery failed. A dispatch error names the tier, the delivery, the
+/// The receiver's response is GitHub's delivery record, not a log. The
+/// handler calls this so an operator without a `tracing` subscriber learns
+/// why a delivery failed. A dispatch error names the tier, the delivery, the
 /// failing handler and the line that registered it; its source is the
 /// handler's error, boxed, which a downcast gets back.
-fn report(_: &EventMeta, error: &InboxError) {
+fn report(error: &InboxError) {
     eprintln!("{error}");
     let mut cause = error.source();
     while let Some(error) = cause {
@@ -323,12 +329,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let secret = std::env::var("GITHUB_WEBHOOK_SECRET")?;
     let verifier = Verifier::new(WebhookSecret::new(secret));
 
-    let webhook = WebhookReceiverBuilder::new(verifier)
-        .on_error(report)
-        .build(Inbox {
-            store: Store::default(),
-            dispatcher: dispatcher(),
-        });
+    let webhook = WebhookReceiverBuilder::new(verifier).build(Inbox {
+        store: Store::default(),
+        dispatcher: dispatcher(),
+    });
 
     let app: Router = Router::new().route("/webhook", post_service(webhook));
     let address = std::env::var("WEBHOOK_ADDRESS").unwrap_or_else(|_| "127.0.0.1:3000".into());
@@ -504,12 +508,10 @@ mod tests {
     #[tokio::test]
     async fn the_receiver_answers_a_signed_delivery_and_its_redelivery() {
         let verifier = Verifier::new(WebhookSecret::new("test-secret"));
-        let webhook = WebhookReceiverBuilder::new(verifier.clone())
-            .on_error(report)
-            .build(Inbox {
-                store: Store::default(),
-                dispatcher: dispatcher(),
-            });
+        let webhook = WebhookReceiverBuilder::new(verifier.clone()).build(Inbox {
+            store: Store::default(),
+            dispatcher: dispatcher(),
+        });
         let request = || {
             http::Request::builder()
                 .method("POST")

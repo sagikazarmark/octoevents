@@ -34,60 +34,32 @@ use crate::{
 #[cfg(feature = "http-body")]
 type ReceiveResponse = Response<Empty<Bytes>>;
 
-// The erased `on_error` observer. A trait object admits only one non-auto
-// trait, so this cannot be written as `dyn Fn(..) + MaybeSend + MaybeSync` and
-// carries the platform split by hand; see `runtime` for the rationale.
-#[cfg(not(target_arch = "wasm32"))]
-type ErrorObserver<E> = Arc<dyn Fn(&EventMeta, &E) + Send + Sync + 'static>;
-#[cfg(target_arch = "wasm32")]
-type ErrorObserver<E> = Arc<dyn Fn(&EventMeta, &E) + 'static>;
-
 /// The receiver's policy: what the builder collects and the receiver applies.
 /// One type, so `build` moves it whole and the builder and receiver print it
 /// the same way.
-struct Config<E> {
+#[derive(Clone)]
+struct Config {
     verifier: Verifier,
     body_limit: usize,
     handle_ping: bool,
-    observer: Option<ErrorObserver<E>>,
 }
 
-impl<E> Config<E> {
+impl Config {
     fn debug_fields(&self, debug: &mut fmt::DebugStruct<'_, '_>) {
-        // The observer is a closure and never `Debug`; whether one is
-        // registered is the configuration worth printing.
         debug
             .field("verifier", &self.verifier)
             .field("body_limit", &self.body_limit)
-            .field("handle_ping", &self.handle_ping)
-            .field("on_error", &self.observer.is_some());
-    }
-}
-
-// Written out rather than derived: the derive would demand `E: Clone`, and
-// error types are routinely not `Clone`; the observer is shared, not copied.
-impl<E> Clone for Config<E> {
-    fn clone(&self) -> Self {
-        Self {
-            verifier: self.verifier.clone(),
-            body_limit: self.body_limit,
-            handle_ping: self.handle_ping,
-            observer: self.observer.clone(),
-        }
+            .field("handle_ping", &self.handle_ping);
     }
 }
 
 /// Builds a [`WebhookReceiver`].
-///
-/// `E` is the handler's error type, which [`on_error`](Self::on_error)
-/// observes. It is fixed by [`build`](Self::build), so a chain that ends in
-/// `build` never names it; a builder held in a field or returned from a
-/// function spells it out.
-pub struct WebhookReceiverBuilder<E> {
-    config: Config<E>,
+#[derive(Clone)]
+pub struct WebhookReceiverBuilder {
+    config: Config,
 }
 
-impl<E> WebhookReceiverBuilder<E> {
+impl WebhookReceiverBuilder {
     /// Creates a builder with GitHub's 25 MiB payload cap and ping short-circuiting.
     ///
     /// The verifier is required rather than configurable: GitHub webhooks
@@ -100,7 +72,6 @@ impl<E> WebhookReceiverBuilder<E> {
                 verifier,
                 body_limit: DEFAULT_BODY_LIMIT,
                 handle_ping: false,
-                observer: None,
             },
         }
     }
@@ -143,113 +114,10 @@ impl<E> WebhookReceiverBuilder<E> {
     /// a [`Dispatcher`](crate::Dispatcher) never routes it and its `always`
     /// tier never sees it. `handle_ping(true)` passes it through instead, for
     /// an `always` handler that records every delivery to record that one
-    /// too. An unsigned `ping` is 401 either way, and a short-circuited one
-    /// never reaches the [`on_error`](Self::on_error) observer.
+    /// too. An unsigned `ping` is 401 either way.
     #[must_use]
     pub const fn handle_ping(mut self, handle: bool) -> Self {
         self.config.handle_ping = handle;
-        self
-    }
-
-    /// Registers an observer called with the event meta and the handler's
-    /// error whenever the handler fails, before the receiver answers 500.
-    ///
-    /// The response stays a bare 500 either way: the observer is for what
-    /// tracing does not do (a metric, a dead letter, a line on stderr for a
-    /// binary without a subscriber), not a way to change the answer. It is
-    /// synchronous and returns nothing.
-    ///
-    /// `E` is the handler's error type, fixed by [`build`](Self::build), and
-    /// the observer sees it as the handler returned it, before the receiver
-    /// boxes it: a named enum is matched on, a `DispatchError`'s fields are
-    /// read. Annotate the error parameter (`error: &AppError`) when the body
-    /// calls methods on it: `build` comes later in the chain than the closure,
-    /// so rustc cannot read the type off it there. A body that only formats
-    /// the error needs no annotation.
-    ///
-    /// The observer runs only when a handler ran and failed. A receive
-    /// failure (a signature that does not verify, a missing header, an
-    /// unsupported content type, a body frame the transport could not
-    /// produce, a body over the limit) is a status code and fields on the
-    /// receive span, never a handler error, and a `ping` short-circuited by
-    /// [`handle_ping`](Self::handle_ping) reaches no handler; neither calls
-    /// it.
-    ///
-    /// With the `tracing` feature, a failed delivery emits one ERROR event
-    /// naming the delivery and carrying the error, observer or not; the
-    /// observer runs beside it and changes nothing about it. The contract is
-    /// under [Tracing](crate#tracing).
-    ///
-    /// With a [`Dispatcher`](crate::Dispatcher) as the handler, the error is
-    /// a [`DispatchError`](crate::DispatchError) naming the tier, the
-    /// delivery, the failing handler (by type name; a closure's, here) and
-    /// the line that registered it; its source is the application error:
-    ///
-    /// ```
-    /// use std::error::Error as _;
-    ///
-    /// use octoevents::{
-    ///     DispatchError, Dispatcher, Envelope, EventMeta, Verifier, WebhookReceiverBuilder,
-    ///     WebhookSecret,
-    /// };
-    ///
-    /// #[derive(Debug, thiserror::Error)]
-    /// enum AppError {
-    ///     #[error("database is down")]
-    ///     Database,
-    /// }
-    ///
-    /// let dispatcher = Dispatcher::builder()
-    ///     .always(|_: Envelope| async { Err::<(), _>(AppError::Database) })
-    ///     .build();
-    ///
-    /// // A failed delivery logs, before the 500:
-    /// //   delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (issues.opened) failed in the always tier at the handler `app::main::{{closure}}` registered at src/main.rs:12:6
-    /// //     caused by: database is down
-    /// let receiver = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("current secret")))
-    ///     .on_error(|_: &EventMeta, error: &DispatchError| {
-    ///         eprintln!("{error}");
-    ///         let mut cause = error.source();
-    ///         while let Some(error) = cause {
-    ///             eprintln!("  caused by: {error}");
-    ///             cause = error.source();
-    ///         }
-    ///     })
-    ///     .build(dispatcher);
-    /// # let _ = receiver;
-    /// ```
-    ///
-    /// The application error behind a dispatch error is boxed; an observer
-    /// that wants its own type back downcasts the source:
-    ///
-    /// ```
-    /// use octoevents::{DispatchError, Dispatcher, Envelope, EventMeta, Verifier, WebhookReceiverBuilder, WebhookSecret};
-    ///
-    /// #[derive(Debug, thiserror::Error)]
-    /// enum AppError {
-    ///     #[error("database is down")]
-    ///     Database,
-    /// }
-    ///
-    /// let dispatcher = Dispatcher::builder()
-    ///     .always(|_: Envelope| async { Err::<(), _>(AppError::Database) })
-    ///     .build();
-    ///
-    /// let receiver = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("current secret")))
-    ///     .on_error(|_: &EventMeta, error: &DispatchError| {
-    ///         if let Some(AppError::Database) = error.source.downcast_ref::<AppError>() {
-    ///             // page the on-call
-    ///         }
-    ///     })
-    ///     .build(dispatcher);
-    /// # let _ = receiver;
-    /// ```
-    #[must_use]
-    pub fn on_error<F>(mut self, observer: F) -> Self
-    where
-        F: Fn(&EventMeta, &E) + MaybeSend + MaybeSync + 'static,
-    {
-        self.config.observer = Some(Arc::new(observer));
         self
     }
 
@@ -263,16 +131,16 @@ impl<E> WebhookReceiverBuilder<E> {
     /// Send + Sync + 'static` type (any `Error + 'static` on `wasm32`),
     /// `BoxError` itself, `anyhow::Error`, a `String`. A handler error
     /// is answered with a bare 500, the response being GitHub's delivery
-    /// record and not a log; the error goes to the
-    /// [`on_error`](Self::on_error) observer as the handler returned it and,
-    /// with the `tracing` feature, boxed onto the failed-delivery event.
+    /// record and not a log. With the `tracing` feature, the error is boxed
+    /// onto the failed-delivery event. Custom error reporting belongs in a
+    /// handler over the envelope that inspects the result before returning it.
     ///
     /// [`BoxError`]: crate::BoxError
     #[must_use]
     pub fn build<H>(self, handler: H) -> WebhookReceiver<H>
     where
-        H: Handler<Envelope, Error = E> + MaybeSend + MaybeSync + 'static,
-        E: Into<BoxError>,
+        H: Handler<Envelope> + MaybeSend + MaybeSync + 'static,
+        H::Error: Into<BoxError>,
     {
         WebhookReceiver {
             inner: Arc::new(Inner {
@@ -283,19 +151,11 @@ impl<E> WebhookReceiverBuilder<E> {
     }
 }
 
-impl<E> fmt::Debug for WebhookReceiverBuilder<E> {
+impl fmt::Debug for WebhookReceiverBuilder {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut debug = formatter.debug_struct("WebhookReceiverBuilder");
         self.config.debug_fields(&mut debug);
         debug.finish()
-    }
-}
-
-impl<E> Clone for WebhookReceiverBuilder<E> {
-    fn clone(&self) -> Self {
-        Self {
-            config: self.config.clone(),
-        }
     }
 }
 
@@ -313,8 +173,8 @@ impl<E> Clone for WebhookReceiverBuilder<E> {
 ///
 /// The caller's router remains responsible for paths and methods. Responses
 /// intentionally have empty bodies: handler details belong in logs, not in the
-/// delivery record GitHub stores, and the builder's `on_error` observer is
-/// where they are handed over.
+/// delivery record GitHub stores. Enable `tracing` with a subscriber, or
+/// report errors in the handler before returning them.
 ///
 /// Verification authenticates the payload bytes, not the delivery ID, event
 /// name, or target headers. Authorization decisions must use authenticated
@@ -329,21 +189,19 @@ impl<E> Clone for WebhookReceiverBuilder<E> {
     not(feature = "http-body"),
     doc = "[`receive`]: https://docs.rs/octoevents/latest/octoevents/struct.WebhookReceiver.html#method.receive"
 )]
-// Bounded on the struct, as `Inner` is, because the observer's type names
-// `H::Error`. Nothing is lost: `build` already required a handler.
-pub struct WebhookReceiver<H: Handler<Envelope>> {
+pub struct WebhookReceiver<H> {
     // Shared rather than owned so the receiver is `Clone` for any handler:
     // Tower routers clone a service per connection and its future must own
     // its state, and a struct handler should not need `Clone` for that.
     inner: Arc<Inner<H>>,
 }
 
-struct Inner<H: Handler<Envelope>> {
-    config: Config<H::Error>,
+struct Inner<H> {
+    config: Config,
     handler: H,
 }
 
-impl<H: Handler<Envelope>> fmt::Debug for WebhookReceiver<H> {
+impl<H> fmt::Debug for WebhookReceiver<H> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         // The handler is elided rather than bounded: closures are never
         // `Debug`, and the configuration is what is worth printing.
@@ -353,7 +211,7 @@ impl<H: Handler<Envelope>> fmt::Debug for WebhookReceiver<H> {
     }
 }
 
-impl<H: Handler<Envelope>> Clone for WebhookReceiver<H> {
+impl<H> Clone for WebhookReceiver<H> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -421,12 +279,9 @@ where
     /// axum handler calling `receive` accepts every handler `post_service`
     /// does.
     // Written as `fn -> impl Future` rather than `async fn` so the `Send`
-    // promise above is a bound on the return type: an `async fn` borrowing
-    // `&self` leaves its `Send` proof to auto-trait leakage over the concrete
-    // handler, and for a `Dispatcher`, whose boxed error type the receiver's
-    // state names, that proof fails inside an `async move` block with
-    // "implementation of `Send` is not general enough". The body is the
-    // `async` block an `async fn` would desugar to.
+    // promise above is a bound on the return type rather than left to
+    // auto-trait leakage. The body is the `async` block an `async fn` would
+    // desugar to.
     #[cfg(feature = "http-body")]
     #[expect(clippy::manual_async_fn)]
     pub fn receive<B>(
@@ -466,7 +321,7 @@ where
     /// 4. A verified `ping` is 204 unless the builder was asked to
     ///    `handle_ping`.
     /// 5. The handler runs: 204 when it succeeds, and 500 when it fails,
-    ///    after the `on_error` observer and the failed-delivery event.
+    ///    after the failed-delivery event when `tracing` is enabled.
     ///
     /// Every span and field the `tracing` feature records on `receive` is
     /// recorded here.
@@ -604,7 +459,6 @@ where
         let Config {
             verifier,
             handle_ping,
-            observer,
             ..
         } = &self.config;
 
@@ -622,25 +476,17 @@ where
             return record_outcome(span, "ok", StatusCode::NO_CONTENT);
         }
 
-        // The handler takes the envelope by value, so the meta a failure is
-        // reported with, to the observer and to the tracing event, is cloned
-        // beforehand, and only when there is something to report to: with
-        // the `tracing` feature the failed-delivery event always is.
-        let reporting = observer.is_some() || cfg!(feature = "tracing");
-        let meta = reporting.then(|| envelope.meta.clone());
+        // The handler takes the envelope by value; retain the meta only for
+        // the failed-delivery event when tracing is enabled.
+        let meta = cfg!(feature = "tracing").then(|| envelope.meta.clone());
         match self.handler.handle(envelope).await {
             Ok(()) => record_outcome(span, "ok", StatusCode::NO_CONTENT),
             Err(error) => {
-                // The outcome goes on the span first, so the observer and the
-                // event run inside a span that already says how the delivery
-                // ended. The observer sees the error as the handler returned
-                // it, so it runs before the conversion the event needs.
+                // The event runs inside a span that already says how the
+                // delivery ended.
                 let status =
                     record_outcome(span, "handler_error", StatusCode::INTERNAL_SERVER_ERROR);
                 if let Some(meta) = &meta {
-                    if let Some(observer) = observer {
-                        observer(meta, &error);
-                    }
                     handler_failed(meta, error);
                 }
                 status
@@ -842,8 +688,7 @@ fn record_refusal(_span: &trace::Span, _error: &ReceiveError) {}
 /// are declared in one place.
 ///
 /// Takes the handler's error by value and boxes it here, so the conversion
-/// happens only with the feature, after the observer has seen the error as
-/// the handler returned it. `error` is recorded as an error value: the
+/// happens only with the feature. `error` is recorded as an error value: the
 /// subscriber renders its text and walks its `source()` chain itself (the
 /// `fmt` subscriber prints `error=<text> error.sources=[<cause>, ..]`), so
 /// with a dispatcher the text says where the delivery failed and the chain

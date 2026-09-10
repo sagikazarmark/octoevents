@@ -7,8 +7,7 @@
 //! chain the subscriber renders; the 500 is the receive span's `status`, not
 //! a field of the event, since a handler failure is answered nothing else.
 //! Nothing else emits it: a successful delivery, a request refused before any
-//! handler ran, and a short-circuited `ping` are span fields only. An
-//! `on_error` observer runs beside the event and changes nothing about it.
+//! handler ran, and a short-circuited `ping` are span fields only.
 //!
 //! The tests read the event's fields as the recording layer in `common`
 //! stored them: `error` is an error value, its text and the chain of sources
@@ -267,36 +266,4 @@ fn a_string_error_is_traced_by_its_text() {
     let error = fields.error("error").expect("the error");
     assert_eq!(error.text, "out of cheese");
     assert!(error.sources.is_empty(), "{error:?}");
-}
-
-#[test]
-fn an_error_observer_runs_beside_the_one_event_and_changes_nothing_about_it() {
-    use std::sync::{Arc, Mutex};
-
-    // The observer is for what tracing does not do (a metric, a dead letter,
-    // a line on stderr); the event is the receiver's. Registering one costs
-    // no second event and takes nothing off the first. The observer sees the
-    // error as the handler returned it, before the receiver boxes it.
-    let observed = Arc::new(Mutex::new(Vec::new()));
-    let observer_seen = Arc::clone(&observed);
-    let receiver = WebhookReceiverBuilder::new(verifier())
-        .on_error(move |meta: &octoevents::EventMeta, error: &Database| {
-            observer_seen
-                .lock()
-                .unwrap()
-                .push(format!("{} {error}", meta.delivery_id));
-        })
-        .build(|_: Envelope| async { Err::<(), _>(database_is_down()) });
-
-    let (recording, response) = common::traced(receiver.receive(request("pull_request")));
-    assert_eq!(response.status(), 500);
-
-    let fields = failed_delivery_event(&recording);
-    let error = fields.error("error").expect("the error");
-    assert_eq!(error.text, "database is down");
-    assert_eq!(
-        observed.lock().unwrap().as_slice(),
-        ["delivery database is down"]
-    );
-    assert_eq!(recording.events_at(Level::ERROR).len(), 1, "{recording}");
 }

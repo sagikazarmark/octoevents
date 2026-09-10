@@ -90,8 +90,7 @@
 //!   feature) or [`WebhookReceiver::receive_bytes`] over the `http::HeaderMap`
 //!   and the body already read, answered as the `http::StatusCode`. Built
 //!   with [`WebhookReceiverBuilder`], which takes the [`Verifier`], the body
-//!   limit, `ping` handling and the
-//!   [`on_error`][WebhookReceiverBuilder::on_error] observer.
+//!   limit and `ping` handling.
 //! - [`Verifier`] and [`WebhookSecret`]: the configured secrets and the HMAC
 //!   comparison; [`Verifier::also`] opens a rotation window, and
 //!   [`Verifier::sign`] signs a test's synthetic request. The header value
@@ -185,11 +184,11 @@
 //! ..]`). With a dispatcher the text says where (the tier, the handler and
 //! its registration site) and the chain why (the application error, and its
 //! own sources). A subscriber filtering at ERROR sees every failed delivery
-//! and why, with no observer and no setting; the 500 it is answered with is
+//! and why; the 500 it is answered with is
 //! the receive span's `status`, since a handler failure is answered nothing
 //! else. A successful delivery, a request refused before any handler ran and
-//! a short-circuited `ping` emit no event. An `on_error` observer runs beside
-//! the event and changes nothing about it.
+//! a short-circuited `ping` emit no event. Custom error reporting belongs in
+//! the handler, which can inspect its result before returning it.
 //!
 //! Nothing secret-derived is recorded anywhere: not the secret, the
 //! signature header, nor a computed MAC.
@@ -301,7 +300,7 @@ pub const DEFAULT_BODY_LIMIT: usize = 25 * 1024 * 1024;
 // `#[derive(Payload)]`, which the `derive` feature provides, and its octocrab
 // block names octocrab's types, which the `octocrab` feature provides, so the
 // blocks are checked under all three. Blocks that continue a program rather
-// than stand alone (the closure and observer fragments, and the tests) are
+// than stand alone (the closure fragments and the tests) are
 // marked `ignore` in the README itself; `tests/readme_testing.rs` compiles
 // the tests.
 #[cfg(all(doctest, feature = "tower", feature = "derive", feature = "octocrab"))]

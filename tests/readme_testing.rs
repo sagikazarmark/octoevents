@@ -10,7 +10,7 @@
 //! secret answers the signed request 401, a verifier that also accepts a
 //! previous secret signs under its first, a delivery nothing routes reports
 //! which unmatched `Match` variant the Outcome table names, and the
-//! error-handling observer reaches a decode failure's serde message by
+//! error reporter reaches a decode failure's serde message by
 //! walking `source()` from the dispatch error.
 
 #![cfg(all(feature = "http-body", not(target_arch = "wasm32")))]
@@ -182,12 +182,12 @@ async fn a_kind_the_route_table_does_not_know_is_unmatched_by_kind() {
     outcome.result.unwrap();
 }
 
-/// The "Error handling" observer walks the chain from the dispatch error's
+/// The "Error handling" reporter walks the chain from the dispatch error's
 /// `source()`: the decode error first, which displays the fieldless reason,
 /// then the serde error beneath it, which names the field a decode failure
-/// missed. That walk is what reaches the field.
+/// missed. The policy seam reports it and returns the error for a bare 500.
 #[tokio::test]
-async fn the_observer_reaches_the_serde_field_by_walking_source() {
+async fn the_reporter_reaches_the_serde_field_by_walking_source() {
     /// A view whose `title` the payload below lacks; nothing reads it, the
     /// decode is the point. The README derives its kind; here the impl is
     /// written by hand so the file compiles without the `derive` feature.
@@ -212,22 +212,44 @@ async fn the_observer_reaches_the_serde_field_by_walking_source() {
 
     let dispatcher = Dispatcher::builder().on([Action::Opened], label).build();
 
-    let envelope = Envelope::new(
-        "delivery-1",
-        EventKind::Issues,
-        br#"{"action":"opened","issue":{"number":7}}"#,
-    );
+    // The README's reporter, its `eprintln!`s collected instead.
+    let reported = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let lines = reported.clone();
+    let verifier = Verifier::new(WebhookSecret::new("test-secret"));
+    let receiver =
+        WebhookReceiverBuilder::new(verifier.clone()).build(move |envelope: Envelope| {
+            let dispatcher = dispatcher.clone();
+            let lines = lines.clone();
+            async move {
+                dispatcher
+                    .dispatch(envelope)
+                    .await
+                    .result
+                    .inspect_err(|error: &DispatchError| {
+                        let mut lines = lines.lock().unwrap();
+                        lines.push(error.to_string());
+                        let mut cause = error.source();
+                        while let Some(error) = cause {
+                            lines.push(format!("  caused by: {error}"));
+                            cause = error.source();
+                        }
+                    })
+            }
+        });
+    let body = r#"{"action":"opened","issue":{"number":7}}"#;
+    let request = http::Request::builder()
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::DELIVERY_ID, "delivery-1")
+        .header(header::EVENT_NAME, "issues")
+        .header(header::SIGNATURE, verifier.sign(body.as_bytes()))
+        .body(body.to_owned())
+        .unwrap();
 
-    let error: DispatchError = dispatcher.dispatch(envelope).await.result.unwrap_err();
+    let response = receiver.receive(request).await;
+    assert_eq!(response.status(), 500);
+    assert_eq!(http_body::Body::size_hint(response.body()).exact(), Some(0));
 
-    // The README's observer, its `eprintln!`s collected instead.
-    let mut lines = vec![error.to_string()];
-    let mut cause = error.source();
-    while let Some(error) = cause {
-        lines.push(format!("  caused by: {error}"));
-        cause = error.source();
-    }
-
+    let lines = reported.lock().unwrap();
     assert_eq!(lines.len(), 3, "{lines:#?}");
     assert!(
         lines[0].contains("failed in the route tier"),

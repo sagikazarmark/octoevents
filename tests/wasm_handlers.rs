@@ -131,20 +131,13 @@ fn a_decode_error_can_keep_a_single_threaded_source() {
     assert_eq!(source.0.get(), 7);
 }
 
-/// The `on_error` observer is bounded like a handler, so a Worker can record
-/// failures into the same single-threaded state, JavaScript values included,
-/// and the handler's error may hold them too.
+/// The receiver accepts errors holding JavaScript-shaped values too.
 #[cfg(feature = "http-body")]
 #[test]
-fn the_receiver_accepts_a_single_threaded_error_observer_and_error() {
-    use octoevents::{EventMeta, Verifier, WebhookReceiverBuilder, WebhookSecret};
+fn the_receiver_accepts_a_single_threaded_error() {
+    use octoevents::{Verifier, WebhookReceiverBuilder, WebhookSecret};
 
-    let failures = Rc::new(Cell::new(0));
-    let observer_failures = Rc::clone(&failures);
     let _receiver = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("secret")))
-        .on_error(move |_: &EventMeta, _: &JsError| {
-            observer_failures.set(observer_failures.get() + 1);
-        })
         .build(|_: Envelope| async { Err::<(), _>(JsError(Rc::new(Cell::new(1)))) });
 }
 

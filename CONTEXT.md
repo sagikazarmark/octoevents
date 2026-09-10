@@ -28,8 +28,7 @@ _Avoid_: Delivery (reserved for the outbound `octodelivery` project), event (the
 The envelope's routing metadata without the payload bytes: delivery ID, kind,
 action, installation ID, repository, organization, sender, target. An input
 in its own right, for a handler routed by kind and action that reads no
-payload; the `meta` half of `Event<P>`; and what the error observer receives
-alongside the handler's error.
+payload; and the `meta` half of `Event<P>`.
 _Avoid_: Common (the former nested group; its name carried no meaning), header (it also holds probed payload fields), delivery (reserved for `octodelivery`), receipt (reads as acknowledgement, and sits too close to Receiver), context (implies ambient services; this is plain data), `Routing` or `RoutingMeta` as the type (delivery ID and sender are not routing; "routing metadata" in prose is fine, since the meta is what routing reads)
 
 **RepositoryMeta, AccountMeta**:
@@ -109,7 +108,9 @@ The handler over the envelope that wraps `Dispatcher::dispatch` and holds
 the policy the tiers cannot express: persist first, answer a redelivery of a
 stored delivery ID with success without dispatching, read the outcome to
 dead-letter or forward an unmatched delivery. Where deduplication and
-dead-lettering live; the dispatcher only routes. The `policy_seam` example
+dead-lettering and custom error reporting live; the dispatcher only routes.
+A handler can inspect an error before returning it, retaining the envelope
+and awaiting storage when needed. The `policy_seam` example
 shows one.
 _Avoid_: Middleware, interceptor, wrapper as the term (prose for what the seam is, fine), pre-dispatch hook
 
@@ -175,19 +176,9 @@ its source, the boxed application error, which a policy that wants its own
 type back downcasts (`source.downcast_ref::<AppError>()`). A decode failure is
 reported at the handler that needed the decode, the `DecodeError` as the
 source. The type is `DispatchError`, an `Error` whatever the handler's error
-was, so a dispatcher nests as a route of another. What the error observer
-receives when a dispatcher is the receiver's handler.
+was, so a dispatcher nests as a route of another. The policy seam can inspect
+it before returning it to the receiver.
 _Avoid_: Handler error (the application error inside it), failure (prose for the event, not the type), `DispatchError<E>` (the former generic shape; the source is always the box)
-
-**Error observer**:
-The function registered with `on_error` on the receiver builder, called with
-the event meta and a reference to the handler's error, as the handler
-returned it and before the receiver boxes it, after a handler fails and
-before the 500 is answered. Synchronous, and never called for a receive
-failure or a short-circuited ping. For what tracing does not do: a metric, a
-dead letter, a line on stderr; it runs beside the failed-delivery event and
-changes nothing about it.
-_Avoid_: Error handler (it handles nothing; the response is unchanged), hook, middleware, trace_error, `trace_errors` and `trace_boxed_errors` (removed: an observer that emitted a second event, then two builder settings that put the error on the one event; the event carries it unconditionally now)
 
 **Failed-delivery event**:
 The one `tracing` event at ERROR the receiver emits when a handler fails,
@@ -195,8 +186,8 @@ The one `tracing` event at ERROR the receiver emits when a handler fails,
 name, and action and installation ID when the delivery has them) and the
 handler's error, boxed, as `error`, an error value whose text and chain of
 sources the subscriber renders (`error=<where> error.sources=[<why>, ..]`
-under the `fmt` subscriber). Unconditional: one event, error included,
-whether or not an observer is registered. `error` is the one field name
+under the `fmt` subscriber). With the `tracing` feature, one event per failed
+delivery, error included. `error` is the one field name
 recorded in two forms, text alone on the receive span for a refusal and an
 error value here; to every subscriber it is the error's text in both.
 _Avoid_: Handler error event (the removed second event), log line (a subscriber's rendering of it), error event in lowercase (ambiguous with the `error` field; "ERROR event" and "event at ERROR" name the level and are fine), `source` as a field (the removed second field; the chain is under `error`)
@@ -272,8 +263,7 @@ body the transport could not read, payload too large (413) for a body over
 the limit. Payload bytes that are not valid JSON are not a refusal: the probe
 is best-effort, the envelope is built, and a handler over it runs; only an
 input that decodes them fails, as a handler failure. The receive span's
-`outcome` names the class and its `error` the refusal's text; the error
-observer never sees one.
+`outcome` names the class and its `error` the refusal's text; no handler runs.
 _Avoid_: Rejection, denial, failure (kept for a handler's), receive error as the concept (the type's name)
 
 **View**:

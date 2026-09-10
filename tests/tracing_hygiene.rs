@@ -2,10 +2,8 @@
 //!
 //! This is a standing invariant rather than a best effort: delivery ID, event
 //! name, outcome, status and the text of a refusal are recordable; signature
-//! header values, computed MACs and secrets are not. The `on_error` observer
-//! is under the same rule: it sees the event meta and the handler's error,
-//! nothing the receiver derived from the secret; so is the ERROR event a
-//! failed delivery emits, the error on it included.
+//! header values, computed MACs and secrets are not. The ERROR event a failed
+//! delivery emits is under the same rule, the error on it included.
 //!
 //! The proof walks every field of every span and event the recording layer
 //! in `common` saw, down to TRACE so the verify span, the one nearest the
@@ -22,7 +20,6 @@ mod common;
 use std::{
     convert::Infallible,
     pin::Pin,
-    sync::{Arc, Mutex},
     task::{Context, Poll},
 };
 
@@ -31,7 +28,7 @@ use common::{Recording, Value};
 use http::Request;
 use http_body::Frame;
 use http_body_util::Full;
-use octoevents::{EventMeta, Verifier, WebhookReceiverBuilder, WebhookSecret};
+use octoevents::{Verifier, WebhookReceiverBuilder, WebhookSecret};
 use tracing::Level;
 
 /// The secret, named so the assertions can look for it in the output.
@@ -69,16 +66,11 @@ fn spans_record_routing_metadata_but_never_the_signature_or_secret() {
 }
 
 #[test]
-fn the_error_observer_and_the_spans_see_nothing_secret_derived_on_a_failed_delivery() {
+fn the_spans_and_event_record_nothing_secret_derived_on_a_failed_delivery() {
     let (signature, request) = signed_request();
 
-    let observed = Arc::new(Mutex::new(String::new()));
-    let observer_record = Arc::clone(&observed);
-    let receiver = WebhookReceiverBuilder::new(verifier())
-        .on_error(move |meta: &EventMeta, error: &&str| {
-            *observer_record.lock().unwrap() = format!("{meta:?} {error}");
-        })
-        .build(|_| async { Err::<(), _>("handler failed") });
+    let receiver =
+        WebhookReceiverBuilder::new(verifier()).build(|_| async { Err::<(), _>("handler failed") });
 
     let (recording, response) = common::traced(receiver.receive(request));
     assert_eq!(response.status(), 500);
@@ -91,14 +83,6 @@ fn the_error_observer_and_the_spans_see_nothing_secret_derived_on_a_failed_deliv
         Some("d34db33f-delivery")
     );
     assert_no_field_secret_derived(&recording, &signature);
-
-    let observed = observed.lock().unwrap();
-    assert!(
-        observed.contains("d34db33f-delivery"),
-        "observed: {observed}"
-    );
-    assert!(observed.contains("handler failed"), "observed: {observed}");
-    assert_nothing_secret_derived("the observer's text", &observed, &signature);
 }
 
 #[derive(Debug, thiserror::Error)]
