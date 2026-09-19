@@ -795,6 +795,15 @@ mod errors {
                 "kind",
             ),
             (
+                registered!(handle(recording::<AnyPullRequest>(
+                    &calls,
+                    "handle",
+                    Err("handle")
+                ))),
+                Tier::Route,
+                "handle",
+            ),
+            (
                 registered!(fallback(recording::<Envelope>(
                     &calls,
                     "fallback",
@@ -1458,7 +1467,7 @@ mod inputs {
             seen: Mutex::new(Vec::new()),
         });
         let dispatcher = Dispatcher::builder()
-            .on::<Event<AnyPullRequest>, _, _>(AnyAction, Arc::clone(&labeler))
+            .handle::<Event<AnyPullRequest>, _>(Arc::clone(&labeler))
             .on::<EventMeta, _, _>(
                 (EventKind::PullRequest, Action::Closed),
                 Arc::clone(&labeler),
@@ -1626,12 +1635,41 @@ mod matchers {
     use super::{AnyPullRequest, Calls, recording, unwrapped};
     use crate::{
         Action, AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind, EventMatcher,
-        EventMeta, Payload, Tier,
+        EventMeta, Match, Payload, Tier,
         test_support::{
-            AppError, check_run_completed, envelope_with_action, installation_created,
+            AppError, check_run_completed, envelope, envelope_with_action, installation_created,
             pull_request_opened,
         },
     };
+
+    #[tokio::test]
+    async fn handle_matches_only_its_inputs_kind_with_or_without_an_action() {
+        let calls = Calls::default();
+        let dispatcher = Dispatcher::builder()
+            .handle(recording::<AnyPullRequest>(&calls, "payload", Ok(())))
+            .handle(recording::<Event<AnyPullRequest>>(&calls, "event", Ok(())))
+            .build();
+
+        for payload in [
+            br"{}".as_slice(),
+            br#"{"action":"opened"}"#,
+            br#"{"action":"future_action"}"#,
+        ] {
+            calls.lock().await.clear();
+            let outcome = dispatcher
+                .dispatch(envelope(EventKind::PullRequest, payload))
+                .await;
+            assert_eq!(outcome.matched, Match::Matched);
+            outcome.result.unwrap();
+            assert_eq!(calls.lock().await.as_slice(), ["payload", "event"]);
+        }
+
+        calls.lock().await.clear();
+        let outcome = dispatcher.dispatch(check_run_completed()).await;
+        assert_eq!(outcome.matched, Match::UnmatchedKind);
+        outcome.result.unwrap();
+        assert!(calls.lock().await.is_empty());
+    }
 
     #[tokio::test]
     async fn every_matcher_form_expands_to_its_routes() {

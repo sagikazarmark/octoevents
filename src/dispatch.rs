@@ -10,7 +10,7 @@ use std::{
 
 use crate::{
     Action, BoxError, Envelope, EventKind, EventMeta, FromEnvelope, Handler, IntoMatcher,
-    MaybeSend, MaybeSync, matcher::Slot, runtime::BoxFuture, trace,
+    MaybeSend, MaybeSync, Payload, matcher::Slot, runtime::BoxFuture, trace,
 };
 
 /// The erased handler: every handler is registered as one of these, its
@@ -75,8 +75,9 @@ where
 /// routed handler is a [`Handler`] over some [`FromEnvelope`] input,
 /// registered with `on` for the kinds and actions a matcher selects; a
 /// handler over a [`Payload`](crate::Payload) may give actions alone and take
-/// the kind from its type. The `fallback` chain runs only if neither
-/// routed chain matched, and receives the envelope as `always` does.
+/// the kind from its type, or use [`handle`](DispatcherBuilder::handle) for
+/// that kind without an action restriction. The `fallback` chain runs only if
+/// neither routed chain matched, and receives the envelope as `always` does.
 /// Handlers run one at a time: the chains in the order just given, whichever
 /// handler was registered first, and within a chain in registration order.
 /// Each `on` registration runs at most once per delivery, at its first
@@ -772,8 +773,8 @@ pub enum Tier {
     /// The `always` chain: handlers over the envelope, bytes included, that
     /// run for every delivery before routing.
     Always,
-    /// The routed chains: the handlers `on` registered for the delivery's
-    /// kind and action.
+    /// The routed chains: the handlers `on` or `handle` registered for the
+    /// delivery's kind and action.
     Route,
     /// The `fallback` chain: handlers over the envelope that run only when
     /// no routed handler matched.
@@ -873,6 +874,58 @@ impl DispatcherBuilder {
         self
     }
 
+    /// Registers a handler for the kind its input declares, without an action
+    /// restriction.
+    ///
+    /// The input is a [`Payload`], directly or as [`Event<P>`](crate::Event).
+    /// This is equivalent to `on(AnyAction, handler)`: it runs in the kind-wide
+    /// chain for every action, including unknown actions and deliveries with
+    /// no action. Each route still decodes its input when it runs.
+    ///
+    /// Use [`on`](Self::on) to restrict actions or to name kinds explicitly
+    /// for an input such as [`Envelope`] or [`EventMeta`] that declares none.
+    /// If a handler implements `Handler` for multiple payload inputs, select
+    /// one with `handle::<Input, _>(handler)`.
+    ///
+    /// ```
+    /// use octoevents::{Dispatcher, EventKind, Payload};
+    ///
+    /// #[derive(serde::Deserialize)]
+    /// struct Push { after: String }
+    ///
+    /// impl Payload for Push {
+    ///     const KIND: EventKind = EventKind::Push;
+    /// }
+    ///
+    /// async fn pushed(payload: Push) -> Result<(), std::io::Error> {
+    ///     println!("pushed {}", payload.after);
+    ///     Ok(())
+    /// }
+    ///
+    /// let dispatcher = Dispatcher::builder().handle(pushed).build();
+    /// # let _ = dispatcher;
+    /// ```
+    ///
+    /// An input without a declared kind needs an explicit matcher:
+    ///
+    /// ```compile_fail,E0277
+    /// use octoevents::{BoxError, Dispatcher, EventMeta};
+    ///
+    /// async fn inspect(meta: EventMeta) -> Result<(), BoxError> { Ok(()) }
+    ///
+    /// let dispatcher = Dispatcher::builder().handle(inspect).build();
+    /// ```
+    #[must_use]
+    #[track_caller]
+    pub fn handle<I, H>(self, handler: H) -> Self
+    where
+        I: Payload + 'static,
+        H: Handler<I> + MaybeSend + MaybeSync + 'static,
+        H::Error: Into<BoxError>,
+    {
+        self.on(I::KIND, handler)
+    }
+
     /// Registers a handler for the kinds and actions the matcher selects.
     ///
     /// The matcher is any [`IntoMatcher`] for the handler's input. One that
@@ -886,6 +939,8 @@ impl DispatcherBuilder {
     /// kind is `P::KIND`: said once, on the type, so under those matchers the
     /// handler cannot be registered under another kind. A pull-request
     /// handler under `Action::Opened` is `pull_request.opened`.
+    /// For the input's kind without an action restriction, use
+    /// [`handle`](Self::handle).
     ///
     /// The selections in one call are a union: duplicate kinds or actions
     /// have no additional effect, and this registration runs at most once
