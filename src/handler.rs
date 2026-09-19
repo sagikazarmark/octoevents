@@ -69,7 +69,7 @@ use crate::{MaybeSend, MaybeSync};
 ///
 #[cfg_attr(feature = "derive", doc = "```")]
 #[cfg_attr(not(feature = "derive"), doc = "```ignore")]
-/// use octoevents::{AnyAction, Dispatcher, Event, EventKind, Handler};
+/// use octoevents::{Dispatcher, Event, EventKind, Handler};
 ///
 /// #[derive(serde::Deserialize, octoevents::Payload)]
 /// #[payload(EventKind::PullRequest)]
@@ -89,7 +89,7 @@ use crate::{MaybeSend, MaybeSync};
 /// }
 ///
 /// let dispatcher = Dispatcher::builder()
-///     .on(AnyAction, Labeler { label: "triage".into() })
+///     .handle(Labeler { label: "triage".into() })
 ///     .build();
 /// # let _ = dispatcher;
 /// ```
