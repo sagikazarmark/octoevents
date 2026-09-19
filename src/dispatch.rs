@@ -68,8 +68,8 @@ where
 /// A handler that routes verified envelopes to other handlers by kind and
 /// action.
 ///
-/// Per delivery the dispatcher runs three tiers in the order [`Tier`] lists
-/// them. The `always` chain runs first, for every delivery, and receives the
+/// Per delivery the dispatcher runs three tiers: always, route and fallback.
+/// The `always` chain runs first, for every delivery, and receives the
 /// verified [`Envelope`], bytes included. The routed chains run next: the
 /// chain for the envelope's kind and action, then the kind-wide chain. Every
 /// routed handler is a [`Handler`] over some [`FromEnvelope`] input,
@@ -111,7 +111,7 @@ where
 /// handler failed it; the outcome is for the policy seam to read.
 ///
 /// A failure is reported as a [`DispatchError`]: the handler's error, boxed
-/// as a [`BoxError`], wrapped with the [`Tier`] the failing handler ran in,
+/// as a [`BoxError`], wrapped with the tier the failing handler ran in,
 /// the delivery's ID, kind and action, the handler's name, and the source
 /// location of the registration that put the handler there. Every
 /// registration method records its handler's name and its caller's location,
@@ -627,7 +627,7 @@ impl fmt::Display for Match {
 /// the dispatch and in the consumer's source it came from.
 ///
 /// The dispatcher wraps the error of the handler that failed the delivery
-/// with what it knew and the handler did not: the [`Tier`] the handler ran
+/// with what it knew and the handler did not: the tier the handler ran
 /// in, the delivery's ID, kind and action, the handler's name, and the
 /// source location of the registration (`always`, `on` or `fallback`) that
 /// put the handler there. Every registration method records its caller's
@@ -658,11 +658,13 @@ impl fmt::Display for Match {
 /// handler's error was, since the source is always the box, so a dispatcher
 /// nests as a route of another and the receiver puts the error on the
 /// failed-delivery event with no bound left to ask.
+/// The tier is internal context, included in the error's text and tracing
+/// output.
 ///
 /// ```
 /// use std::error::Error as _;
 ///
-/// use octoevents::{DecodeError, Dispatcher, Envelope, EventKind, Tier};
+/// use octoevents::{DecodeError, Dispatcher, Envelope, EventKind};
 ///
 /// #[derive(Debug, thiserror::Error)]
 /// #[error("database is down")]
@@ -679,7 +681,6 @@ impl fmt::Display for Match {
 /// let error = dispatcher.dispatch(envelope).await.result.unwrap_err();
 ///
 /// // Where: the wrapping. Why: the source, downcast to the type the handler returned.
-/// assert_eq!(error.tier, Tier::Always);
 /// assert_eq!(error.delivery_id, "delivery-1");
 /// assert!(error.source.downcast_ref::<Database>().is_some());
 /// assert!(!error.source.is::<DecodeError>());
@@ -709,7 +710,7 @@ impl fmt::Display for Match {
 #[non_exhaustive]
 pub struct DispatchError {
     /// The tier the failing handler ran in.
-    pub tier: Tier,
+    tier: Tier,
     /// The failing handler's name: [`type_name`] of the handler the
     /// registration method received, as the docs on this type describe.
     pub handler: &'static str,
@@ -766,10 +767,8 @@ impl Error for DispatchError {
 /// The tiers a [`Dispatcher`] runs a delivery through, in order.
 ///
 /// Named by a [`DispatchError`] to say which one the failing handler ran in.
-/// The three are the dispatcher's definition, so a policy matches on them
-/// without a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Tier {
+enum Tier {
     /// The `always` chain: handlers over the envelope, bytes included, that
     /// run for every delivery before routing.
     Always,
@@ -784,7 +783,7 @@ pub enum Tier {
 impl Tier {
     /// The tier's name as it appears in a [`DispatchError`]'s message.
     #[must_use]
-    pub const fn as_str(self) -> &'static str {
+    const fn as_str(self) -> &'static str {
         match self {
             Self::Always => "always",
             Self::Route => "route",

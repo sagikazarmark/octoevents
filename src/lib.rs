@@ -76,7 +76,7 @@
 //!   its own (any `Error + 'static` on `wasm32`), `BoxError` itself,
 //!   `anyhow::Error`, a `String`.
 //! - [`Dispatcher`]: a handler over the envelope that routes to other
-//!   handlers by kind and action in three [tiers](Tier), always, route and
+//!   handlers by kind and action in three tiers, always, route and
 //!   fallback, and reports an [`Outcome`]. Built with [`DispatcherBuilder`],
 //!   whose routes take an [`IntoMatcher`]: an [`EventMatcher`] shape that says
 //!   its kinds, or, for a handler over a payload, actions alone or
@@ -154,7 +154,7 @@
 //!   records `delivery_id`, `event` and, when the delivery has them, `action`
 //!   and `installation_id` on open; on the way out `outcome`, one of `ok`,
 //!   `handler_error`, `unmatched_ok` and `unmatched_error`, and when a
-//!   handler failed the [`Tier`] it ran in as `tier`, its name as `handler`
+//!   handler failed the tier it ran in as `tier`, its name as `handler`
 //!   and its registration site as `registration_site`.
 //!
 //! A field recorded in more than one place is recorded in one form
@@ -268,7 +268,7 @@ mod signature;
 mod test_support;
 mod trace;
 
-pub use dispatch::{DispatchError, Dispatcher, DispatcherBuilder, Match, Outcome, Tier};
+pub use dispatch::{DispatchError, Dispatcher, DispatcherBuilder, Match, Outcome};
 pub use envelope::{BodyError, DecodeError, Envelope, ReceiveError};
 pub use events::{Action, EventKind, UnknownAction, UnknownEventKind};
 pub use handler::Handler;
