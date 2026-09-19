@@ -709,7 +709,8 @@ mod errors {
     use super::{AnyPullRequest, Calls, Number, Recorded, recording};
     use crate::{
         Action, AnyAction, BoxError, DecodeError, DispatchError, Dispatcher, Envelope, Event,
-        EventKind, EventMeta, FromEnvelope, Handler, Match, Tier,
+        EventKind, EventMeta, FromEnvelope, Handler, Match,
+        dispatch::Tier,
         test_support::{AppError, envelope, installation_created, ping, pull_request_opened},
     };
 
@@ -1213,7 +1214,8 @@ mod inputs {
     use super::{AnyPullRequest, Calls, recording, unwrapped, unwrapped_outcome};
     use crate::{
         Action, AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind, EventMeta,
-        FromEnvelope, Handler, Match, Payload, Tier,
+        FromEnvelope, Handler, Match, Payload,
+        dispatch::Tier,
         test_support::{
             AppError, check_run_completed, envelope, envelope_with_action, installation_created,
             pull_request, pull_request_opened, unrepresentable,
@@ -1635,7 +1637,8 @@ mod matchers {
     use super::{AnyPullRequest, Calls, recording, unwrapped};
     use crate::{
         Action, AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind, EventMatcher,
-        EventMeta, Match, Payload, Tier,
+        EventMeta, Match, Payload,
+        dispatch::Tier,
         test_support::{
             AppError, check_run_completed, envelope, envelope_with_action, installation_created,
             pull_request_opened,
@@ -1955,7 +1958,8 @@ mod octocrab {
 
     use super::{AnyPullRequest, Calls, recording, unwrapped};
     use crate::{
-        Action, AnyAction, Dispatcher, Envelope, Event, EventKind, Handler, Tier,
+        Action, AnyAction, Dispatcher, Envelope, Event, EventKind, Handler,
+        dispatch::Tier,
         test_support::{
             AppError, check_run_completed, envelope, installation_created, pull_request_opened,
             source_as, unrepresentable,

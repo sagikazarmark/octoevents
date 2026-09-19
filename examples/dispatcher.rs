@@ -180,7 +180,7 @@ async fn main() -> Result<(), BoxError> {
 
 #[cfg(test)]
 mod tests {
-    use octoevents::{Match, Tier, header};
+    use octoevents::{Match, header};
 
     use super::*;
 
@@ -260,7 +260,7 @@ mod tests {
 
         assert_eq!(outcome.matched, Match::Matched);
         let error = outcome.result.unwrap_err();
-        assert_eq!(error.tier, Tier::Route);
+        assert!(error.to_string().contains("failed in the route tier"));
         assert!(error.source.is::<DecodeError>(), "{error}");
         assert_eq!(error.delivery_id, "delivery-1");
     }

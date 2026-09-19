@@ -149,7 +149,9 @@ default, so unmatched deliveries succeed.
 **Tier**:
 One of the three steps a dispatcher runs a delivery through, in order:
 always, route (the matched routes, action-specific then kind-wide), fallback.
-A *dispatch error* names the tier its failing handler ran in.
+A *dispatch error* names the tier its failing handler ran in. The `Tier`
+enum is internal: the tier appears in error text and tracing output, not as
+a public field consumers branch on.
 _Avoid_: Stage, phase (kept for decode versus handle inside one handler), layer (middleware vocabulary)
 
 **Registration site**:
