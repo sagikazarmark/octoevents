@@ -1057,7 +1057,7 @@ dependencies = [
 
 [[package]]
 name = "octoevents"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1084,7 +1084,7 @@ dependencies = [
 
 [[package]]
 name = "octoevents-derive"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "proc-macro2",
  "quote",
