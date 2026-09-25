@@ -14,6 +14,8 @@
     cargo-watch
 
     rumdl
+    typos
+    lychee
   ];
 
   languages = {
