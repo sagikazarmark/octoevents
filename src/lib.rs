@@ -43,12 +43,21 @@
 //! 500 when it failed, and 401, 400 or 413 for a request that never reached
 //! one.
 //!
-//! The [README] is the guide: a runnable quickstart, real deliveries with
-//! `gh webhook forward`, handlers, the dispatcher, error handling, testing,
-//! transports, security, and a Probot migration table. This page maps the
-//! crate's concepts and states the contracts that belong to the API.
+//! The [README] is the landing page and runnable quickstart. The [integration
+//! guide] covers real deliveries, handlers, testing and transports;
+//! [recovery], [observability] and [security] cover operating a receiver.
+//! This page maps the crate's concepts and states the API contracts.
 //!
-//! [README]: https://github.com/sagikazarmark/octoevents
+//! [README]: https://github.com/sagikazarmark/octoevents/blob/main/README.md
+//! [integration guide]: https://github.com/sagikazarmark/octoevents/blob/main/docs/guide.md
+//! [recovery]: https://github.com/sagikazarmark/octoevents/blob/main/docs/recovery.md
+//! [observability]: https://github.com/sagikazarmark/octoevents/blob/main/docs/observability.md
+//! [security]: https://github.com/sagikazarmark/octoevents/blob/main/docs/security.md
+//!
+//! Repository guides track the current checkout. For an older release, use
+//! its Git tag and versioned API docs; review the
+//! [release notes](https://github.com/sagikazarmark/octoevents/releases)
+//! before upgrading.
 //!
 //! # Concepts
 //!
@@ -198,7 +207,8 @@
 //! Enabling the `octocrab` feature makes octocrab's pre-1.0 version part of
 //! this crate's public API: the `FromEnvelope` impl for its `WebhookEvent`
 //! and the `Payload` impls for its per-kind payload structs expose octocrab's
-//! types, so an octocrab major bump is a breaking change for handlers over
+//! types, so an incompatible octocrab release (including a pre-1.0 minor
+//! bump such as `0.54` to `0.55`) is a breaking change for handlers over
 //! them. octocrab goes in the
 //! consumer's own `[dependencies]` too, to name those types; this crate
 //! re-exports none of them. The core (envelope, verification, receiver, the
@@ -294,15 +304,21 @@ pub use bytes::Bytes;
 /// GitHub's maximum delivered payload size: 25 MiB.
 pub const DEFAULT_BODY_LIMIT: usize = 25 * 1024 * 1024;
 
-// The README's Rust blocks compile as doctests, so its programs cannot drift
-// from the API. Its quickstart mounts the receiver with `post_service`, which
-// the `tower` feature provides, its views declare their kind with
-// `#[derive(Payload)]`, which the `derive` feature provides, and its octocrab
-// block names octocrab's types, which the `octocrab` feature provides, so the
-// blocks are checked under all three. Blocks that continue a program rather
-// than stand alone (the closure fragments and the tests) are
-// marked `ignore` in the README itself; `tests/readme_testing.rs` compiles
-// the tests.
+// Guides compile under the features their examples need. The test-function
+// snippets are checked against tests/readme_testing.rs by scripts/check-docs.py;
+// that script also builds the README with its advertised consumer dependencies.
 #[cfg(all(doctest, feature = "tower", feature = "derive", feature = "octocrab"))]
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;
+
+#[cfg(all(doctest, feature = "tower", feature = "derive", feature = "octocrab"))]
+#[doc = include_str!("../docs/guide.md")]
+struct IntegrationDoctests;
+
+#[cfg(doctest)]
+#[doc = include_str!("../docs/security.md")]
+struct SecurityDoctests;
+
+#[cfg(all(doctest, feature = "tracing"))]
+#[doc = include_str!("../docs/observability.md")]
+struct ObservabilityDoctests;

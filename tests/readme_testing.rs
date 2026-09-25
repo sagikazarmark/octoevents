@@ -1,8 +1,9 @@
-//! The README's `ignore` blocks, compiled.
+//! The integration guide's `ignore` blocks, compiled.
 //!
-//! The README's Rust blocks are doctests, but the tests under "Testing
+//! The guide's Rust blocks are doctests, but the tests under "Testing
 //! without GitHub" continue the quickstart and are marked `ignore`, so
-//! nothing else compiles them. This file is those tests as written, with the
+//! nothing else compiles them. `scripts/check-docs.py` checks that the guide
+//! matches these executable tests. This file is those tests as written, with the
 //! quickstart's `BoxError` and `thank` beside them, and holds the README's
 //! prose to what it claims: `Envelope::new` reads the action out of the bytes
 //! while `EventMeta::new` on its own reads none, an `http::Request<String>` is

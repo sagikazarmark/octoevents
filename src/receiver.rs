@@ -176,6 +176,13 @@ impl fmt::Debug for WebhookReceiverBuilder {
 /// delivery record GitHub stores. Enable `tracing` with a subscriber, or
 /// report errors in the handler before returning them.
 ///
+/// Separate requests may invoke the shared handler concurrently. The receiver
+/// supplies no per-resource ordering, concurrency limit or timeout; its Tower
+/// service is always ready. Configure limits and deadlines in the transport.
+/// Dropping a receive future stops polling its work but does not undo effects
+/// already performed. Persist before acknowledging work that must survive
+/// cancellation, and coordinate recovery with any still-running processing.
+///
 /// Verification authenticates the payload bytes, not the delivery ID, event
 /// name, or target headers. Authorization decisions must use authenticated
 /// payload data or independently trusted configuration. Delivery-ID

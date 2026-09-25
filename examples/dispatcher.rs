@@ -3,7 +3,7 @@
 //!
 //! The rung after `axum`, which has no dispatcher, and before `policy_seam`,
 //! which wraps one. Run it with real deliveries forwarded by `gh webhook
-//! forward` (the README's "Try it" section), forwarding `issues` events:
+//! forward` (`docs/guide.md`, "Try it"), forwarding `issues` events:
 //!
 //! ```console
 //! GITHUB_WEBHOOK_SECRET=development-secret cargo run --example dispatcher --features tower
@@ -23,7 +23,7 @@
 //!   [`label`] takes the payload alone, decoded as the [`IssueView`] view; its
 //!   kind comes from the view's type, so its matcher says only the action (a
 //!   *relative* matcher). [`notify`] takes the meta beside the same view, as
-//!   [`Event<IssueView>`](Event), under two actions. [`revoke`] takes the
+//!   [`Event<IssueView>`](Event), under two actions. [`record_installation`] takes the
 //!   [`EventMeta`] alone, which declares no kind, so its matcher spells the
 //!   kind and the action (an *absolute* matcher); nothing is decoded for it.
 //! - **fallback**: [`log_unrouted`], another handler over the envelope, runs
@@ -97,10 +97,11 @@ async fn notify(Event { meta, payload }: Event<IssueView>) -> Result<(), BoxErro
     Ok(())
 }
 
-/// Route tier, the meta alone: `installation.deleted` needs the installation
-/// ID and no view of the payload, so nothing is decoded.
-async fn revoke(meta: EventMeta) -> Result<(), BoxError> {
-    println!("revoke tokens for installation {:?}", meta.installation_id);
+/// Route tier, the meta alone: recording an installation ID needs no decoded
+/// view. A destructive operation would also require an authorization decision;
+/// the header-derived kind is unsigned (see `docs/security.md`).
+async fn record_installation(meta: EventMeta) -> Result<(), BoxError> {
+    println!("installation update for {:?}", meta.installation_id);
     Ok(())
 }
 
@@ -120,7 +121,10 @@ fn dispatcher() -> Dispatcher {
         .always(audit)
         .on(Action::Opened, label) // `issues`, from `IssueView`
         .on([Action::Opened, Action::Reopened], notify) // `issues`, from `Event<IssueView>`
-        .on((EventKind::Installation, Action::Deleted), revoke) // `EventMeta` declares no kind
+        .on(
+            (EventKind::Installation, Action::Deleted),
+            record_installation,
+        )
         .fallback(log_unrouted)
         .build()
 }

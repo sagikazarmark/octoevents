@@ -30,14 +30,16 @@ rustup target add wasm32-unknown-unknown
 cargo install worker-build
 ```
 
-A type check needs neither `wrangler` nor `worker-build`, and is what the
-repository's `just wasm` tier runs:
+A type check needs neither `wrangler` nor `worker-build`:
 
 ```console
 cargo check --target wasm32-unknown-unknown
 ```
 
 ## Run
+
+Install Node.js and npm for the `npx wrangler` commands. Deployment also
+requires a Cloudflare account and `npx wrangler login`.
 
 The Worker reads two bindings: `GITHUB_WEBHOOK_SECRET`, a secret, and
 `RESTATE_OBJECT_URL`, a plain variable, the ingress URL of the virtual object
@@ -64,6 +66,13 @@ npx wrangler deploy --var RESTATE_OBJECT_URL:https://<restate-ingress>/GitHubIns
 
 (or an `[env.<name>.vars]` block in `wrangler.toml` and `wrangler deploy
 --env <name>`).
+
+Before exposing the destination, authenticate and authorize this Worker at
+its ingress. The example sends no application-level destination credential;
+configure the destination's access controls and the corresponding Worker
+request credentials for your deployment. Deserializing the wire format does
+not reverify GitHub's signature; follow the
+[trusted-hop guidance](../../docs/security.md#trusted-internal-forwarding).
 
 With `wrangler dev` listening on `http://localhost:8787` and a Restate
 server at the `[vars]` URL with a `GitHubInstallation` virtual object whose

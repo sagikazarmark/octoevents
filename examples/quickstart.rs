@@ -1,4 +1,4 @@
-//! Start here: the README's quickstart, verbatim, with its tests.
+//! Start here: the README's quickstart, with explanatory comments and tests.
 //!
 //! A receiver that thanks the author of every opened issue. One `async fn`
 //! handler over the [`Envelope`], routed by kind and action through a
@@ -9,13 +9,13 @@
 //! dispatcher).
 //!
 //! Run it with real deliveries forwarded by `gh webhook forward` (the README's
-//! "Try it" section walks through it):
+//! integration guide at `docs/guide.md` walks through it):
 //!
 //! ```console
 //! GITHUB_WEBHOOK_SECRET=development-secret cargo run --example quickstart --features tower
 //! ```
 //!
-//! The tests at the bottom are the README's "Testing without GitHub" tests:
+//! The tests at the bottom follow the integration guide's testing path:
 //! the dispatcher is driven with an envelope from [`Envelope::new`], nothing
 //! signed, and the receiver with a request signed by [`Verifier::sign`].
 //! Run them with `cargo test --example quickstart --features tower`.

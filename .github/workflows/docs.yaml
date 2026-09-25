@@ -1,0 +1,30 @@
+name: Documentation
+
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install current stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Quickstart dependencies and snippet consistency
+        run: python3 scripts/check-docs.py
+      - name: Guide doctests and executable examples
+        run: |
+          cargo test --workspace --all-features --doc --locked
+          cargo test --all-features --test readme_testing --examples --locked
+          cargo run --example observability --features tracing --locked
+      - name: Install link checker
+        run: cargo install lychee --version 0.24.2 --locked
+      - name: Markdown links and fragments
+        run: lychee --no-progress --include-fragments README.md CONTRIBUTING.md 'docs/*.md' examples/worker/README.md tests/fixtures/README.md
