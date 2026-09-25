@@ -5,5 +5,8 @@ source = "github.com/sagikazarmark/daggerverse-beta/rust"
 settings.version = "1.98-slim-trixie"
 check.skip = ["build"]
 
+[modules.lychee]
+source = "github.com/sagikazarmark/daggerverse-beta/lychee"
+
 [modules.dagger-gha]
 source = "github.com/sagikazarmark/daggerverse-beta/dagger-gha"
