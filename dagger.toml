@@ -10,6 +10,8 @@ source = "github.com/sagikazarmark/daggerverse-beta/lychee"
 
 [modules.typos]
 source = "github.com/sagikazarmark/daggerverse-beta/typos"
+check.skip = ["fix"]
+generate.skip = ["fix"]
 
 [modules.dagger-gha]
 source = "github.com/sagikazarmark/daggerverse-beta/dagger-gha"
