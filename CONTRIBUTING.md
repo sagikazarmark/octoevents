@@ -80,10 +80,10 @@ lychee --no-progress --include-fragments README.md CONTRIBUTING.md 'docs/*.md' e
 ```
 
 Install [lychee](https://lychee.cli.rs/) for the last command. The Python
-check uses only Python 3.11+'s standard library. It builds the exact README
-program with its advertised dependencies in a temporary consumer crate,
-then checks it against this checkout, and checks documented-version and
-snippet consistency. It needs registry access on its first run.
+check uses only Python's standard library. It runs the README's `cargo add`
+commands in a temporary consumer crate and builds the exact program, then
+checks it against this checkout. It also checks snippet consistency.
+It needs registry access to resolve the current published dependencies.
 
 Coverage is split deliberately:
 
@@ -93,7 +93,7 @@ Coverage is split deliberately:
   executable tests in `tests/readme_testing.rs`. Keep their bodies identical.
 - The observability example tests actual subscriber output for refusals and
   errors. CI also runs its standalone diagnostic command.
-- TOML installation instructions are checked through the external consumer,
+- README installation commands are checked through the external consumer,
   not by rustdoc. Markdown links/anchors are checked by lychee, not rustdoc.
 - Shell procedures requiring an administered GitHub repository, a deployed
   Worker or a Restate server require manual end-to-end validation. Do not
@@ -117,13 +117,13 @@ For a change that breaks an API, the wire format, or compiler compatibility,
 include migration instructions in the PR description for the release notes.
 Name affected consumers, old/new forms, and producer/consumer coordination.
 For incompatible octocrab changes, name the exact supported release line.
-The README names a published documentation target. After a release is
-published on crates.io and docs.rs, update that target, the dependency block
-and versioned links together. The check validates their consistency and also
-builds the quickstart against the checkout, even when its version is not yet
-published. When an upcoming breaking change needs a different quickstart,
-keep the released guide intact until publication and demonstrate the new API
-in a tested repository example. The derive crate follows the main crate in
+Use `cargo add` for installation instructions and `latest` API links so docs
+do not need updating for each release. Keep exact versions only where they
+explain compatibility requirements or version-specific behavior. The
+quickstart check tests both current published dependencies and the checkout.
+When an upcoming breaking change needs a different quickstart, keep the
+released guide intact until publication and demonstrate the new API in a
+tested repository example. The derive crate follows the main crate in
 lockstep and is published first.
 
 Before proposing an MSRV claim for a release, verify the intended dependency

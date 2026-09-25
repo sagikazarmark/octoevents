@@ -112,7 +112,7 @@ secret; it does not expose which secret verified a real request.
 ## Trusted internal forwarding
 
 Serializing an `Envelope` uses the documented
-[wire format](https://docs.rs/octoevents/0.3.0/octoevents/struct.Envelope.html#wire-format):
+[wire format](https://docs.rs/octoevents/latest/octoevents/struct.Envelope.html#wire-format):
 flat metadata beside base64-encoded exact payload bytes. Deserializing it
 **neither verifies a signature nor probes the metadata again**.
 

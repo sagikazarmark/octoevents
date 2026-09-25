@@ -3,7 +3,7 @@
 [![ci](https://img.shields.io/github/actions/workflow/status/sagikazarmark/octoevents/dagger.yaml?style=flat-square&label=ci)](https://github.com/sagikazarmark/octoevents/actions/workflows/dagger.yaml)
 [![openssf scorecard](https://api.securityscorecards.dev/projects/github.com/sagikazarmark/octoevents/badge?style=flat-square)](https://securityscorecards.dev/viewer/?uri=github.com/sagikazarmark/octoevents)
 [![crates.io](https://img.shields.io/crates/v/octoevents?style=flat-square)](https://crates.io/crates/octoevents)
-[![docs.rs](https://img.shields.io/docsrs/octoevents?style=flat-square)](https://docs.rs/octoevents/0.3.0/octoevents/)
+[![docs.rs](https://img.shields.io/docsrs/octoevents?style=flat-square)](https://docs.rs/octoevents/latest/octoevents/)
 
 **Receive and verify GitHub webhooks in Rust.**
 
@@ -19,32 +19,32 @@ The crate does not send webhooks or request GitHub redelivery.
 
 ## Status and compatibility
 
-This guide targets **octoevents 0.3.0**, a **pre-1.0** library. Public APIs and
+octoevents is a **pre-1.0** library. Public APIs and
 the envelope wire format may change incompatibly in a minor release; review
 the [release notes](https://github.com/sagikazarmark/octoevents/releases)
 before upgrading. This repository does not promise an LTS/support window.
 
-The declared minimum Rust version is **1.88** (`Cargo.toml` is authoritative).
+The declared minimum Rust version is the `rust-version` in [Cargo.toml](Cargo.toml).
 Your resolved dependencies may require a newer compiler; retain your lockfile
 and check it with the toolchain you deploy. MSRV changes should be called out
 in release notes; do not assume a compiler-support window from the crate version.
 
 Using the optional octocrab models couples your handlers to its compatible
-release line, currently `0.54`. An incompatible octocrab upgrade, including a
+release line; see the [integration guide](docs/guide.md#octocrab-payloads).
+An incompatible octocrab upgrade, including a
 pre-1.0 minor bump, changes those public types. For services exchanging stored
 envelopes, also review the
-[wire-format compatibility contract](https://docs.rs/octoevents/0.3.0/octoevents/struct.Envelope.html#wire-format).
+[wire-format compatibility contract](https://docs.rs/octoevents/latest/octoevents/struct.Envelope.html#wire-format).
 
 ## Quickstart
 
 Create an application with `cargo new webhook-demo`, then work in that
-directory. Replace its dependencies with:
+directory. Add the dependencies:
 
-```toml
-[dependencies]
-axum = "0.8"
-octoevents = { version = "0.3", features = ["tower"] }
-tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
+```console
+cargo add axum
+cargo add octoevents --features tower
+cargo add tokio --features macros,net,rt-multi-thread
 ```
 
 Put this in `src/main.rs`. It prints a thank-you when an issue is opened;
@@ -119,14 +119,14 @@ boundaries, secret rotation, and trusted internal forwarding.
 | `tracing` | no | Receive, verify and dispatch spans; failed-delivery events |
 
 With no features, verification, envelopes, dispatch and `receive_bytes` are
-available. The [API feature reference](https://docs.rs/octoevents/0.3.0/octoevents/#features)
+available. The [API feature reference](https://docs.rs/octoevents/latest/octoevents/#features)
 defines the full contracts and octocrab backend requirements.
 
 ## Documentation
 
 | I want to… | Start here |
 | --- | --- |
-| Understand the types and lifecycle | [API concepts](https://docs.rs/octoevents/0.3.0/octoevents/#concepts), [glossary](docs/glossary.md) |
+| Understand the types and lifecycle | [API concepts](https://docs.rs/octoevents/latest/octoevents/#concepts), [glossary](docs/glossary.md) |
 | Integrate handlers, routing or another transport | [Integration guide](docs/guide.md) |
 | Migrate from Probot | [Migration table](docs/guide.md#migrating-from-probot) |
 | Diagnose a refused or failed delivery | [Observability](docs/observability.md) |

@@ -10,9 +10,9 @@ carry no diagnostic body.
 
 Add `tracing` to octoevents' features and depend on the subscriber:
 
-```toml
-octoevents = { version = "0.3", features = ["tower", "tracing"] }
-tracing-subscriber = "0.3"
+```console
+cargo add octoevents --features tower,tracing
+cargo add tracing-subscriber
 ```
 
 Initialize once at startup, before serving requests:
@@ -75,6 +75,6 @@ appear at the handler whose input needed the decode.
   recorded as supplied: avoid putting credentials or complete payloads in
   your errors, and configure retention/access accordingly.
 
-The [API tracing reference](https://docs.rs/octoevents/0.3.0/octoevents/#tracing)
+The [API tracing reference](https://docs.rs/octoevents/latest/octoevents/#tracing)
 is authoritative for span names, fields and outcome vocabularies. For
 Cloudflare console reporting, follow the [Worker guide](../examples/worker/README.md).

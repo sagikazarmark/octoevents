@@ -1,6 +1,6 @@
 # Reader glossary
 
-[Documentation index](../README.md#documentation) · [API concepts](https://docs.rs/octoevents/0.3.0/octoevents/#concepts)
+[Documentation index](../README.md#documentation) · [API concepts](https://docs.rs/octoevents/latest/octoevents/#concepts)
 
 | Term | Meaning |
 | --- | --- |

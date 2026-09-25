@@ -1,6 +1,6 @@
 # Integration guide
 
-[Documentation index](../README.md#documentation) · [API reference](https://docs.rs/octoevents/0.3.0/octoevents/)
+[Documentation index](../README.md#documentation) · [API reference](https://docs.rs/octoevents/latest/octoevents/)
 
 Start with the [quickstart](../README.md#quickstart), then choose your task:
 
@@ -127,7 +127,7 @@ and where a delivery can fail before the handler sees it. "Nothing" does not
 mean the payload went unread: construction probes the metadata best-effort,
 before routing. Malformed JSON leaves the probed fields empty; it does not
 itself refuse the request. The
-[`EventMeta` reference](https://docs.rs/octoevents/0.3.0/octoevents/struct.EventMeta.html)
+[`EventMeta` reference](https://docs.rs/octoevents/latest/octoevents/struct.EventMeta.html)
 defines the probe's field-level behavior and cost.
 
 For the views below, add `serde = { version = "1", features = ["derive"] }`
@@ -296,7 +296,7 @@ that needs the account or the permissions takes `Event<WebhookEvent>` or a
 view. And many structs leave their main object as an untyped
 `serde_json::Value` (`check_run`, `check_suite`, `workflow_run`,
 `workflow_job`, `release`, `team` among them). The caveats are under
-[Feature caveats](https://docs.rs/octoevents/0.3.0/octoevents/#feature-caveats);
+[Feature caveats](https://docs.rs/octoevents/latest/octoevents/#feature-caveats);
 the `policy_seam` example routes octocrab's payloads.
 
 **Known decoding limitation in octocrab 0.54.1:** `code_scanning_alert` and
@@ -390,7 +390,7 @@ registered for some actions decodes nothing for a delivery carrying another.
 A view over fields several kinds share (the sender, say) implements
 `FromEnvelope` itself with the kind-free `Envelope::decode` and registers
 under those kinds with `on`; the
-[`Dispatcher` docs](https://docs.rs/octoevents/0.3.0/octoevents/struct.Dispatcher.html)
+[`Dispatcher` docs](https://docs.rs/octoevents/latest/octoevents/struct.Dispatcher.html)
 show one.
 
 ### Always and fallback
@@ -414,7 +414,7 @@ show one.
   stored is recovered from the store; one that fails before it is stored is
   recovered only by asking GitHub to redeliver.
 
-[policy-seam]: https://docs.rs/octoevents/0.3.0/octoevents/struct.Dispatcher.html#the-policy-seam
+[policy-seam]: https://docs.rs/octoevents/latest/octoevents/struct.Dispatcher.html#the-policy-seam
 
 ### Outcome
 
@@ -662,7 +662,7 @@ the body limit, `ping`, the handler, the tracing) for a
 transport with no `http_body::Body`. That is the shape every surveyed Rust
 runtime hands over (`lambda_http`, `spin-sdk`, `wstd`, `worker`, `fastly`,
 `aws_lambda_events`); the
-[`receive_bytes` docs](https://docs.rs/octoevents/0.3.0/octoevents/struct.WebhookReceiver.html#method.receive_bytes)
+[`receive_bytes` docs](https://docs.rs/octoevents/latest/octoevents/struct.WebhookReceiver.html#method.receive_bytes)
 say how each does. Driven from a test, with the headers and the body a
 runtime would hand over built by hand:
 
@@ -692,7 +692,7 @@ async fn main() {
 
 A transport that wants the envelope rather than the answer, to persist it
 before any handler runs or to forward it to another service as the
-[wire format](https://docs.rs/octoevents/0.3.0/octoevents/struct.Envelope.html#wire-format)
+[wire format](https://docs.rs/octoevents/latest/octoevents/struct.Envelope.html#wire-format)
 (the one flat JSON document a serialized `Envelope` becomes), calls
 `Envelope::from_signed` with the verifier, the `HeaderMap` and the body, and
 answers a failure with `ReceiveError::status`; its docs say what the receiver
@@ -739,7 +739,7 @@ matching handler and aggregates their errors.
 ## Cargo features
 
 See the [feature overview](../README.md#cargo-features) and
-[API feature reference](https://docs.rs/octoevents/0.3.0/octoevents/#features).
+[API feature reference](https://docs.rs/octoevents/latest/octoevents/#features).
 
 ## Developing
 
