@@ -304,9 +304,8 @@ pub use bytes::Bytes;
 /// GitHub's maximum delivered payload size: 25 MiB.
 pub const DEFAULT_BODY_LIMIT: usize = 25 * 1024 * 1024;
 
-// Guides compile under the features their examples need. The test-function
-// snippets are checked against tests/readme_testing.rs by scripts/check-docs.py;
-// that script also builds the README with its advertised consumer dependencies.
+// Guides compile under the features their examples need. The ignored
+// test-function snippets have executable counterparts in tests/readme_testing.rs.
 #[cfg(all(doctest, feature = "tower", feature = "derive", feature = "octocrab"))]
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;

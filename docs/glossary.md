@@ -1,4 +1,4 @@
-# Reader glossary
+# Glossary
 
 [Documentation index](../README.md#documentation) · [API concepts](https://docs.rs/octoevents/latest/octoevents/#concepts)
 
@@ -24,5 +24,3 @@
 | Policy seam | The handler over an envelope wrapping `dispatch`, where persistence, deduplication and outcome policy live |
 | Redelivery | Another GitHub attempt with the same delivery ID, requested by an operator or automation; GitHub does not do it automatically |
 | Wire format | The flat JSON representation of an envelope for a trusted internal hop; deserialization authenticates nothing |
-
-For contributor terminology and design rationale, see [the domain language](../CONTEXT.md).

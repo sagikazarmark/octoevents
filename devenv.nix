@@ -5,7 +5,6 @@
   env.DAGGER_X_RELEASE = "v1.0.0-beta.14";
 
   packages = with pkgs; [
-    python3
     lychee
     lld
     cargo-audit

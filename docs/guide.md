@@ -16,6 +16,36 @@ Start with the [quickstart](../README.md#quickstart), then choose your task:
 
 ## The receiving path
 
+The quickstart mounts a receiver around a dispatcher. The request follows
+this path; each refusal ends processing before any handler runs:
+
+```mermaid
+flowchart TD
+    Request[HTTP request] --> Router[Caller routes path and method]
+    Router --> Signature[Parse signature header]
+    Signature -->|Missing or malformed| Refusal[Refusal: 400, 401 or 413]
+    Signature -->|Parsed| Body[Read body within the length limit]
+    Body -->|Read error or too large| Refusal
+    Body -->|Bytes| Verify[Verify signature against exact bytes]
+    Verify -->|Mismatch| Refusal
+    Verify -->|Authenticated| Headers[Check content type and required headers]
+    Headers -->|Invalid| Refusal
+    Headers -->|Accepted| Probe[Probe payload metadata, best-effort]
+    Probe --> Envelope[Envelope: metadata and exact payload bytes]
+    Envelope --> Ping{Ping short-circuit enabled?}
+    Ping -->|Yes, and kind is ping| Success[204]
+    Ping -->|Otherwise| Dispatch[Dispatcher: route and await handlers]
+    Dispatch -->|Success, including unmatched| Success
+    Dispatch -->|Decode or handler error| Failure[500]
+```
+
+This diagram shows `receive`, which reads the body from the transport.
+With `receive_bytes`, the caller has already read the body; the receiver
+checks its length at the same point. The signature authenticates the bytes,
+not the header-derived event kind. A malformed JSON payload still produces
+an envelope; it fails only if a selected handler's input requires a decode
+that cannot succeed.
+
 Every request goes through three steps:
 
 1. **Verify.** `X-Hub-Signature-256` is checked against the exact body bytes
@@ -190,6 +220,28 @@ let dispatcher = Dispatcher::builder()
 
 Meta and payload together form one input, `Event<P>`, not two parameters.
 
+The envelope is built once at receipt. Each matched route converts it to the
+input its handler declares; handlers that need no decoded payload use the
+already-probed metadata or the envelope itself:
+
+```mermaid
+flowchart LR
+    Envelope[Envelope] --> Convert[FromEnvelope for one matched route]
+    Convert -->|Clone envelope| Bytes[Envelope: metadata and bytes]
+    Convert -->|Clone metadata| Meta[EventMeta]
+    Convert -->|Check kind and decode| Payload["P: Payload"]
+    Convert -->|Pair metadata with decoded input| Event["Event&lt;P&gt;"]
+    Bytes --> Handler[Invoke handler]
+    Meta --> Handler
+    Payload --> Handler
+    Event --> Handler
+    Convert -->|Conversion fails| Error[DispatchError: handler is not invoked]
+```
+
+A custom `FromEnvelope` implementation controls its own conversion. The
+kind check shown for `Payload` does not authenticate the event kind; see
+[Security](security.md#authorize-the-operation-not-the-route).
+
 ### Struct handlers and closures
 
 A handler with dependencies is a struct implementing `Handler<I>`; the
@@ -318,6 +370,29 @@ three tiers in order:
 | Always | First, for every delivery | `Envelope` | `always` |
 | Route | The handlers matching the kind and action, then those matching the kind | Any input | `on` |
 | Fallback | Only when no route matched | `Envelope` | `fallback` |
+
+The route table decides the match independently of handler success. A
+fallback is for an unmatched delivery, not recovery from a failed route:
+
+```mermaid
+flowchart TD
+    Envelope[Envelope] --> Lookup[Route table decides match]
+    Lookup --> Always[Always chain]
+    Always -->|Success| Match{Any route matched?}
+    Always -->|Error| Error[Outcome: match plus error]
+    Match -->|Yes| Action[Action-specific chain]
+    Action -->|Success| Kind[Kind-wide chain]
+    Action -->|Decode or handler error| Error
+    Kind -->|Decode or handler error| Error
+    Kind -->|Success| Success[Outcome: match plus success]
+    Match -->|No| Fallback[Fallback chain]
+    Fallback -->|Error| Error
+    Fallback -->|Success| Success
+```
+
+An empty chain succeeds. Each routed handler's input is decoded immediately
+before that handler runs. The first error ends dispatch; later handlers and
+tiers do not run.
 
 Within a chain, handlers run in registration order; the route tier is two
 chains, the action-specific one and then the kind-wide one, whichever was
@@ -740,8 +815,3 @@ matching handler and aggregates their errors.
 
 See the [feature overview](../README.md#cargo-features) and
 [API feature reference](https://docs.rs/octoevents/latest/octoevents/#features).
-
-## Developing
-
-See [Contributing](../CONTRIBUTING.md) for prerequisites, local commands,
-CI coverage and documentation checks.

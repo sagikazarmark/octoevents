@@ -1,4 +1,4 @@
-# Observe refusals and handler failures
+# Observability
 
 [Documentation index](../README.md#documentation)
 

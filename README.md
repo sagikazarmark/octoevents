@@ -133,7 +133,6 @@ defines the full contracts and octocrab backend requirements.
 | Persist, deduplicate and recover work | [Durable receipt and recovery](docs/recovery.md) |
 | Review authorization or rotate secrets | [Security](docs/security.md) |
 | Run on Cloudflare Workers | [Worker guide](examples/worker/README.md) |
-| Develop or change documentation | [Contributing](CONTRIBUTING.md) |
 | Upgrade | [Release notes](https://github.com/sagikazarmark/octoevents/releases) |
 
 Executable examples, in reading order: [quickstart](examples/quickstart.rs),
@@ -142,6 +141,15 @@ Executable examples, in reading order: [quickstart](examples/quickstart.rs),
 
 ## License
 
-Licensed under either [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT),
-at your option. Unless you explicitly state otherwise, contributions are
-dual licensed on the same terms.
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
+
+at your option.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.

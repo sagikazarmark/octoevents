@@ -33,7 +33,6 @@ include = [
   "/examples/**",
   "/tests/**",
   "/README.md",
-  "/CONTRIBUTING.md",
   "/docs/**",
   "/LICENSE-APACHE",
   "/LICENSE-MIT",
