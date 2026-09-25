@@ -17,8 +17,9 @@ use crate::{DecodeError, Envelope, EventKind, EventMeta};
 /// - [`EventMeta`] is a clone of the meta the envelope was built with, read
 ///   from the headers and the payload at receipt, so its decode does nothing
 ///   and cannot fail: a handler over it is routed by kind and action and
-///   receives only the meta. `installation.deleted` revoking tokens by
-///   installation ID needs no view of the payload.
+///   receives only the meta. Recording an installation ID needs no view of
+///   the payload. A sensitive operation still needs independent authorization:
+///   the event kind comes from an unsigned header, as [`EventMeta`] explains.
 /// - Every serde [`Payload`] decodes in two steps: the kind check first, then
 ///   the bytes with [`Envelope::decode`]. A payload registered with `on`
 ///   under a matcher that disagrees with its kind fails the delivery at the

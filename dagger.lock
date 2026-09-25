@@ -3,4 +3,10 @@
 # Run `dagger workspace update` to refresh the pinned versions.
 [["version","2"]]
 ["","git-latest",["github.com/sagikazarmark/daggerverse-beta",["tagPrefix","dagger-gha"]],"refs/heads/main"]
-["","git-sha",["github.com/sagikazarmark/daggerverse-beta","refs/heads/main"],"b0671fd12a040feaf0f811c70d66199cbbcd24ca"]
+["","git-latest",["github.com/sagikazarmark/daggerverse-beta",["tagPrefix","lychee"]],"refs/heads/main"]
+["","git-latest",["github.com/sagikazarmark/daggerverse-beta",["tagPrefix","rust"]],"refs/heads/main"]
+["","git-latest",["github.com/sagikazarmark/daggerverse-beta",["tagPrefix","typos"]],"refs/heads/main"]
+["","git-sha",["github.com/sagikazarmark/daggerverse-beta","refs/heads/main"],"34caea9a8c99fa2a4f5598a81204d7948af3abf0"]
+["","oci-sha",["docker.io/library/alpine:3.23.4"],"sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11"]
+["","oci-sha",["docker.io/library/rust:1.98-slim-trixie"],"sha256:f47a8de237dcbb0b0ce1099901e60a89728e3d51f24e664b40e947171538ade7"]
+["","oci-sha",["docker.io/lycheeverse/lychee:0.24.2"],"sha256:e2d19e57cf6ab037026f20b8e449a1f30d9d7f81eef4194763aab2eab20bd28d"]
