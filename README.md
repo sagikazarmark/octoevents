@@ -7,10 +7,9 @@
 
 **Receive and verify GitHub webhooks in Rust.**
 
-A receiver turns an untrusted HTTP request into an `Envelope`: exact payload
-bytes and routing metadata. An optional `Dispatcher` routes envelopes to
-handlers by event kind and action. Handlers can read metadata, decode a small
-serde view, or use octocrab's payload types.
+A receiver turns an untrusted HTTP request into an `Envelope`: exact payload bytes and routing metadata.
+An optional `Dispatcher` routes envelopes to handlers by event kind and action.
+Handlers can read metadata, decode a small serde view, or use octocrab's payload types.
 
 The core performs no network I/O and builds for `wasm32-unknown-unknown`.
 Mount the receiver on axum, Cloudflare Workers, or another HTTP transport.
@@ -19,27 +18,26 @@ The crate does not send webhooks or request GitHub redelivery.
 
 ## Status and compatibility
 
-octoevents is a **pre-1.0** library. Public APIs and
-the envelope wire format may change incompatibly in a minor release; review
-the [release notes](https://github.com/sagikazarmark/octoevents/releases)
-before upgrading. This repository does not promise an LTS/support window.
+octoevents is a **pre-1.0** library.
+Public APIs and the envelope wire format may change incompatibly in a minor release;
+review the [release notes](https://github.com/sagikazarmark/octoevents/releases) before upgrading.
+This repository does not promise an LTS/support window.
 
 The declared minimum Rust version is the `rust-version` in [Cargo.toml](Cargo.toml).
-Your resolved dependencies may require a newer compiler; retain your lockfile
-and check it with the toolchain you deploy. MSRV changes should be called out
-in release notes; do not assume a compiler-support window from the crate version.
+Your resolved dependencies may require a newer compiler;
+retain your lockfile and check it with the toolchain you deploy.
+MSRV changes should be called out in release notes; do not assume a compiler-support window from the crate version.
 
-Using the optional octocrab models couples your handlers to its compatible
-release line; see the [integration guide](docs/guide.md#octocrab-payloads).
-An incompatible octocrab upgrade, including a
-pre-1.0 minor bump, changes those public types. For services exchanging stored
-envelopes, also review the
+Using the optional octocrab models couples your handlers to its compatible release line;
+see the [integration guide](docs/guide.md#octocrab-payloads).
+An incompatible octocrab upgrade, including a pre-1.0 minor bump, changes those public types.
+For services exchanging stored envelopes, also review the
 [wire-format compatibility contract](https://docs.rs/octoevents/latest/octoevents/struct.Envelope.html#wire-format).
 
 ## Quickstart
 
-Create an application with `cargo new webhook-demo`, then work in that
-directory. Add the dependencies:
+Create an application with `cargo new webhook-demo`, then work in that directory.
+Add the dependencies:
 
 ```console
 cargo add axum
@@ -47,8 +45,8 @@ cargo add octoevents --features tower
 cargo add tokio --features macros,net,rt-multi-thread
 ```
 
-Put this in `src/main.rs`. It prints a thank-you when an issue is opened;
-it does not post a comment to GitHub.
+Put this in `src/main.rs`.
+It prints a thank-you when an issue is opened; it does not post a comment to GitHub.
 
 ```rust,no_run
 use axum::{Router, routing::post_service};
@@ -80,33 +78,32 @@ async fn main() -> Result<(), BoxError> {
 GITHUB_WEBHOOK_SECRET=development-secret cargo run
 ```
 
-The verifier authenticates the exact body bytes. The dispatcher selects
-`issues.opened`; `Envelope` gives the handler the metadata and those bytes.
+The verifier authenticates the exact body bytes.
+The dispatcher selects `issues.opened`; `Envelope` gives the handler the metadata and those bytes.
 `BoxError` lets the handler return any compatible error with `?`.
 
-Successful, unmatched and default `ping` deliveries receive 204. A handler
-or input-decode error receives 500; refused requests receive 400, 401 or 413.
-Responses have no body. Enable [observability](docs/observability.md) to see
-errors and refusals.
+Successful, unmatched and default `ping` deliveries receive 204.
+A handler or input-decode error receives 500; refused requests receive 400, 401 or 413.
+Responses have no body.
+Enable [observability](docs/observability.md) to see errors and refusals.
 
 **Next:** [forward a real GitHub delivery](docs/guide.md#try-it), or
 [test without GitHub](docs/guide.md#testing-without-github).
-From a repository clone the same server is available as
-`cargo run --example quickstart --features tower`.
+From a repository clone the same server is available as `cargo run --example quickstart --features tower`.
 
 ## Security essentials
 
-- Signatures authenticate **payload bytes**, not the delivery ID, event name,
-  or target headers. Routing and successful decoding are not authorization.
+- Signatures authenticate **payload bytes**, not the delivery ID, event name, or target headers.
+  Routing and successful decoding are not authorization.
 - Delivery-ID deduplication handles GitHub redelivery, not adversarial replay
   of a captured payload under another ID.
-- The default 25 MiB body limit bounds accumulated payload length, not total
-  process memory. Configure transport timeouts and concurrency separately.
-- GitHub does not automatically redeliver failures. A production application
-  needs a [durable receipt and recovery policy](docs/recovery.md).
+- The default 25 MiB body limit bounds accumulated payload length, not total process memory.
+  Configure transport timeouts and concurrency separately.
+- GitHub does not automatically redeliver failures.
+  A production application needs a [durable receipt and recovery policy](docs/recovery.md).
 
-Read the [security and authorization guide](docs/security.md) for the trust
-boundaries, secret rotation, and trusted internal forwarding.
+Read the [security and authorization guide](docs/security.md) for the trust boundaries, secret rotation,
+and trusted internal forwarding.
 
 ## Cargo features
 
@@ -118,9 +115,9 @@ boundaries, secret rotation, and trusted internal forwarding.
 | `octocrab` | no | Decode octocrab's webhook payload types |
 | `tracing` | no | Receive, verify and dispatch spans; failed-delivery events |
 
-With no features, verification, envelopes, dispatch and `receive_bytes` are
-available. The [API feature reference](https://docs.rs/octoevents/latest/octoevents/#features)
-defines the full contracts and octocrab backend requirements.
+With no features, verification, envelopes, dispatch and `receive_bytes` are available.
+The [API feature reference](https://docs.rs/octoevents/latest/octoevents/#features) defines the full contracts
+and octocrab backend requirements.
 
 ## Documentation
 
@@ -135,9 +132,9 @@ defines the full contracts and octocrab backend requirements.
 | Run on Cloudflare Workers | [Worker guide](examples/worker/README.md) |
 | Upgrade | [Release notes](https://github.com/sagikazarmark/octoevents/releases) |
 
-Executable examples, in reading order: [quickstart](examples/quickstart.rs),
-[one struct handler](examples/axum.rs), [dispatcher](examples/dispatcher.rs),
-[policy seam](examples/policy_seam.rs), [observability](examples/observability.rs).
+Executable examples, in reading order: [quickstart](examples/quickstart.rs), [one struct handler](examples/axum.rs),
+[dispatcher](examples/dispatcher.rs), [policy seam](examples/policy_seam.rs),
+[observability](examples/observability.rs).
 
 ## License
 
@@ -150,6 +147,5 @@ at your option.
 
 ### Contribution
 
-Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
-dual licensed as above, without any additional terms or conditions.
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you,
+as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.

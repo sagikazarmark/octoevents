@@ -1,6 +1,7 @@
 # Glossary
 
-[Documentation index](../README.md#documentation) · [API concepts](https://docs.rs/octoevents/latest/octoevents/#concepts)
+[Documentation index](../README.md#documentation) ·
+[API concepts](https://docs.rs/octoevents/latest/octoevents/#concepts)
 
 | Term | Meaning |
 | --- | --- |
@@ -11,7 +12,7 @@
 | Delivery ID | GitHub's `X-GitHub-Delivery` value; useful for redelivery deduplication, not authentication |
 | Installation / target | An App installation in payload data / the resource the webhook is configured on, from target headers |
 | Payload / view | The JSON GitHub sends / a consumer's serde type naming only the fields it needs. `Payload` declares one kind |
-| Event<P> | Metadata beside a decoded payload, as `meta` and `payload` |
+| Event | `Event<P>`: metadata beside a decoded payload, as `meta` and `payload` |
 | Probe / decode | Best-effort metadata read at envelope construction / fallible conversion to one handler's input |
 | Receiver | `WebhookReceiver`: authenticates, bounds and dispatches one request, leaving paths and methods to the caller |
 | Handler | Consumer code accepting one `FromEnvelope` input and returning `Result<(), E>` |

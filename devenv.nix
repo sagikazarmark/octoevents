@@ -12,6 +12,8 @@
     cargo-nextest
     cargo-release
     cargo-watch
+
+    rumdl
   ];
 
   languages = {
