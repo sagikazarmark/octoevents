@@ -27,7 +27,7 @@ _Avoid_: Delivery (reserved for the outbound `octodelivery` project), event
 repository, organization, sender, target.
 An input in its own right, for a handler routed by kind and action that reads no payload;
 and the `meta` half of `Event<P>`.
-Built from a `HeaderMeta` and the probe, its header-read fields held flat beside the probed ones.
+Built from a `HeaderMeta` and the probe, its header-read fields under the same names beside the probed ones.
 _Avoid_: Common (the former nested group; its name carried no meaning), header
 (it also holds probed payload fields),
 delivery (reserved for `octodelivery`), receipt (reads as acknowledgement, and sits too close to Receiver), context
@@ -227,21 +227,19 @@ In prose, "delivery" names one attempt
 ("runs for every delivery", "fails the delivery"); it never names the envelope or any type.
 
 **Target**: The resource the webhook is configured on, GitHub's _hook installation target_,
-from the `X-GitHub-Hook-Installation-Target-Type` and `-ID` headers, as the type `Target`: its `kind`, a `TargetType`
-(`integration` for a GitHub App, `repository` for a repository webhook, `organization` for an organization webhook),
-and its `id`.
-`HeaderMeta::target` and `EventMeta::target` are `Option<Target>`,
-the one header-read value GitHub does not always send, present only when both headers are.
+from the `X-GitHub-Hook-Installation-Target-Type` and `-ID` headers: `integration` for a GitHub App,
+`repository` for a repository webhook, `organization` for an organization webhook, as the fields `target_type`
+(a `TargetType`) and `target_id`, on `HeaderMeta` and `EventMeta` alike.
+The one meta field pair read from headers GitHub does not always send.
 The key a `VerifierSource` typically selects a secret by.
 It names the webhook's resource, not the webhook: two webhooks on one repository share a target.
-The field is `kind` because `type` is a keyword; the type keeps GitHub's word, `TargetType`,
-and neither is the event's _kind_.
+Held as two fields for now; one `Target` value, present only when both headers are, is a separate future change,
+made on both metas at once.
 Distinct from the `installation_target` event kind, which reports a change to a target.
-_Avoid_: Hook target, installation (the App installation, `installation_id`, is a different thing), owner, scope,
-`target_type` and `target_id` as separate fields (the former shape; half a target is not one)
+_Avoid_: Hook target, installation (the App installation, `installation_id`, is a different thing), owner, scope
 
-**HeaderMeta**: The values the receiver reads from a request's headers before the body: delivery ID, kind and target,
-but not the signature, which is parsed on its own into a `Signature`.
+**HeaderMeta**: The values the receiver reads from a request's headers before the body: delivery ID, kind,
+target type and target ID, but not the signature, which is parsed on its own into a `Signature`.
 What a `VerifierSource` is given to select a verifier, and the header half of an `EventMeta`.
 Unsigned when read, and still unsigned after verification, which authenticates the body alone: it selects a secret,
 it never authorizes.

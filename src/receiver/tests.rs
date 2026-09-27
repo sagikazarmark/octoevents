@@ -917,7 +917,7 @@ mod source {
 
     use super::{Frames, Recorder, verifier};
     use crate::{
-        Envelope, HeaderMeta, Target, TargetType, Verifier, VerifierSource, WebhookReceiverBuilder,
+        Envelope, HeaderMeta, TargetType, Verifier, VerifierSource, WebhookReceiverBuilder,
         WebhookSecret,
     };
 
@@ -936,11 +936,8 @@ mod source {
         // A real source awaits its store; this one reads a map.
         #[expect(clippy::unused_async_trait_impl)]
         async fn verifier(&self, headers: &HeaderMeta) -> Option<Verifier> {
-            match headers.target.as_ref()? {
-                Target {
-                    kind: TargetType::Integration,
-                    id,
-                } => self.0.get(id).cloned(),
+            match (headers.target_type.as_ref(), headers.target_id) {
+                (Some(TargetType::Integration), Some(id)) => self.0.get(&id).cloned(),
                 _ => None,
             }
         }
@@ -988,10 +985,8 @@ mod source {
             // Verified under the secret only this App holds: the target the
             // secret was chosen by is the App the delivery came from.
             let envelope = seen.lock().unwrap().pop().unwrap();
-            assert_eq!(
-                envelope.meta.target,
-                Some(Target::new(TargetType::Integration, id))
-            );
+            assert_eq!(envelope.meta.target_type, Some(TargetType::Integration));
+            assert_eq!(envelope.meta.target_id, Some(id));
         }
     }
 
@@ -1039,7 +1034,8 @@ mod source {
         // the application shares is an `Arc` of its source.
         let first = app(1);
         let closure = WebhookReceiverBuilder::from_source(move |headers: &HeaderMeta| {
-            (headers.target == Some(Target::new(TargetType::Integration, 1))).then(|| first.clone())
+            (headers.target_type == Some(TargetType::Integration) && headers.target_id == Some(1))
+                .then(|| first.clone())
         })
         .build(|_: Envelope| async { Ok::<_, Infallible>(()) });
         let shared = WebhookReceiverBuilder::from_source(Arc::new(apps()))

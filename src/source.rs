@@ -10,8 +10,9 @@ use crate::{HeaderMeta, MaybeSend, MaybeSync, Verifier};
 /// verifies the body against the verifier it gets back; a source that has
 /// none answers `None`, and the request is refused as
 /// [`ReceiveError::UnknownTarget`](crate::ReceiveError::UnknownTarget) (401)
-/// without its body being read. A source typically keys by
-/// [`HeaderMeta::target`]: for a GitHub App, the App ID.
+/// without its body being read. A source typically keys by the target,
+/// [`HeaderMeta::target_type`] and [`HeaderMeta::target_id`]: for a GitHub
+/// App, `integration` and the App ID.
 ///
 /// A [`Verifier`] is a source, answering itself for every request, which is
 /// what [`WebhookReceiverBuilder::new`](crate::WebhookReceiverBuilder::new)
@@ -24,7 +25,7 @@ use crate::{HeaderMeta, MaybeSend, MaybeSync, Verifier};
 /// ```
 /// use std::collections::HashMap;
 ///
-/// use octoevents::{HeaderMeta, Target, TargetType, Verifier, VerifierSource, WebhookSecret};
+/// use octoevents::{HeaderMeta, TargetType, Verifier, VerifierSource, WebhookSecret};
 ///
 /// /// The deployment's GitHub Apps, by App ID.
 /// struct Apps {
@@ -34,8 +35,8 @@ use crate::{HeaderMeta, MaybeSend, MaybeSync, Verifier};
 /// impl VerifierSource for Apps {
 ///     async fn verifier(&self, headers: &HeaderMeta) -> Option<Verifier> {
 ///         // A secret manager would be awaited here.
-///         match headers.target.as_ref()? {
-///             Target { kind: TargetType::Integration, id } => self.verifiers.get(id).cloned(),
+///         match (headers.target_type.as_ref(), headers.target_id) {
+///             (Some(TargetType::Integration), Some(id)) => self.verifiers.get(&id).cloned(),
 ///             _ => None,
 ///         }
 ///     }

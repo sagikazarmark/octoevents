@@ -90,17 +90,16 @@ where
     ///
     /// ```
     /// use octoevents::{
-    ///     Dispatcher, HeaderMeta, Target, TargetType, Verifier, WebhookReceiverBuilder,
-    ///     WebhookSecret,
+    ///     Dispatcher, HeaderMeta, TargetType, Verifier, WebhookReceiverBuilder, WebhookSecret,
     /// };
     ///
     /// let first = Verifier::new(WebhookSecret::new("first app's secret"));
     /// let second = Verifier::new(WebhookSecret::new("second app's secret"));
     ///
     /// let webhook = WebhookReceiverBuilder::from_source(move |headers: &HeaderMeta| {
-    ///     match headers.target.as_ref()? {
-    ///         Target { kind: TargetType::Integration, id: 1 } => Some(first.clone()),
-    ///         Target { kind: TargetType::Integration, id: 2 } => Some(second.clone()),
+    ///     match (headers.target_type.as_ref(), headers.target_id) {
+    ///         (Some(TargetType::Integration), Some(1)) => Some(first.clone()),
+    ///         (Some(TargetType::Integration), Some(2)) => Some(second.clone()),
     ///         _ => None,
     ///     }
     /// })

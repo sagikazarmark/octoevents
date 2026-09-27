@@ -287,9 +287,7 @@ pub use envelope::{BodyError, DecodeError, Envelope, ReceiveError};
 pub use events::{Action, EventKind, UnknownAction, UnknownEventKind};
 pub use handler::Handler;
 pub use matcher::{AnyAction, EventMatcher, IntoMatcher};
-pub use meta::{
-    AccountMeta, EventMeta, HeaderMeta, RepositoryMeta, Target, TargetType, UnknownTargetType,
-};
+pub use meta::{AccountMeta, EventMeta, HeaderMeta, RepositoryMeta, TargetType, UnknownTargetType};
 /// Derives [`Payload`] for a serde type, declaring its kind:
 /// `#[derive(Payload)] #[payload(EventKind::..)]`. See the trait.
 #[cfg(feature = "derive")]

@@ -93,13 +93,13 @@ it does not expose which secret verified a real request.
 
 Each GitHub App signs its deliveries with its own webhook secret.
 To serve several Apps at one URL, build the receiver with `WebhookReceiverBuilder::from_source` and a `VerifierSource`
-that chooses the verifier from the request's `HeaderMeta`, typically by its `Target`:
+that chooses the verifier from the request's `HeaderMeta`, typically by its target type and ID:
 
 ```rust
 use std::collections::HashMap;
 
 use octoevents::{
-    Dispatcher, HeaderMeta, Target, TargetType, Verifier, WebhookReceiverBuilder, WebhookSecret,
+    Dispatcher, HeaderMeta, TargetType, Verifier, WebhookReceiverBuilder, WebhookSecret,
 };
 
 // By App ID. Each App's verifier can open its own rotation window with `also`.
@@ -109,8 +109,8 @@ let apps = HashMap::from([
 ]);
 
 let webhook = WebhookReceiverBuilder::from_source(move |headers: &HeaderMeta| {
-    match headers.target.as_ref()? {
-        Target { kind: TargetType::Integration, id } => apps.get(id).cloned(),
+    match (headers.target_type.as_ref(), headers.target_id) {
+        (Some(TargetType::Integration), Some(id)) => apps.get(&id).cloned(),
         _ => None,
     }
 })
@@ -124,7 +124,7 @@ let webhook = WebhookReceiverBuilder::from_source(move |headers: &HeaderMeta| {
 - The target headers are not signed, but choosing a secret by them is safe:
   a forged target selects a secret its sender does not know, so the body fails verification.
 - A verified delivery is authentic for the secret that was selected.
-  Treat its `EventMeta::target` as the App it came from only if no two Apps share a secret;
+  Treat its `EventMeta::target_id` as the App it came from only if no two Apps share a secret;
   keeping secrets distinct is the source's responsibility, and verification cannot detect a shared one.
 - GitHub consistently sends `integration` and the App ID in these headers for an App's deliveries,
   but does not document the values

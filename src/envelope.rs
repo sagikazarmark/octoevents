@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::{
     AccountMeta, Action, BoxError, EventKind, EventMeta, HeaderMeta, RepositoryMeta,
-    SignatureError, Target, TargetType, Verifier, header,
+    SignatureError, TargetType, Verifier, header,
 };
 
 /// The verified unit of receipt: the exact payload bytes and their metadata.
@@ -33,7 +33,7 @@ use crate::{
 /// fields stay public, so reading them and destructuring with `..` work:
 ///
 /// ```
-/// use octoevents::{Action, Envelope, EventKind, Target, TargetType};
+/// use octoevents::{Action, Envelope, EventKind};
 ///
 /// let envelope = Envelope::new("delivery-1", EventKind::Issues, br#"{"action":"opened"}"#);
 ///
@@ -43,7 +43,7 @@ use crate::{
 ///
 /// // A field the payload cannot supply is assigned afterwards.
 /// let mut envelope = envelope;
-/// envelope.meta.target = Some(Target::new(TargetType::Repository, 7));
+/// envelope.meta.target_id = Some(7);
 /// ```
 ///
 /// The literal is rejected outside the crate, where it could otherwise
@@ -69,7 +69,7 @@ use crate::{
 /// the envelope of a `pull_request` delivery with every field present:
 ///
 /// ```
-/// use octoevents::{Action, Bytes, Envelope, EventKind, Target, TargetType};
+/// use octoevents::{Action, Bytes, Envelope, EventKind, TargetType};
 ///
 /// let document = r#"{
 ///   "delivery_id": "72d3162e-cc78-11e3-81ab-4c9367dc0958",
@@ -92,7 +92,7 @@ use crate::{
 /// let envelope: Envelope = serde_json::from_str(document).unwrap();
 /// assert_eq!(envelope.meta.kind, EventKind::PullRequest);
 /// assert_eq!(envelope.meta.action, Some(Action::Opened));
-/// assert_eq!(envelope.meta.target, Some(Target::new(TargetType::Integration, 12345)));
+/// assert_eq!(envelope.meta.target_type, Some(TargetType::Integration));
 /// assert_eq!(envelope.raw_payload, Bytes::from_static(br#"{"action":"opened"}"#));
 ///
 /// // Serializing produces the same document back.
@@ -213,7 +213,8 @@ impl From<EnvelopeWire> for Envelope {
                 repository: wire.repository.map(|object| object.0),
                 organization: wire.organization.map(|object| object.0),
                 sender: wire.sender.map(|object| object.0),
-                target: Target::from_parts(wire.target_type, wire.target_id),
+                target_type: wire.target_type,
+                target_id: wire.target_id,
             },
             raw_payload: wire.raw_payload,
         }
@@ -284,11 +285,11 @@ impl Envelope {
     /// construction; the rules are on [`Envelope::new`], which reads the
     /// payload the same way. Once the body is authenticated, the headers are
     /// read into a [`HeaderMeta`], as [`HeaderMeta::from_headers`] reads them,
-    /// which adds what only the headers carry: the target. A target type
-    /// this crate does not know is [`TargetType::Unknown`] with the value
-    /// intact; a target whose ID is absent or not a number reads as `None`,
-    /// since the headers are optional and refusing an authenticated delivery
-    /// over them would serve nothing.
+    /// which adds what only the headers carry: the target type and ID. A
+    /// target type this crate does not know is [`TargetType::Unknown`] with
+    /// the value intact; a target ID that is present but not a number reads
+    /// as `None`, since the header is optional and refusing an authenticated
+    /// delivery over it would serve nothing.
     ///
     /// The verifier is the caller's to choose. A transport serving several
     /// GitHub Apps at one URL chooses it per request, as the receiver does
@@ -430,8 +431,8 @@ impl Envelope {
     /// organization and the sender, so a handler over
     /// [`Event<P>`](crate::Event) sees the `installation_id` the payload
     /// carries rather than whatever a test remembered to assign. The target
-    /// comes from headers this constructor does not have, so it stays
-    /// `None`; assign it if the handler reads it.
+    /// type and ID come from headers this constructor does not have, so they
+    /// stay `None`; assign them if the handler reads them.
     ///
     /// The read of the payload is best-effort and never fails the
     /// construction. Invalid UTF-8 anywhere in the payload, malformed JSON
@@ -469,7 +470,7 @@ impl Envelope {
     ///
     /// assert_eq!(envelope.meta.action, Some(Action::Opened));
     /// assert_eq!(envelope.meta.installation_id, Some(42));
-    /// assert_eq!(envelope.meta.target, None);
+    /// assert_eq!(envelope.meta.target_id, None);
     /// ```
     #[must_use]
     pub fn new(delivery_id: impl Into<String>, kind: EventKind, payload: impl AsRef<[u8]>) -> Self {
