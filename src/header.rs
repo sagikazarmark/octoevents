@@ -39,7 +39,8 @@
 //! Six headers are named here. Four are required of every request: the
 //! signature, the delivery ID, the event name and the content type. The two
 //! target headers GitHub does not always send, and their absence refuses
-//! nothing.
+//! nothing, unless the receiver chooses its verifier by the target with a
+//! [`VerifierSource`](crate::VerifierSource).
 //!
 //! [`Envelope::from_signed`]: crate::Envelope::from_signed
 //! [`Verifier::sign`]: crate::Verifier::sign

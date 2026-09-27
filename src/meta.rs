@@ -1,9 +1,10 @@
 use std::{fmt, marker::PhantomData};
 
+use http::HeaderMap;
 use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::value::RawValue;
 
-use crate::{Action, EventKind, events::string_enum};
+use crate::{Action, EventKind, ReceiveError, events::string_enum, header};
 
 /// The routing metadata of a webhook: everything in an
 /// [`Envelope`](crate::Envelope) except the payload bytes.
@@ -15,8 +16,9 @@ use crate::{Action, EventKind, events::string_enum};
 ///
 /// # Where the fields come from
 ///
-/// Four fields are read from the headers: the delivery ID and the kind,
-/// which every delivery carries, and the target type and ID. The other five,
+/// Four fields are read from the headers, the [`HeaderMeta`] the receiver
+/// reads before the body: the delivery ID and the kind, which every delivery
+/// carries, and the target type and ID. The other five,
 /// the action, installation ID, repository, organization and sender, are read
 /// from the payload when the envelope is built, by
 /// [`Envelope::from_signed`](crate::Envelope::from_signed) once the body is
@@ -36,6 +38,14 @@ use crate::{Action, EventKind, events::string_enum};
 /// alone must not authorize security-sensitive actions; use authenticated
 /// payload data or independently trusted configuration. Delivery-ID
 /// deduplication handles GitHub redelivery, not adversarial replay.
+///
+/// The one exception is the target, under two conditions a
+/// [`VerifierSource`](crate::VerifierSource) must meet and verification
+/// cannot see: the source chose the verifier by the target, answering each
+/// target with its own secrets only, and no two targets share a secret. A
+/// delivery that verified under such a source is the target's it claims.
+/// With a single [`Verifier`](crate::Verifier), which ignores the target, the
+/// target headers stay claims like the rest.
 ///
 /// So "decodes nothing", said of a handler over this type, means no decode on
 /// the handler's behalf, not that the payload went unread. A decode is the
@@ -116,11 +126,11 @@ impl EventMeta {
         }
     }
 
-    /// The probe: the metadata with its payload-derived fields (action,
-    /// installation ID, repository, organization, sender) read from
-    /// `raw_payload`, and the header-derived target left empty for the
-    /// caller that has the headers. Both envelope constructors come through
-    /// here, so the test path and the receiving path read a payload alike.
+    /// The probe: the metadata with its header-derived fields taken from
+    /// `headers` and its payload-derived fields (action, installation ID,
+    /// repository, organization, sender) read from `raw_payload`. Both
+    /// envelope constructors come through here, so the test path and the
+    /// receiving path read a payload alike.
     ///
     /// Best-effort and never fatal: after validating UTF-8, the top level is
     /// read as a map of raw values, so invalid UTF-8, malformed JSON syntax,
@@ -131,11 +141,7 @@ impl EventMeta {
     /// an object invalidates that object. Skipped string values are checked
     /// for escape syntax, not surrogate pairing; see `Envelope::new` for the
     /// policy. The rest of the document is not decoded.
-    pub(crate) fn probe(
-        delivery_id: impl Into<String>,
-        kind: EventKind,
-        raw_payload: &[u8],
-    ) -> Self {
+    pub(crate) fn probe(headers: HeaderMeta, raw_payload: &[u8]) -> Self {
         // Skipped JSON strings do not get UTF-8 validation from serde_json.
         // Validate the entire payload before any field can supply metadata.
         let probe = std::str::from_utf8(raw_payload)
@@ -143,8 +149,15 @@ impl EventMeta {
             .and_then(|payload| serde_json::from_str::<Probe<'_>>(payload).ok())
             .unwrap_or_default();
 
+        let HeaderMeta {
+            delivery_id,
+            kind,
+            target_type,
+            target_id,
+        } = headers;
+
         Self {
-            delivery_id: delivery_id.into(),
+            delivery_id,
             kind,
             action: probe
                 .action
@@ -160,9 +173,118 @@ impl EventMeta {
                 .map(RepositoryMeta::from),
             organization: probe.organization.and_then(parse_object::<AccountMeta>),
             sender: probe.sender.and_then(parse_object::<AccountMeta>),
+            target_type,
+            target_id,
+        }
+    }
+}
+
+/// The values the receiver reads from a request's headers before the body:
+/// the delivery ID, the kind, and the target type and ID.
+///
+/// What a [`VerifierSource`](crate::VerifierSource) is handed to choose the
+/// [`Verifier`](crate::Verifier) for a request, and the header half of the
+/// [`EventMeta`] the envelope ends up with, which is built from it and the
+/// probe; the fields are `EventMeta`'s, under the same names. The signature
+/// is not here: it is parsed on its own into a
+/// [`Signature`](crate::Signature).
+///
+/// Nothing here is signed. GitHub's signature covers the body alone, so these
+/// values are claims when the source reads them and still claims after the
+/// body verifies. Selecting a secret by them is safe, since a forged target
+/// selects a secret its sender does not know and verification fails; basing
+/// an authorization decision on them is not.
+///
+/// `#[non_exhaustive]` for the reason [`EventMeta`] is: GitHub can add a
+/// header worth selecting by (`X-GitHub-Hook-ID`, say) without that being a
+/// breaking change for every source. A test builds one with
+/// [`HeaderMeta::new`] and assigns the target.
+///
+/// ```
+/// use octoevents::{EventKind, HeaderMeta, TargetType};
+///
+/// let mut headers = HeaderMeta::new("72d3162e-cc78-11e3-81ab-4c9367dc0958", EventKind::Issues);
+/// headers.target_type = Some(TargetType::Integration);
+/// headers.target_id = Some(12345);
+/// # let _ = headers;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct HeaderMeta {
+    /// The `X-GitHub-Delivery` value.
+    pub delivery_id: String,
+    /// The event kind parsed from `X-GitHub-Event`.
+    pub kind: EventKind,
+    /// The webhook installation target type: for a GitHub App,
+    /// [`TargetType::Integration`].
+    pub target_type: Option<TargetType>,
+    /// The webhook installation target ID: for a GitHub App, the App ID.
+    pub target_id: Option<u64>,
+}
+
+impl HeaderMeta {
+    /// Creates the header meta of one delivery of one kind, with no target.
+    #[must_use]
+    pub fn new(delivery_id: impl Into<String>, kind: EventKind) -> Self {
+        Self {
+            delivery_id: delivery_id.into(),
+            kind,
             target_type: None,
             target_id: None,
         }
+    }
+
+    /// Reads the header meta off a request's headers, by the names in
+    /// [`header`](crate::header).
+    ///
+    /// What the receiver does before the body, and what a transport built on
+    /// [`Envelope::from_signed`](crate::Envelope::from_signed) does to ask a
+    /// [`VerifierSource`](crate::VerifierSource) for the verifier it passes
+    /// there. A value that is not visible ASCII reads as absent. A target type
+    /// this crate does not know is [`TargetType::Unknown`] with the value
+    /// intact; a target ID that is present but not a number reads as `None`.
+    ///
+    /// GitHub sends the target headers, but does not document their values
+    /// for a GitHub App
+    /// ([github/rest-api-description#7210](https://github.com/github/rest-api-description/issues/7210));
+    /// `integration` and the App ID are what is consistently observed. A
+    /// deployment that cannot rely on them serves each App at a path of its
+    /// own instead, with a receiver per path.
+    ///
+    /// ```
+    /// use http::HeaderMap;
+    /// use octoevents::{EventKind, HeaderMeta, TargetType, header};
+    ///
+    /// let mut headers = HeaderMap::new();
+    /// headers.insert(header::DELIVERY_ID, "delivery-1".parse()?);
+    /// headers.insert(header::EVENT_NAME, "issues".parse()?);
+    /// headers.insert(header::TARGET_TYPE, "integration".parse()?);
+    /// headers.insert(header::TARGET_ID, "12345".parse()?);
+    ///
+    /// let meta = HeaderMeta::from_headers(&headers)?;
+    ///
+    /// assert_eq!(meta.kind, EventKind::Issues);
+    /// assert_eq!(meta.target_type, Some(TargetType::Integration));
+    /// assert_eq!(meta.target_id, Some(12345));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReceiveError::MissingHeader`] when the delivery ID or the
+    /// event name is absent or empty, in that order. The target headers are
+    /// optional, and their absence refuses nothing.
+    pub fn from_headers(headers: &HeaderMap) -> Result<Self, ReceiveError> {
+        let delivery_id = header::required(headers, header::DELIVERY_ID)?;
+        let event_name = header::required(headers, header::EVENT_NAME)?;
+
+        Ok(Self {
+            delivery_id: delivery_id.to_owned(),
+            kind: EventKind::from(event_name),
+            target_type: header::read(headers, &header::TARGET_TYPE).map(TargetType::from),
+            target_id: header::read(headers, &header::TARGET_ID)
+                .and_then(|value| value.parse().ok()),
+        })
     }
 }
 

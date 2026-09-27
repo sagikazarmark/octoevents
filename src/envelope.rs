@@ -7,8 +7,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 
 use crate::{
-    AccountMeta, Action, BoxError, EventKind, EventMeta, RepositoryMeta, SignatureError,
-    TargetType, Verifier, header,
+    AccountMeta, Action, BoxError, EventKind, EventMeta, HeaderMeta, RepositoryMeta,
+    SignatureError, TargetType, Verifier, header,
 };
 
 /// The verified unit of receipt: the exact payload bytes and their metadata.
@@ -283,13 +283,20 @@ impl Envelope {
     ///
     /// The probe of the payload is best-effort and never fails the
     /// construction; the rules are on [`Envelope::new`], which reads the
-    /// payload the same way. Once the body is authenticated and the headers
-    /// are read, this constructor adds what only the headers carry: the
-    /// target type and ID. A target type this crate does not know is
-    /// [`TargetType::Unknown`] with the value intact; a target ID that is
-    /// present but not a number reads as `None`, since the header is
-    /// optional and refusing an authenticated delivery over it would serve
-    /// nothing.
+    /// payload the same way. Once the body is authenticated, the headers are
+    /// read into a [`HeaderMeta`], as [`HeaderMeta::from_headers`] reads them,
+    /// which adds what only the headers carry: the target type and ID. A
+    /// target type this crate does not know is [`TargetType::Unknown`] with
+    /// the value intact; a target ID that is present but not a number reads
+    /// as `None`, since the header is optional and refusing an authenticated
+    /// delivery over it would serve nothing.
+    ///
+    /// The verifier is the caller's to choose. A transport serving several
+    /// GitHub Apps at one URL chooses it per request, as the receiver does
+    /// with a [`VerifierSource`](crate::VerifierSource): it reads the
+    /// [`HeaderMeta`] first, asks its source for the verifier of that
+    /// target, and passes the verifier here, answering a target it has no
+    /// verifier for with [`ReceiveError::UnknownTarget`].
     ///
     /// The body must be `application/json`, which is a setting on the GitHub
     /// webhook; anything else is [`ReceiveError::UnsupportedContentType`]. The
@@ -383,25 +390,31 @@ impl Envelope {
         headers: &HeaderMap,
         body: Bytes,
     ) -> Result<Self, ReceiveError> {
-        let signature = header::signature(headers)?;
-        verifier.verify(&signature, &body)?;
+        authenticate(verifier, headers, &body)?;
+        let meta = HeaderMeta::from_headers(headers)?;
+        Ok(Self::probed(meta, body))
+    }
 
-        if !header::is_json(headers) {
-            return Err(ReceiveError::UnsupportedContentType);
-        }
+    /// [`Envelope::from_signed`] for the receiver, which read the header meta
+    /// before the body to choose the verifier: the same authentication, and
+    /// the meta it already has rather than a second read of the headers.
+    pub(crate) fn from_signed_with(
+        verifier: &Verifier,
+        headers: &HeaderMap,
+        meta: HeaderMeta,
+        body: Bytes,
+    ) -> Result<Self, ReceiveError> {
+        authenticate(verifier, headers, &body)?;
+        Ok(Self::probed(meta, body))
+    }
 
-        let delivery_id = header::required(headers, header::DELIVERY_ID)?;
-        let event_name = header::required(headers, header::EVENT_NAME)?;
-
-        let mut meta = EventMeta::probe(delivery_id, EventKind::from(event_name), &body);
-        meta.target_type = header::read(headers, &header::TARGET_TYPE).map(TargetType::from);
-        meta.target_id =
-            header::read(headers, &header::TARGET_ID).and_then(|value| value.parse().ok());
-
-        Ok(Self {
-            meta,
+    /// The envelope around `body`, its meta the header meta and the probe
+    /// of `body`: what every constructor but serde ends in.
+    fn probed(meta: HeaderMeta, body: Bytes) -> Self {
+        Self {
+            meta: EventMeta::probe(meta, &body),
             raw_payload: body,
-        })
+        }
     }
 
     /// Builds an envelope from the delivery ID, the kind and the payload
@@ -461,11 +474,10 @@ impl Envelope {
     /// ```
     #[must_use]
     pub fn new(delivery_id: impl Into<String>, kind: EventKind, payload: impl AsRef<[u8]>) -> Self {
-        let raw_payload = Bytes::copy_from_slice(payload.as_ref());
-        Self {
-            meta: EventMeta::probe(delivery_id, kind, &raw_payload),
-            raw_payload,
-        }
+        Self::probed(
+            HeaderMeta::new(delivery_id, kind),
+            Bytes::copy_from_slice(payload.as_ref()),
+        )
     }
 
     /// Decodes the exact payload into a caller-defined view, checking nothing
@@ -513,11 +525,26 @@ impl Envelope {
     }
 }
 
+/// The authentication both signed constructors run before reading the meta:
+/// the signature, parsed and verified over `body`, then the content type, so
+/// a request is refused for its content type only once it authenticated.
+fn authenticate(verifier: &Verifier, headers: &HeaderMap, body: &[u8]) -> Result<(), ReceiveError> {
+    let signature = header::signature(headers)?;
+    verifier.verify(&signature, body)?;
+
+    if !header::is_json(headers) {
+        return Err(ReceiveError::UnsupportedContentType);
+    }
+    Ok(())
+}
+
 /// A failure while receiving a webhook.
 ///
 /// What the receiving path reports before any handler runs, each variant
 /// naming the step that refused the request: [`Signature`](Self::Signature),
 /// when the signature header is absent, malformed or does not match;
+/// [`UnknownTarget`](Self::UnknownTarget), when the receiver's
+/// [`VerifierSource`](crate::VerifierSource) has no verifier for the request;
 /// [`MissingHeader`](Self::MissingHeader), when a required delivery header is
 /// absent or empty; [`UnsupportedContentType`](Self::UnsupportedContentType),
 /// when the request's content type is not `application/json`;
@@ -535,6 +562,20 @@ pub enum ReceiveError {
     /// did not authenticate.
     #[error(transparent)]
     Signature(#[from] SignatureError),
+    /// The receiver's [`VerifierSource`](crate::VerifierSource) has no
+    /// verifier for the request: its target headers are absent, name a
+    /// target the source does not know, or the source could not look it up.
+    ///
+    /// Answered 401, as a mismatching signature is: either way the request
+    /// did not authenticate, and a client learns nothing from the status
+    /// about which targets are configured. The variant, and the receive
+    /// span's `error` text, tell the two apart for an operator. Produced by
+    /// the receiver before verification (on `receive`, before the body is
+    /// read), never by [`Envelope::from_signed`], which is handed its
+    /// verifier; a transport choosing the verifier itself constructs it for
+    /// the same failure.
+    #[error("no webhook verifier is available for the request's target")]
+    UnknownTarget,
     /// A required delivery header was absent or empty.
     #[error("missing {name} header")]
     MissingHeader {
@@ -579,7 +620,8 @@ impl ReceiveError {
     /// The status the receiver answers this failure with: the crate's
     /// response contract.
     ///
-    /// An absent or mismatched signature is the client failing to
+    /// An absent or mismatched signature, and a request whose target no
+    /// verifier is known for, are the client failing to
     /// authenticate, `401 Unauthorized`; a signature that is not `sha256=`
     /// and 64 hex digits, a missing required header, a content type other
     /// than `application/json` and a body the transport could not read are
@@ -602,9 +644,8 @@ impl ReceiveError {
     /// and cannot be placed differently for the status and the label.
     pub(crate) const fn refusal(&self) -> Refusal {
         match self {
-            Self::Signature(SignatureError::Missing | SignatureError::Mismatch) => {
-                Refusal::Unauthorized
-            }
+            Self::Signature(SignatureError::Missing | SignatureError::Mismatch)
+            | Self::UnknownTarget => Refusal::Unauthorized,
             Self::Signature(SignatureError::Malformed)
             | Self::MissingHeader { .. }
             | Self::UnsupportedContentType

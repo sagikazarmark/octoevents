@@ -27,6 +27,7 @@ _Avoid_: Delivery (reserved for the outbound `octodelivery` project), event
 repository, organization, sender, target.
 An input in its own right, for a handler routed by kind and action that reads no payload;
 and the `meta` half of `Event<P>`.
+Built from a `HeaderMeta` and the probe, its header-read fields under the same names beside the probed ones.
 _Avoid_: Common (the former nested group; its name carried no meaning), header
 (it also holds probed payload fields),
 delivery (reserved for `octodelivery`), receipt (reads as acknowledgement, and sits too close to Receiver), context
@@ -227,16 +228,32 @@ In prose, "delivery" names one attempt
 
 **Target**: The resource the webhook is configured on, GitHub's _hook installation target_,
 from the `X-GitHub-Hook-Installation-Target-Type` and `-ID` headers: `integration` for a GitHub App,
-`repository` for a repository webhook, `organization` for an organization webhook, as `EventMeta::target_type`
-(a `TargetType`) and `target_id`.
+`repository` for a repository webhook, `organization` for an organization webhook, as the fields `target_type`
+(a `TargetType`) and `target_id`, on `HeaderMeta` and `EventMeta` alike.
 The one meta field pair read from headers GitHub does not always send.
+The key a `VerifierSource` typically selects a secret by.
+It names the webhook's resource, not the webhook: two webhooks on one repository share a target.
+Held as two fields for now; one `Target` value, present only when both headers are, is a separate future change,
+made on both metas at once.
 Distinct from the `installation_target` event kind, which reports a change to a target.
 _Avoid_: Hook target, installation (the App installation, `installation_id`, is a different thing), owner, scope
 
+**HeaderMeta**: The values the receiver reads from a request's headers before the body: delivery ID, kind,
+target type and target ID, but not the signature, which is parsed on its own into a `Signature`.
+What a `VerifierSource` is given to select a verifier, and the header half of an `EventMeta`.
+Unsigned when read, and still unsigned after verification, which authenticates the body alone: it selects a secret,
+it never authorizes.
+Named by the meta rule, the meta of the headers; `EventMeta` avoids "header" because it also holds probed fields,
+and this type holds none.
+_Avoid_: `WebhookMetadata` (the prefix is for collisions, and "Metadata" breaks the _X Meta_ rule), `RequestMeta`
+(the receiver reads no path or method),
+`EventMeta::headers` as a nested group (the removed `Common`'s mistake), verified or signed meta
+
 **Refusal**: A request answered before any handler ran,
 as a `ReceiveError` and the status `ReceiveError::status` maps it to:
-unauthorized (401) for a signature that is absent or does not match, bad request (400) for one that is malformed,
-a missing required header, a content type other than `application/json` or a body the transport could not read,
+unauthorized (401) for a signature that is absent or does not match, or for headers no verifier is known
+for (`UnknownTarget`), bad request (400) for a signature that is malformed, a missing required header,
+a content type other than `application/json` or a body the transport could not read,
 payload too large (413) for a body over the limit.
 Payload bytes that are not valid JSON are not a refusal: the probe is best-effort, the envelope is built,
 and a handler over it runs; only an input that decodes them fails, as a handler failure.
@@ -287,6 +304,8 @@ _Avoid_: MAC or tag as the type (the bytes inside, not the parsed header value),
 signature header as the type (the unparsed string), `HeaderValue` (the `http` type it arrives as and converts back into)
 
 **Verifier**: The component owning the configured secrets and performing signature verification.
+The secrets of one webhook, its rotation included;
+a receiver serving several webhooks is given one per request by a `VerifierSource`.
 Required to build a receiver, so a deployment without a secret cannot be expressed.
 It also signs (`Verifier::sign`): the `X-Hub-Signature-256` value GitHub would send for a body under its first secret,
 so a test of the receiving side can put a synthetic request through the receiver it built.
@@ -294,7 +313,24 @@ That is a test aid, not a sending-side feature: the crate sends nothing, and the
 (queueing, retries) stays out.
 Lives with the secret and the signature error in the `signature` module, the one place the secret's bytes are read.
 _Avoid_: Validator, authenticator, signer (a role the verifier plays for a test, not a component), signature verifier
-(nothing else at the crate root is verified, so the qualifier adds length and no meaning)
+(nothing else at the crate root is verified, so the qualifier adds length and no meaning),
+keyring (secrets tried in turn is what a verifier already is; and they are not keys)
+
+**VerifierSource**: What a receiver asks, per request and before verification,
+for the `Verifier` of the request's `HeaderMeta`, typically by its target: one webhook URL serving several GitHub Apps,
+each signing with its own secret.
+Asynchronous, so the secrets can come from a secret manager.
+A `Verifier` is one, answering itself for every request, so a single-secret receiver names no source.
+Finding no verifier, for a missing target, an unknown one or a failed lookup, is the `UnknownTarget` refusal,
+answered as a mismatch is.
+Selecting a secret by an unsigned header is safe: a forged target selects a secret its sender does not know,
+so verification fails.
+Attributing a verified delivery to its target is sound only when the source chose the verifier by that target,
+answering each target with its own secrets only, and no two targets share a secret, both the source's to ensure;
+under a single `Verifier`, which ignores the target, the target stays a claim.
+It runs for unauthenticated requests too, so a remote lookup per request is on the path of forged traffic.
+_Avoid_: Keyring (secrets tried in turn, which is a `Verifier` with `also`), secret store or secret provider
+(the source hands out verifiers, not secrets), resolver
 
 **WebhookSecret**: The shared HMAC key configured on the GitHub webhook.
 GitHub's own term, in full: the type is `WebhookSecret`, beside `WebhookReceiver`,

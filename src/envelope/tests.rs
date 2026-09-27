@@ -407,7 +407,9 @@ mod header_map {
     use http::{HeaderMap, HeaderValue};
 
     use super::{BODY, headers, headers_from, verifier};
-    use crate::{Action, Envelope, EventKind, ReceiveError, SignatureError, TargetType, header};
+    use crate::{
+        Action, Envelope, EventKind, HeaderMeta, ReceiveError, SignatureError, TargetType, header,
+    };
 
     #[test]
     fn names_in_githubs_casing_verify_and_route() {
@@ -434,6 +436,48 @@ mod header_map {
         assert_eq!(envelope.meta.target_type, Some(TargetType::Integration));
         assert_eq!(envelope.meta.target_id, Some(12345));
         assert_eq!(envelope.meta.installation_id, Some(42));
+    }
+
+    #[test]
+    fn the_header_meta_reads_the_headers_the_envelope_carries() {
+        // What a source chooses the verifier by is what the envelope ends up
+        // with: one read of the headers, the target included.
+        let signature = verifier().sign(BODY).to_string();
+        let headers = headers(&signature);
+
+        let meta = HeaderMeta::from_headers(&headers).unwrap();
+        let envelope =
+            Envelope::from_signed(&verifier(), &headers, Bytes::from_static(BODY)).unwrap();
+
+        assert_eq!(meta.delivery_id, envelope.meta.delivery_id);
+        assert_eq!(meta.kind, envelope.meta.kind);
+        assert_eq!(meta.target_type, Some(TargetType::Repository));
+        assert_eq!(meta.target_type, envelope.meta.target_type);
+        assert_eq!(meta.target_id, Some(7));
+        assert_eq!(meta.target_id, envelope.meta.target_id);
+    }
+
+    #[test]
+    fn the_header_meta_refuses_a_missing_delivery_id_before_a_missing_event_name() {
+        // The order `from_signed` reports them in, once authenticated; the
+        // receiver reads the header meta before the body and reports the same.
+        let mut neither = HeaderMap::new();
+        neither.insert(header::TARGET_TYPE, HeaderValue::from_static("integration"));
+        let mut no_event = neither.clone();
+        no_event.insert(header::DELIVERY_ID, HeaderValue::from_static("delivery"));
+
+        assert_eq!(
+            HeaderMeta::from_headers(&neither),
+            Err(ReceiveError::MissingHeader {
+                name: header::DELIVERY_ID
+            })
+        );
+        assert_eq!(
+            HeaderMeta::from_headers(&no_event),
+            Err(ReceiveError::MissingHeader {
+                name: header::EVENT_NAME
+            })
+        );
     }
 
     #[test]

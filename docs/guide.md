@@ -24,11 +24,15 @@ flowchart TD
     Request[HTTP request] --> Router[Caller routes path and method]
     Router --> Signature[Parse signature header]
     Signature -->|Missing or malformed| Refusal[Refusal: 400, 401 or 413]
-    Signature -->|Parsed| Body[Read body within the length limit]
+    Signature -->|Parsed| Meta[Read delivery ID, event name and target]
+    Meta -->|Missing header| Refusal
+    Meta -->|Read| Source[Choose the verifier, per target with a source]
+    Source -->|No verifier for the target| Refusal
+    Source -->|Verifier| Body[Read body within the length limit]
     Body -->|Read error or too large| Refusal
     Body -->|Bytes| Verify[Verify signature against exact bytes]
     Verify -->|Mismatch| Refusal
-    Verify -->|Authenticated| Headers[Check content type and required headers]
+    Verify -->|Authenticated| Headers[Check content type]
     Headers -->|Invalid| Refusal
     Headers -->|Accepted| Probe[Probe payload metadata, best-effort]
     Probe --> Envelope[Envelope: metadata and exact payload bytes]
@@ -50,6 +54,8 @@ Every request goes through three steps:
 1. **Verify.**
    `X-Hub-Signature-256` is checked against the exact body bytes with the secret.
    A request whose signature header is absent or malformed is refused before its body is read.
+   A receiver serving several GitHub Apps at one URL chooses the secret per request by the target;
+   see [Several GitHub Apps at one URL](security.md#several-github-apps-at-one-url).
 2. **Route.**
    The dispatcher matches the delivery's kind and action: `thank` in the quickstart runs for `issues.opened`;
    any other delivery succeeds with nothing run.
@@ -60,7 +66,7 @@ Every request goes through three steps:
 | --- | --- |
 | 204 | The handler succeeded, or the delivery was a `ping` (answered before any handler) |
 | 500 | The handler or its input decode failed; see [Error handling](#error-handling) |
-| 401 | The signature is missing or does not match |
+| 401 | The signature is missing or does not match, or no secret is configured for the request's target |
 | 400 | The signature is malformed, a required delivery header is missing, the content type is not JSON, or the body could not be read |
 | 413 | The body is over the limit (25 MiB by default) |
 
