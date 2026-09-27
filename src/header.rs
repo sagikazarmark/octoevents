@@ -1,9 +1,9 @@
 //! The names of the request headers this crate reads, as `http::HeaderName`s.
 //!
-//! [`Envelope::from_signed`] reads them off the `http::HeaderMap` it is
-//! handed; the constants are for the two places a consumer names a header
-//! itself. A transport that streams the body checks for the signature before
-//! buffering, with the check `from_signed`'s docs show:
+//! [`authenticate`] reads them off the `http::HeaderMap` it is handed; the
+//! constants are for the two places a consumer names a header itself. A
+//! transport that streams the body checks for the signature before
+//! buffering, with the check `authenticate`'s docs show:
 //!
 //! ```
 //! use octoevents::{Signature, SignatureError, header};
@@ -42,7 +42,7 @@
 //! nothing, unless the receiver chooses its verifier by the target with a
 //! [`VerifierSource`](crate::VerifierSource).
 //!
-//! [`Envelope::from_signed`]: crate::Envelope::from_signed
+//! [`authenticate`]: crate::authenticate
 //! [`Verifier::sign`]: crate::Verifier::sign
 
 use http::{HeaderMap, HeaderName};
@@ -85,11 +85,11 @@ pub const TARGET_ID: HeaderName = HeaderName::from_static("x-github-hook-install
 
 // How the receiving path reads the headers named above. Crate-private: the
 // module's public face is the names, and the two paths that read them,
-// `Envelope::from_signed` and the receiver, read them through these so they
-// agree on what a header's value is and which failure its absence earns.
+// `authenticate` and the receiver, read them through these so they agree
+// on what a header's value is and which failure its absence earns.
 
 /// The signature to verify, parsed from `headers`, or the header failure
-/// [`Envelope::from_signed`](crate::Envelope::from_signed) reports for it:
+/// [`authenticate`](crate::authenticate) reports for it:
 /// [`SignatureError::Missing`] when the header is absent, decided here and
 /// nowhere else; [`SignatureError::Malformed`] when its bytes are not a
 /// signature, decided by `Signature::try_from` and nowhere else.
@@ -102,7 +102,7 @@ pub const TARGET_ID: HeaderName = HeaderName::from_static("x-github-hook-install
 /// a missing header stay distinguishable.
 ///
 /// Decidable from the headers alone, so the receiver uses it to refuse an
-/// unsigned or malformed request before reading the body, and `from_signed`
+/// unsigned or malformed request before reading the body, and `authenticate`
 /// uses it so both paths agree on which failure a header earns.
 pub(crate) fn signature(headers: &HeaderMap) -> Result<Signature, SignatureError> {
     headers

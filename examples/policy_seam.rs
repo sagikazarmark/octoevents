@@ -356,7 +356,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use octoevents::header;
+    use octoevents::{HeaderMeta, header};
 
     use super::*;
 
@@ -406,7 +406,10 @@ mod tests {
     #[tokio::test]
     async fn a_delivery_is_stored_then_routed() {
         let (inbox, counter) = inbox();
-        let envelope = Envelope::new("delivery-1", EventKind::PullRequest, OPENED);
+        let envelope = Envelope::new(
+            HeaderMeta::new("delivery-1", EventKind::PullRequest),
+            OPENED,
+        );
 
         inbox.handle(envelope.clone()).await.unwrap();
 
@@ -422,7 +425,10 @@ mod tests {
     #[tokio::test]
     async fn a_redelivery_is_answered_with_success_without_routing() {
         let (inbox, counter) = inbox();
-        let envelope = Envelope::new("delivery-1", EventKind::PullRequest, OPENED);
+        let envelope = Envelope::new(
+            HeaderMeta::new("delivery-1", EventKind::PullRequest),
+            OPENED,
+        );
 
         inbox.handle(envelope.clone()).await.unwrap();
         inbox.handle(envelope).await.unwrap();
@@ -452,7 +458,10 @@ mod tests {
                 })
                 .build(),
         };
-        let envelope = Envelope::new("delivery-1", EventKind::PullRequest, OPENED);
+        let envelope = Envelope::new(
+            HeaderMeta::new("delivery-1", EventKind::PullRequest),
+            OPENED,
+        );
 
         // The first attempt fails at the handler: GitHub is answered 500.
         let error = inbox.handle(envelope.clone()).await.unwrap_err();
@@ -479,8 +488,7 @@ mod tests {
     async fn an_unknown_kind_is_dead_lettered_and_succeeds() {
         let (inbox, counter) = inbox();
         let envelope = Envelope::new(
-            "delivery-1",
-            EventKind::Push,
+            HeaderMeta::new("delivery-1", EventKind::Push),
             br#"{"ref":"refs/heads/main"}"#,
         );
 
@@ -499,8 +507,7 @@ mod tests {
     async fn an_added_action_of_a_known_kind_is_tolerated() {
         let (inbox, _) = inbox();
         let envelope = Envelope::new(
-            "delivery-1",
-            EventKind::PullRequest,
+            HeaderMeta::new("delivery-1", EventKind::PullRequest),
             br#"{"action":"future_action","number":2}"#,
         );
 

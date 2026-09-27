@@ -21,8 +21,8 @@ use crate::{Action, EventKind, ReceiveError, events::string_enum, header};
 /// carries, and the target type and ID. The other five,
 /// the action, installation ID, repository, organization and sender, are read
 /// from the payload when the envelope is built, by
-/// [`Envelope::from_signed`](crate::Envelope::from_signed) once the body is
-/// authenticated and by [`Envelope::new`](crate::Envelope::new) alike. That
+/// [`authenticate`](crate::authenticate) once the body is authenticated and
+/// by [`Envelope::new`](crate::Envelope::new) alike. That
 /// read, the *probe*, first validates UTF-8 across the bytes, then scans the
 /// JSON to keep those five top-level values and skip everything else. The
 /// retained values are decoded separately. The validation adds an
@@ -56,7 +56,8 @@ use crate::{Action, EventKind, ReceiveError, events::string_enum, header};
 /// `#[non_exhaustive]`: GitHub can add a stable routing field (an enterprise
 /// reference, for example) without that becoming a breaking change here.
 /// In a test, an envelope from [`Envelope::new`](crate::Envelope::new)
-/// carries the meta the receiver would have extracted from the same bytes;
+/// carries the meta the receiver would have extracted from the same header
+/// meta and bytes;
 /// build a meta by itself with [`EventMeta::new`], for a handler over
 /// `EventMeta` alone, and assign the optional fields it reads.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -129,8 +130,8 @@ impl EventMeta {
     /// The probe: the metadata with its header-derived fields taken from
     /// `headers` and its payload-derived fields (action, installation ID,
     /// repository, organization, sender) read from `raw_payload`. Both
-    /// envelope constructors come through here, so the test path and the
-    /// receiving path read a payload alike.
+    /// `authenticate` and `Envelope::new` come through here, so an envelope
+    /// reads a payload alike whichever path built it.
     ///
     /// Best-effort and never fatal: after validating UTF-8, the top level is
     /// read as a map of raw values, so invalid UTF-8, malformed JSON syntax,
@@ -238,11 +239,15 @@ impl HeaderMeta {
     /// [`header`](crate::header).
     ///
     /// What the receiver does before the body, and what a transport built on
-    /// [`Envelope::from_signed`](crate::Envelope::from_signed) does to ask a
+    /// [`authenticate`](crate::authenticate) does to ask a
     /// [`VerifierSource`](crate::VerifierSource) for the verifier it passes
-    /// there. A value that is not visible ASCII reads as absent. A target type
-    /// this crate does not know is [`TargetType::Unknown`] with the value
-    /// intact; a target ID that is present but not a number reads as `None`.
+    /// there. A transport that authenticated a request by its own means
+    /// builds the envelope from it with
+    /// [`Envelope::new`](crate::Envelope::new).
+    ///
+    /// A value that is not visible ASCII reads as absent. A target type this
+    /// crate does not know is [`TargetType::Unknown`] with the value intact;
+    /// a target ID that is present but not a number reads as `None`.
     ///
     /// GitHub sends the target headers, but does not document their values
     /// for a GitHub App

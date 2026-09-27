@@ -5,7 +5,8 @@
 
 | Term | Meaning |
 | --- | --- |
-| Envelope | Exact payload bytes and `EventMeta`. `from_signed` verifies receipt; `new` is an unverified test constructor; serde reads a trusted forwarded envelope |
+| Envelope | Exact payload bytes and `EventMeta`, as data with no verification claim. `new` builds one from a `HeaderMeta` and the bytes; serde reads a trusted forwarded envelope |
+| Authenticate | `authenticate`: the one path from an untrusted request to an envelope. Verifies the signature, checks the content type, reads the headers, then builds the envelope; the receiver is built on it |
 | EventMeta | Delivery ID, kind, action, installation, repository, organization, sender and target metadata |
 | Event name / kind | The raw `X-GitHub-Event` string / its parsed `EventKind`. Both originate in an unsigned header |
 | Action | The payload's top-level `action`, when present |

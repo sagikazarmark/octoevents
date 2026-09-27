@@ -180,11 +180,11 @@ pub enum SignatureError {
     /// The `X-Hub-Signature-256` header was absent.
     ///
     /// Decided from the headers alone: the receiver reports it before the
-    /// body is read, [`Envelope::from_signed`] before it reads anything else,
-    /// and [`Verifier::verify`], which is handed a [`Signature`], never sees
-    /// an absent one.
+    /// body is read, [`authenticate`] before it reads anything else, and
+    /// [`Verifier::verify`], which is handed a [`Signature`], never sees an
+    /// absent one.
     ///
-    /// [`Envelope::from_signed`]: crate::Envelope::from_signed
+    /// [`authenticate`]: crate::authenticate
     #[error("missing X-Hub-Signature-256 header")]
     Missing,
     /// The header was present but not `sha256=` followed by exactly 64

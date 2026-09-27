@@ -28,7 +28,8 @@ use crate::BodyError;
 use crate::runtime::BoxFuture;
 use crate::{
     BoxError, DEFAULT_BODY_LIMIT, Envelope, EventKind, EventMeta, Handler, HeaderMeta, MaybeSend,
-    MaybeSync, ReceiveError, Verifier, VerifierSource, envelope::Refusal, header, trace,
+    MaybeSync, ReceiveError, Verifier, VerifierSource, authenticate, envelope::Refusal, header,
+    trace,
 };
 
 #[cfg(feature = "http-body")]
@@ -375,8 +376,8 @@ where
     ///    [`ReceiveError::UnknownTarget`]. A receiver built with
     ///    [`WebhookReceiverBuilder::new`] always has its one verifier.
     /// 4. A body over the limit is 413.
-    /// 5. [`Envelope::from_signed`]'s checks run on the body: a mismatch is
-    ///    401, and a wrong content type is 400.
+    /// 5. [`authenticate`](crate::authenticate) runs on the body: a mismatch
+    ///    is 401, and a wrong content type is 400.
     /// 6. A verified `ping` is 204 unless the builder was asked to
     ///    `handle_ping`.
     /// 7. The handler runs: 204 when it succeeds, and 500 when it fails,
@@ -508,10 +509,10 @@ where
         record_headers(span, headers);
 
         // A request whose signature header is absent or not a signature is
-        // refused on the headers alone. `Envelope::from_signed` repeats the
-        // check for transports that construct envelopes directly, and parses
-        // the header again for the verifier; the header is 71 bytes, so the
-        // second parse is cheaper than handing the first one across.
+        // refused on the headers alone. `authenticate` repeats the check for
+        // transports that call it directly, and parses the header again for
+        // the verifier; the header is 71 bytes, so the second parse is
+        // cheaper than handing the first one across.
         if let Err(error) = header::signature(headers) {
             return refuse(span, &error.into());
         }
@@ -524,8 +525,11 @@ where
 
         // The verifier is chosen before the body is read, from the headers
         // alone, so a request for a target the source does not know is
-        // refused without being buffered. The header meta it is chosen by is
-        // the one the envelope carries: the headers are read once.
+        // refused without being buffered. `authenticate` reads the header
+        // meta again for the envelope, from the same headers, so it reads
+        // what the source was asked with and refuses nothing this did not;
+        // the second read is a few short strings, the price of one
+        // authenticating path shared with every transport.
         let meta = match HeaderMeta::from_headers(headers) {
             Ok(meta) => meta,
             Err(error) => return refuse(span, &error),
@@ -539,7 +543,7 @@ where
             Err(error) => return refuse(span, &error),
         };
 
-        let envelope = match Envelope::from_signed_with(&verifier, headers, meta, bytes) {
+        let envelope = match authenticate(&verifier, headers, bytes) {
             Ok(envelope) => envelope,
             Err(error) => return refuse(span, &error),
         };
