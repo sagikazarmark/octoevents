@@ -98,8 +98,9 @@
 //!   through [`WebhookReceiver::receive`] over an `http::Request` (`http-body`
 //!   feature) or [`WebhookReceiver::receive_bytes`] over the `http::HeaderMap`
 //!   and the body already read, answered as the `http::StatusCode`. Built
-//!   with [`WebhookReceiverBuilder`], which takes the [`Verifier`], the body
-//!   limit and `ping` handling.
+//!   with [`WebhookReceiverBuilder`], which takes the [`Verifier`] (or a
+//!   [`VerifierSource`] choosing one per request from the [`HeaderMeta`], for
+//!   several GitHub Apps at one URL), the body limit and `ping` handling.
 //! - [`Verifier`] and [`WebhookSecret`]: the configured secrets and the HMAC
 //!   comparison; [`Verifier::also`] opens a rotation window, and
 //!   [`Verifier::sign`] signs a test's synthetic request. The header value
@@ -157,7 +158,9 @@
 //!   a level below it. A header that is absent or malformed is refused from
 //!   the headers before the verifier is asked, so it opens no verify span:
 //!   the receive span records that refusal as `bad_request` or
-//!   `unauthorized` with the refusal's text as `error`.
+//!   `unauthorized` with the refusal's text as `error`. So does a request
+//!   whose target a [`VerifierSource`] has no verifier for, `unauthorized`
+//!   as [`ReceiveError::UnknownTarget`].
 //! - `octoevents.dispatch`, at INFO, around [`Dispatcher::dispatch`], inside
 //!   the receive span when the dispatcher is the receiver's handler. It
 //!   records `delivery_id`, `event` and, when the delivery has them, `action`
@@ -274,6 +277,7 @@ mod payload;
 mod receiver;
 mod runtime;
 mod signature;
+mod source;
 #[cfg(test)]
 mod test_support;
 mod trace;
@@ -283,7 +287,9 @@ pub use envelope::{BodyError, DecodeError, Envelope, ReceiveError};
 pub use events::{Action, EventKind, UnknownAction, UnknownEventKind};
 pub use handler::Handler;
 pub use matcher::{AnyAction, EventMatcher, IntoMatcher};
-pub use meta::{AccountMeta, EventMeta, RepositoryMeta, TargetType, UnknownTargetType};
+pub use meta::{
+    AccountMeta, EventMeta, HeaderMeta, RepositoryMeta, Target, TargetType, UnknownTargetType,
+};
 /// Derives [`Payload`] for a serde type, declaring its kind:
 /// `#[derive(Payload)] #[payload(EventKind::..)]`. See the trait.
 #[cfg(feature = "derive")]
@@ -292,6 +298,7 @@ pub use payload::{Event, FromEnvelope, Payload};
 pub use receiver::{WebhookReceiver, WebhookReceiverBuilder};
 pub use runtime::{BoxError, MaybeSend, MaybeSync};
 pub use signature::{Signature, SignatureError, Verifier, WebhookSecret, WebhookSecretError};
+pub use source::VerifierSource;
 
 /// The byte buffer type of [`Envelope::raw_payload`] and of the body
 /// [`Envelope::from_signed`] takes, re-exported from the `bytes` crate.

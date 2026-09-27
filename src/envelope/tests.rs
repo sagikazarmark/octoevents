@@ -60,7 +60,7 @@ mod receive {
     use super::{BODY, headers, headers_from, verifier};
     use crate::{
         AccountMeta, Action, BodyError, Envelope, EventKind, EventMeta, ReceiveError,
-        RepositoryMeta, SignatureError, TargetType,
+        RepositoryMeta, SignatureError, Target, TargetType,
     };
 
     #[test]
@@ -83,8 +83,7 @@ mod receive {
         );
         assert_eq!(meta.organization, Some(AccountMeta::new(9919, "github")));
         assert_eq!(meta.sender, Some(AccountMeta::new(2, "monalisa")));
-        assert_eq!(meta.target_type, Some(TargetType::Repository));
-        assert_eq!(meta.target_id, Some(7));
+        assert_eq!(meta.target, Some(Target::new(TargetType::Repository, 7)));
         assert_eq!(envelope.raw_payload, Bytes::from_static(BODY));
     }
 
@@ -99,8 +98,7 @@ mod receive {
             Envelope::from_signed(&verifier(), &headers(&signature), body.clone()).unwrap();
 
         let mut expected = EventMeta::new("delivery", EventKind::PullRequest);
-        expected.target_type = Some(TargetType::Repository);
-        expected.target_id = Some(7);
+        expected.target = Some(Target::new(TargetType::Repository, 7));
         assert_eq!(envelope.meta, expected);
         assert_eq!(envelope.raw_payload, body);
     }
@@ -407,7 +405,10 @@ mod header_map {
     use http::{HeaderMap, HeaderValue};
 
     use super::{BODY, headers, headers_from, verifier};
-    use crate::{Action, Envelope, EventKind, ReceiveError, SignatureError, TargetType, header};
+    use crate::{
+        Action, Envelope, EventKind, HeaderMeta, ReceiveError, SignatureError, Target, TargetType,
+        header,
+    };
 
     #[test]
     fn names_in_githubs_casing_verify_and_route() {
@@ -431,9 +432,78 @@ mod header_map {
         assert_eq!(envelope.meta.delivery_id, "delivery");
         assert_eq!(envelope.meta.kind, EventKind::PullRequest);
         assert_eq!(envelope.meta.action, Some(Action::Opened));
-        assert_eq!(envelope.meta.target_type, Some(TargetType::Integration));
-        assert_eq!(envelope.meta.target_id, Some(12345));
+        assert_eq!(
+            envelope.meta.target,
+            Some(Target::new(TargetType::Integration, 12345))
+        );
         assert_eq!(envelope.meta.installation_id, Some(42));
+    }
+
+    #[test]
+    fn the_target_is_read_only_when_both_headers_are() {
+        // Half a target names no resource: a type without an ID, an ID
+        // without a type, or an ID that is not a number reads as no target,
+        // on the header meta a source chooses by and on the envelope alike.
+        // A type this crate does not know is a target all the same.
+        let signature = verifier().sign(BODY).to_string();
+        let cases = [
+            (
+                Some("integration"),
+                Some("12345"),
+                Some(Target::new(TargetType::Integration, 12345)),
+            ),
+            (
+                Some("enterprise"),
+                Some("1"),
+                Some(Target::new(TargetType::from("enterprise"), 1)),
+            ),
+            (Some("integration"), None, None),
+            (None, Some("12345"), None),
+            (Some("integration"), Some("app"), None),
+            (None, None, None),
+        ];
+
+        for (kind, id, expected) in cases {
+            let mut headers = headers(&signature);
+            headers.remove(header::TARGET_TYPE);
+            headers.remove(header::TARGET_ID);
+            if let Some(kind) = kind {
+                headers.insert(header::TARGET_TYPE, kind.parse().unwrap());
+            }
+            if let Some(id) = id {
+                headers.insert(header::TARGET_ID, id.parse().unwrap());
+            }
+
+            let meta = HeaderMeta::from_headers(&headers).unwrap();
+            let envelope =
+                Envelope::from_signed(&verifier(), &headers, Bytes::from_static(BODY)).unwrap();
+
+            assert_eq!(meta.target, expected, "{kind:?} {id:?}");
+            assert_eq!(envelope.meta.target, expected, "{kind:?} {id:?}");
+        }
+    }
+
+    #[test]
+    fn the_header_meta_refuses_a_missing_delivery_id_before_a_missing_event_name() {
+        // The order `from_signed` reports them in, once authenticated; the
+        // receiver reads the header meta before the body and reports the same.
+        let mut neither = HeaderMap::new();
+        neither.insert(header::TARGET_TYPE, HeaderValue::from_static("integration"));
+        let mut no_event = neither.clone();
+        no_event.insert(header::DELIVERY_ID, HeaderValue::from_static("delivery"));
+
+        assert_eq!(
+            HeaderMeta::from_headers(&neither),
+            Err(ReceiveError::MissingHeader {
+                name: header::DELIVERY_ID
+            })
+        );
+        assert_eq!(
+            HeaderMeta::from_headers(&no_event),
+            Err(ReceiveError::MissingHeader {
+                name: header::EVENT_NAME
+            })
+        );
     }
 
     #[test]
@@ -528,7 +598,7 @@ mod probe {
 
     use super::{BODY, headers, verifier};
     use crate::{
-        AccountMeta, Action, Envelope, EventKind, EventMeta, RepositoryMeta, TargetType,
+        AccountMeta, Action, Envelope, EventKind, EventMeta, RepositoryMeta, Target, TargetType,
         test_support,
     };
 
@@ -554,8 +624,7 @@ mod probe {
                 Bytes::copy_from_slice(&payload),
             )
             .unwrap();
-            expected.target_type = Some(TargetType::Repository);
-            expected.target_id = Some(7);
+            expected.target = Some(Target::new(TargetType::Repository, 7));
             assert_eq!(signed.meta, expected);
             assert_eq!(signed.raw_payload.as_ref(), payload);
         }
@@ -812,8 +881,7 @@ mod probe {
         let synthetic = Envelope::new("delivery", EventKind::PullRequest, BODY);
 
         let mut expected = signed.meta.clone();
-        expected.target_type = None;
-        expected.target_id = None;
+        expected.target = None;
         assert_eq!(synthetic.meta, expected);
         assert_eq!(synthetic.raw_payload, signed.raw_payload);
 
@@ -947,7 +1015,7 @@ mod wire_format {
     use bytes::Bytes;
 
     use super::{BODY, headers, verifier};
-    use crate::{Envelope, EventKind, EventMeta, TargetType};
+    use crate::{Envelope, EventKind, EventMeta, Target, TargetType};
 
     /// The top-level keys of a serialized envelope, sorted for comparison.
     fn sorted_keys(value: &serde_json::Value) -> Vec<&str> {
@@ -1022,7 +1090,10 @@ mod wire_format {
 
         assert_eq!(received, envelope);
         assert_eq!(received.raw_payload, Bytes::from_static(BODY));
-        assert_eq!(received.meta.target_type, Some(TargetType::Repository));
+        assert_eq!(
+            received.meta.target,
+            Some(Target::new(TargetType::Repository, 7))
+        );
     }
 
     #[test]
@@ -1034,6 +1105,44 @@ mod wire_format {
         let value = serde_json::to_value(envelope).unwrap();
 
         assert_eq!(sorted_keys(&value), ["delivery_id", "kind", "raw_payload"]);
+    }
+
+    #[test]
+    fn half_a_target_on_the_wire_reads_back_as_none() {
+        // The rule the headers follow: a forwarded document carrying one of
+        // the pair names no resource, and its meta has no target.
+        for pair in [r#""target_type": "integration""#, r#""target_id": 12345"#] {
+            let document = format!(
+                r#"{{"delivery_id":"delivery","kind":"push","raw_payload":"e30=",{pair}}}"#
+            );
+
+            let envelope: Envelope = serde_json::from_str(&document).unwrap();
+            let meta: EventMeta = serde_json::from_str(&document).unwrap();
+
+            assert_eq!(envelope.meta.target, None, "{pair}");
+            assert_eq!(meta.target, None, "{pair}");
+        }
+    }
+
+    #[test]
+    fn the_meta_alone_serializes_its_target_flat_and_reads_it_back() {
+        // `EventMeta` is serde on its own too, with the envelope's field
+        // names: the target is two keys beside the others, not an object.
+        let mut meta = EventMeta::new("delivery", EventKind::Push);
+        meta.target = Some(Target::new(TargetType::Integration, 12345));
+
+        let value = serde_json::to_value(&meta).unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "delivery_id": "delivery",
+                "kind": "push",
+                "target_type": "integration",
+                "target_id": 12345,
+            })
+        );
+        assert_eq!(serde_json::from_value::<EventMeta>(value).unwrap(), meta);
     }
 
     #[test]

@@ -1,9 +1,10 @@
 use std::{fmt, marker::PhantomData};
 
-use serde::{Deserialize, Deserializer, Serialize, de};
+use http::HeaderMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::value::RawValue;
 
-use crate::{Action, EventKind, events::string_enum};
+use crate::{Action, EventKind, ReceiveError, events::string_enum, header};
 
 /// The routing metadata of a webhook: everything in an
 /// [`Envelope`](crate::Envelope) except the payload bytes.
@@ -15,8 +16,9 @@ use crate::{Action, EventKind, events::string_enum};
 ///
 /// # Where the fields come from
 ///
-/// Four fields are read from the headers: the delivery ID and the kind,
-/// which every delivery carries, and the target type and ID. The other five,
+/// Three fields are read from the headers, the [`HeaderMeta`] the receiver
+/// reads before the body: the delivery ID and the kind, which every delivery
+/// carries, and the target. The other five,
 /// the action, installation ID, repository, organization and sender, are read
 /// from the payload when the envelope is built, by
 /// [`Envelope::from_signed`](crate::Envelope::from_signed) once the body is
@@ -37,6 +39,12 @@ use crate::{Action, EventKind, events::string_enum};
 /// payload data or independently trusted configuration. Delivery-ID
 /// deduplication handles GitHub redelivery, not adversarial replay.
 ///
+/// The one exception is the target a
+/// [`VerifierSource`](crate::VerifierSource) selected the secret by: a
+/// delivery that verified under a secret only one target holds is that
+/// target's. Whether secrets are distinct per target is the source's to
+/// ensure, not something verification can see.
+///
 /// So "decodes nothing", said of a handler over this type, means no decode on
 /// the handler's behalf, not that the payload went unread. A decode is the
 /// fallible turn of the bytes into an input that asks for it, and it happens
@@ -49,7 +57,8 @@ use crate::{Action, EventKind, events::string_enum};
 /// carries the meta the receiver would have extracted from the same bytes;
 /// build a meta by itself with [`EventMeta::new`], for a handler over
 /// `EventMeta` alone, and assign the optional fields it reads.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+#[serde(from = "EventMetaWire")]
 #[non_exhaustive]
 pub struct EventMeta {
     /// The `X-GitHub-Delivery` value. Use it as a downstream idempotency key.
@@ -73,12 +82,9 @@ pub struct EventMeta {
     /// The user or app whose act triggered the webhook, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sender: Option<AccountMeta>,
-    /// The webhook installation target type.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target_type: Option<TargetType>,
-    /// The webhook installation target ID.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target_id: Option<u64>,
+    /// The resource the webhook is configured on, when GitHub sent both
+    /// target headers.
+    pub target: Option<Target>,
 }
 
 impl EventMeta {
@@ -111,16 +117,15 @@ impl EventMeta {
             repository: None,
             organization: None,
             sender: None,
-            target_type: None,
-            target_id: None,
+            target: None,
         }
     }
 
-    /// The probe: the metadata with its payload-derived fields (action,
-    /// installation ID, repository, organization, sender) read from
-    /// `raw_payload`, and the header-derived target left empty for the
-    /// caller that has the headers. Both envelope constructors come through
-    /// here, so the test path and the receiving path read a payload alike.
+    /// The probe: the metadata with its header-derived fields taken from
+    /// `headers` and its payload-derived fields (action, installation ID,
+    /// repository, organization, sender) read from `raw_payload`. Both
+    /// envelope constructors come through here, so the test path and the
+    /// receiving path read a payload alike.
     ///
     /// Best-effort and never fatal: after validating UTF-8, the top level is
     /// read as a map of raw values, so invalid UTF-8, malformed JSON syntax,
@@ -131,11 +136,7 @@ impl EventMeta {
     /// an object invalidates that object. Skipped string values are checked
     /// for escape syntax, not surrogate pairing; see `Envelope::new` for the
     /// policy. The rest of the document is not decoded.
-    pub(crate) fn probe(
-        delivery_id: impl Into<String>,
-        kind: EventKind,
-        raw_payload: &[u8],
-    ) -> Self {
+    pub(crate) fn probe(headers: HeaderMeta, raw_payload: &[u8]) -> Self {
         // Skipped JSON strings do not get UTF-8 validation from serde_json.
         // Validate the entire payload before any field can supply metadata.
         let probe = std::str::from_utf8(raw_payload)
@@ -143,8 +144,14 @@ impl EventMeta {
             .and_then(|payload| serde_json::from_str::<Probe<'_>>(payload).ok())
             .unwrap_or_default();
 
+        let HeaderMeta {
+            delivery_id,
+            kind,
+            target,
+        } = headers;
+
         Self {
-            delivery_id: delivery_id.into(),
+            delivery_id,
             kind,
             action: probe
                 .action
@@ -160,9 +167,236 @@ impl EventMeta {
                 .map(RepositoryMeta::from),
             organization: probe.organization.and_then(parse_object::<AccountMeta>),
             sender: probe.sender.and_then(parse_object::<AccountMeta>),
-            target_type: None,
-            target_id: None,
+            target,
         }
+    }
+}
+
+// The wire format keeps the target flat, as `target_type` and `target_id`
+// beside the other fields, so a consumer in another language reads the same
+// document whether or not the Rust side holds the target as one value.
+// `Serialize` borrows the meta into this shape; `Deserialize` reads the owned
+// one below and joins the pair. Keep both in sync with `EventMeta` and with
+// `EnvelopeWire`.
+#[derive(Serialize)]
+#[serde(rename = "EventMeta")]
+struct EventMetaWireRef<'a> {
+    delivery_id: &'a str,
+    kind: &'a EventKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    action: Option<&'a Action>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    installation_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repository: Option<&'a RepositoryMeta>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    organization: Option<&'a AccountMeta>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sender: Option<&'a AccountMeta>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_type: Option<&'a TargetType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_id: Option<u64>,
+}
+
+impl Serialize for EventMeta {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        EventMetaWireRef {
+            delivery_id: &self.delivery_id,
+            kind: &self.kind,
+            action: self.action.as_ref(),
+            installation_id: self.installation_id,
+            repository: self.repository.as_ref(),
+            organization: self.organization.as_ref(),
+            sender: self.sender.as_ref(),
+            target_type: self.target.as_ref().map(|target| &target.kind),
+            target_id: self.target.as_ref().map(|target| target.id),
+        }
+        .serialize(serializer)
+    }
+}
+
+#[derive(Deserialize)]
+struct EventMetaWire {
+    delivery_id: String,
+    kind: EventKind,
+    #[serde(default)]
+    action: Option<Action>,
+    #[serde(default)]
+    installation_id: Option<u64>,
+    #[serde(default)]
+    repository: Option<RepositoryMeta>,
+    #[serde(default)]
+    organization: Option<AccountMeta>,
+    #[serde(default)]
+    sender: Option<AccountMeta>,
+    #[serde(default)]
+    target_type: Option<TargetType>,
+    #[serde(default)]
+    target_id: Option<u64>,
+}
+
+impl From<EventMetaWire> for EventMeta {
+    fn from(wire: EventMetaWire) -> Self {
+        Self {
+            delivery_id: wire.delivery_id,
+            kind: wire.kind,
+            action: wire.action,
+            installation_id: wire.installation_id,
+            repository: wire.repository,
+            organization: wire.organization,
+            sender: wire.sender,
+            target: Target::from_parts(wire.target_type, wire.target_id),
+        }
+    }
+}
+
+/// The values the receiver reads from a request's headers before the body:
+/// the delivery ID, the kind and the target.
+///
+/// What a [`VerifierSource`](crate::VerifierSource) is handed to choose the
+/// [`Verifier`](crate::Verifier) for a request, and the header half of the
+/// [`EventMeta`] the envelope ends up with, which is built from it and the
+/// probe. The signature is not here: it is parsed on its own into a
+/// [`Signature`](crate::Signature).
+///
+/// Nothing here is signed. GitHub's signature covers the body alone, so these
+/// values are claims when the source reads them and still claims after the
+/// body verifies. Selecting a secret by them is safe, since a forged target
+/// selects a secret its sender does not know and verification fails; basing
+/// an authorization decision on them is not.
+///
+/// `#[non_exhaustive]` for the reason [`EventMeta`] is: GitHub can add a
+/// header worth selecting by (`X-GitHub-Hook-ID`, say) without that being a
+/// breaking change for every source. A test builds one with
+/// [`HeaderMeta::new`] and assigns the target.
+///
+/// ```
+/// use octoevents::{EventKind, HeaderMeta, Target, TargetType};
+///
+/// let mut headers = HeaderMeta::new("72d3162e-cc78-11e3-81ab-4c9367dc0958", EventKind::Issues);
+/// headers.target = Some(Target::new(TargetType::Integration, 12345));
+/// # let _ = headers;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct HeaderMeta {
+    /// The `X-GitHub-Delivery` value.
+    pub delivery_id: String,
+    /// The event kind parsed from `X-GitHub-Event`.
+    pub kind: EventKind,
+    /// The resource the webhook is configured on, when GitHub sent both
+    /// target headers.
+    pub target: Option<Target>,
+}
+
+impl HeaderMeta {
+    /// Creates the header meta of one delivery of one kind, with no target.
+    #[must_use]
+    pub fn new(delivery_id: impl Into<String>, kind: EventKind) -> Self {
+        Self {
+            delivery_id: delivery_id.into(),
+            kind,
+            target: None,
+        }
+    }
+
+    /// Reads the header meta off a request's headers, by the names in
+    /// [`header`](crate::header).
+    ///
+    /// What the receiver does before the body, and what a transport built on
+    /// [`Envelope::from_signed`](crate::Envelope::from_signed) does to ask a
+    /// [`VerifierSource`](crate::VerifierSource) for the verifier it passes
+    /// there. A value that is not visible ASCII reads as absent. The target is
+    /// present only when both target headers are and the ID is a number; a
+    /// target type this crate does not know is [`TargetType::Unknown`] with
+    /// the value intact.
+    ///
+    /// ```
+    /// use http::HeaderMap;
+    /// use octoevents::{EventKind, HeaderMeta, Target, TargetType, header};
+    ///
+    /// let mut headers = HeaderMap::new();
+    /// headers.insert(header::DELIVERY_ID, "delivery-1".parse()?);
+    /// headers.insert(header::EVENT_NAME, "issues".parse()?);
+    /// headers.insert(header::TARGET_TYPE, "integration".parse()?);
+    /// headers.insert(header::TARGET_ID, "12345".parse()?);
+    ///
+    /// let meta = HeaderMeta::from_headers(&headers)?;
+    ///
+    /// assert_eq!(meta.kind, EventKind::Issues);
+    /// assert_eq!(meta.target, Some(Target::new(TargetType::Integration, 12345)));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReceiveError::MissingHeader`] when the delivery ID or the
+    /// event name is absent or empty, in that order. The target headers are
+    /// optional, and their absence refuses nothing.
+    pub fn from_headers(headers: &HeaderMap) -> Result<Self, ReceiveError> {
+        let delivery_id = header::required(headers, header::DELIVERY_ID)?;
+        let event_name = header::required(headers, header::EVENT_NAME)?;
+
+        Ok(Self {
+            delivery_id: delivery_id.to_owned(),
+            kind: EventKind::from(event_name),
+            target: Target::from_parts(
+                header::read(headers, &header::TARGET_TYPE).map(TargetType::from),
+                header::read(headers, &header::TARGET_ID).and_then(|value| value.parse().ok()),
+            ),
+        })
+    }
+}
+
+/// The resource the webhook is configured on, GitHub's _hook installation
+/// target_, from the `X-GitHub-Hook-Installation-Target-Type` and `-ID`
+/// headers: for a GitHub App, [`TargetType::Integration`] and the App ID.
+///
+/// The key a [`VerifierSource`](crate::VerifierSource) typically selects a
+/// secret by, which is why it is `Hash` and `Eq`. It names the webhook's
+/// resource, not the webhook: two webhooks on one repository share a target,
+/// and a source keyed by target answers both with one
+/// [`Verifier`](crate::Verifier) holding both secrets.
+///
+/// GitHub sends these headers, but does not document their values for a
+/// GitHub App
+/// ([github/rest-api-description#7210](https://github.com/github/rest-api-description/issues/7210));
+/// `integration` and the App ID are what is consistently observed. A
+/// deployment that cannot rely on them serves each App at a path of its own
+/// instead, with a receiver per path.
+///
+/// The field is `kind` because `type` is a keyword; its type keeps GitHub's
+/// word. Neither is the event's [`EventKind`]. A plain struct, built as a
+/// literal or with [`Target::new`].
+///
+/// ```
+/// use octoevents::{Target, TargetType};
+///
+/// let app = Target { kind: TargetType::Integration, id: 12345 };
+///
+/// assert_eq!(app, Target::new(TargetType::Integration, 12345));
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Target {
+    /// The kind of resource: an App, a repository, an organization.
+    pub kind: TargetType,
+    /// The resource's ID: for a GitHub App, the App ID.
+    pub id: u64,
+}
+
+impl Target {
+    /// Creates a target from its kind and ID.
+    #[must_use]
+    pub const fn new(kind: TargetType, id: u64) -> Self {
+        Self { kind, id }
+    }
+
+    /// The target when both halves are present, and none otherwise: half a
+    /// target names no resource. The one rule for the headers and the wire
+    /// format alike.
+    pub(crate) fn from_parts(kind: Option<TargetType>, id: Option<u64>) -> Option<Self> {
+        Some(Self::new(kind?, id?))
     }
 }
 

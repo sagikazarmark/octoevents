@@ -897,6 +897,202 @@ mod receive_bytes {
     }
 }
 
+/// Choosing the verifier per request: a receiver built `from_source` asks its
+/// source by the request's header meta, before the body is read, and verifies
+/// the body against the verifier it gets back.
+#[cfg(feature = "http-body")]
+mod source {
+    use std::{
+        collections::HashMap,
+        convert::Infallible,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+
+    use bytes::Bytes;
+    use http::{Request, StatusCode};
+    use http_body_util::Full;
+
+    use super::{Frames, Recorder, verifier};
+    use crate::{
+        Envelope, HeaderMeta, Target, TargetType, Verifier, VerifierSource, WebhookReceiverBuilder,
+        WebhookSecret,
+    };
+
+    const BODY: &[u8] = br#"{"action":"opened"}"#;
+
+    /// App `id`'s verifier: a secret no other App shares.
+    fn app(id: u64) -> Verifier {
+        Verifier::new(WebhookSecret::new(format!("app {id}'s secret")))
+    }
+
+    /// A deployment's GitHub Apps by App ID, looked up the way a secret
+    /// manager would be: through an `async fn`.
+    struct Apps(HashMap<u64, Verifier>);
+
+    impl VerifierSource for Apps {
+        // A real source awaits its store; this one reads a map.
+        #[expect(clippy::unused_async_trait_impl)]
+        async fn verifier(&self, headers: &HeaderMeta) -> Option<Verifier> {
+            match headers.target.as_ref()? {
+                Target {
+                    kind: TargetType::Integration,
+                    id,
+                } => self.0.get(id).cloned(),
+                _ => None,
+            }
+        }
+    }
+
+    fn apps() -> Apps {
+        Apps(HashMap::from([(1, app(1)), (2, app(2))]))
+    }
+
+    /// A delivery over `body` claiming the target `(kind, id)`, or none,
+    /// signed with `signer`.
+    fn delivery<B>(body: B, target: Option<(&str, &str)>, signer: &Verifier) -> Request<B> {
+        let mut builder = Request::builder()
+            .header("content-type", "application/json")
+            .header("x-github-delivery", "delivery")
+            .header("x-github-event", "issues")
+            .header("x-hub-signature-256", signer.sign(BODY).to_string());
+        if let Some((kind, id)) = target {
+            builder = builder
+                .header("x-github-hook-installation-target-type", kind)
+                .header("x-github-hook-installation-target-id", id);
+        }
+        builder.body(body).unwrap()
+    }
+
+    fn full() -> Full<Bytes> {
+        Full::new(Bytes::from_static(BODY))
+    }
+
+    #[tokio::test]
+    async fn verifies_each_delivery_against_the_secret_of_the_app_it_claims() {
+        let seen: Arc<std::sync::Mutex<Vec<Envelope>>> = Arc::default();
+        let handler_seen = Arc::clone(&seen);
+        let receiver = WebhookReceiverBuilder::from_source(apps()).build(move |envelope| {
+            handler_seen.lock().unwrap().push(envelope);
+            async { Ok::<_, Infallible>(()) }
+        });
+
+        for id in [1, 2] {
+            let request = delivery(full(), Some(("integration", &id.to_string())), &app(id));
+
+            let response = receiver.receive(request).await;
+
+            assert_eq!(response.status(), StatusCode::NO_CONTENT, "app {id}");
+            // Verified under the secret only this App holds: the target the
+            // secret was chosen by is the App the delivery came from.
+            let envelope = seen.lock().unwrap().pop().unwrap();
+            assert_eq!(
+                envelope.meta.target,
+                Some(Target::new(TargetType::Integration, id))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_delivery_signed_by_one_app_claiming_another_is_refused() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let receiver = WebhookReceiverBuilder::from_source(apps()).build(Recorder {
+            calls: Arc::clone(&calls),
+        });
+
+        let forged = delivery(full(), Some(("integration", "2")), &app(1));
+        let response = receiver.receive(forged).await;
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn a_missing_or_unknown_target_is_refused_without_reading_the_body() {
+        // The body counts its polls: none means the source's answer was
+        // decisive on the headers alone. Signed with a secret the source
+        // holds, so only the target can refuse it.
+        let receiver = WebhookReceiverBuilder::from_source(apps())
+            .build(|_: Envelope| async { Ok::<_, Infallible>(()) });
+
+        for target in [
+            None,
+            Some(("integration", "3")),
+            Some(("repository", "1")),
+            Some(("integration", "not-a-number")),
+        ] {
+            let body = Frames::data(&[BODY]);
+            let polls = body.polls();
+
+            let response = receiver.receive(delivery(body, target, &app(1))).await;
+
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{target:?}");
+            assert_eq!(polls.load(Ordering::Relaxed), 0, "{target:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_closure_and_an_arc_are_sources() {
+        // A lookup in memory is a closure over the header meta; a registry
+        // the application shares is an `Arc` of its source.
+        let first = app(1);
+        let closure = WebhookReceiverBuilder::from_source(move |headers: &HeaderMeta| {
+            (headers.target == Some(Target::new(TargetType::Integration, 1))).then(|| first.clone())
+        })
+        .build(|_: Envelope| async { Ok::<_, Infallible>(()) });
+        let shared = WebhookReceiverBuilder::from_source(Arc::new(apps()))
+            .build(|_: Envelope| async { Ok::<_, Infallible>(()) });
+
+        for response in [
+            closure
+                .receive(delivery(full(), Some(("integration", "1")), &app(1)))
+                .await,
+            shared
+                .receive(delivery(full(), Some(("integration", "1")), &app(1)))
+                .await,
+        ] {
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        }
+        assert_eq!(
+            closure
+                .receive(delivery(full(), Some(("integration", "2")), &app(2)))
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[test]
+    fn the_future_is_send_for_an_async_source() {
+        fn assert_send<T: Send>(_: T) {}
+
+        let receiver = WebhookReceiverBuilder::from_source(apps())
+            .build(|_: Envelope| async { Ok::<_, Infallible>(()) });
+
+        assert_send(receiver.receive(delivery(full(), None, &app(1))));
+    }
+
+    #[tokio::test]
+    async fn a_missing_required_header_is_refused_before_the_body_is_read() {
+        // The header meta is read before the body, to choose the verifier by,
+        // so a request without an event name is 400 with its body unread, on
+        // a receiver with one verifier as on one with a source.
+        let receiver = WebhookReceiverBuilder::new(verifier())
+            .build(|_: Envelope| async { Ok::<_, Infallible>(()) });
+        let body = Frames::data(&[BODY]);
+        let polls = body.polls();
+        let mut request = delivery(body, None, &verifier());
+        request.headers_mut().remove("x-github-event");
+
+        let response = receiver.receive(request).await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(polls.load(Ordering::Relaxed), 0);
+    }
+}
+
 /// The Tower `Service` impl: the same policy as `receive`, for the same
 /// handler forms.
 #[cfg(feature = "tower")]
@@ -1048,6 +1244,7 @@ mod respond {
                 },
                 "bad_request",
             ),
+            (ReceiveError::UnknownTarget, "unauthorized"),
             (ReceiveError::UnsupportedContentType, "bad_request"),
             (
                 ReceiveError::BodyRead(BodyError::new("connection reset by peer")),

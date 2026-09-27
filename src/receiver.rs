@@ -27,8 +27,8 @@ use crate::BodyError;
 #[cfg(feature = "tower")]
 use crate::runtime::BoxFuture;
 use crate::{
-    BoxError, DEFAULT_BODY_LIMIT, Envelope, EventKind, EventMeta, Handler, MaybeSend, MaybeSync,
-    ReceiveError, Verifier, envelope::Refusal, header, trace,
+    BoxError, DEFAULT_BODY_LIMIT, Envelope, EventKind, EventMeta, Handler, HeaderMeta, MaybeSend,
+    MaybeSync, ReceiveError, Verifier, VerifierSource, envelope::Refusal, header, trace,
 };
 
 #[cfg(feature = "http-body")]
@@ -38,16 +38,16 @@ type ReceiveResponse = Response<Empty<Bytes>>;
 /// One type, so `build` moves it whole and the builder and receiver print it
 /// the same way.
 #[derive(Clone)]
-struct Config {
-    verifier: Verifier,
+struct Config<S> {
+    source: S,
     body_limit: usize,
     handle_ping: bool,
 }
 
-impl Config {
+impl<S: fmt::Debug> Config<S> {
     fn debug_fields(&self, debug: &mut fmt::DebugStruct<'_, '_>) {
         debug
-            .field("verifier", &self.verifier)
+            .field("source", &self.source)
             .field("body_limit", &self.body_limit)
             .field("handle_ping", &self.handle_ping);
     }
@@ -55,8 +55,8 @@ impl Config {
 
 /// Builds a [`WebhookReceiver`].
 #[derive(Clone)]
-pub struct WebhookReceiverBuilder {
-    config: Config,
+pub struct WebhookReceiverBuilder<S = Verifier> {
+    config: Config<S>,
 }
 
 impl WebhookReceiverBuilder {
@@ -64,12 +64,54 @@ impl WebhookReceiverBuilder {
     ///
     /// The verifier is required rather than configurable: GitHub webhooks
     /// without a secret are intentionally unsupported, so a receiver that
-    /// cannot authenticate is not constructible.
+    /// cannot authenticate is not constructible. It verifies every request;
+    /// for one URL serving several GitHub Apps, each with its own secret,
+    /// build with [`from_source`](Self::from_source) instead.
     #[must_use]
     pub fn new(verifier: Verifier) -> Self {
+        Self::from_source(verifier)
+    }
+}
+
+impl<S> WebhookReceiverBuilder<S>
+where
+    S: VerifierSource + MaybeSend + 'static,
+{
+    /// Creates a builder that asks `source` for the verifier of each
+    /// request, before its body is read, with the defaults
+    /// [`new`](WebhookReceiverBuilder::new) has.
+    ///
+    /// For one webhook URL serving several GitHub Apps: the source chooses
+    /// the secret by the request's [`HeaderMeta`], typically by its target,
+    /// and a request it has no verifier for is refused as
+    /// [`ReceiveError::UnknownTarget`](crate::ReceiveError::UnknownTarget)
+    /// (401) without its body being read. [`VerifierSource`] has the
+    /// security argument for choosing a secret by an unsigned header.
+    ///
+    /// ```
+    /// use octoevents::{
+    ///     Dispatcher, HeaderMeta, Target, TargetType, Verifier, WebhookReceiverBuilder,
+    ///     WebhookSecret,
+    /// };
+    ///
+    /// let first = Verifier::new(WebhookSecret::new("first app's secret"));
+    /// let second = Verifier::new(WebhookSecret::new("second app's secret"));
+    ///
+    /// let webhook = WebhookReceiverBuilder::from_source(move |headers: &HeaderMeta| {
+    ///     match headers.target.as_ref()? {
+    ///         Target { kind: TargetType::Integration, id: 1 } => Some(first.clone()),
+    ///         Target { kind: TargetType::Integration, id: 2 } => Some(second.clone()),
+    ///         _ => None,
+    ///     }
+    /// })
+    /// .build(Dispatcher::builder().build());
+    /// # let _ = webhook;
+    /// ```
+    #[must_use]
+    pub fn from_source(source: S) -> Self {
         Self {
             config: Config {
-                verifier,
+                source,
                 body_limit: DEFAULT_BODY_LIMIT,
                 handle_ping: false,
             },
@@ -137,7 +179,7 @@ impl WebhookReceiverBuilder {
     ///
     /// [`BoxError`]: crate::BoxError
     #[must_use]
-    pub fn build<H>(self, handler: H) -> WebhookReceiver<H>
+    pub fn build<H>(self, handler: H) -> WebhookReceiver<H, S>
     where
         H: Handler<Envelope> + MaybeSend + MaybeSync + 'static,
         H::Error: Into<BoxError>,
@@ -151,7 +193,7 @@ impl WebhookReceiverBuilder {
     }
 }
 
-impl fmt::Debug for WebhookReceiverBuilder {
+impl<S: fmt::Debug> fmt::Debug for WebhookReceiverBuilder<S> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut debug = formatter.debug_struct("WebhookReceiverBuilder");
         self.config.debug_fields(&mut debug);
@@ -196,29 +238,32 @@ impl fmt::Debug for WebhookReceiverBuilder {
     not(feature = "http-body"),
     doc = "[`receive`]: https://docs.rs/octoevents/latest/octoevents/struct.WebhookReceiver.html#method.receive"
 )]
-pub struct WebhookReceiver<H> {
+pub struct WebhookReceiver<H, S = Verifier> {
     // Shared rather than owned so the receiver is `Clone` for any handler:
     // Tower routers clone a service per connection and its future must own
     // its state, and a struct handler should not need `Clone` for that.
-    inner: Arc<Inner<H>>,
+    inner: Arc<Inner<H, S>>,
 }
 
-struct Inner<H> {
-    config: Config,
+struct Inner<H, S> {
+    config: Config<S>,
     handler: H,
 }
 
-impl<H> fmt::Debug for WebhookReceiver<H> {
+impl<H, S: fmt::Debug> fmt::Debug for WebhookReceiver<H, S> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         // The handler is elided rather than bounded: closures are never
-        // `Debug`, and the configuration is what is worth printing.
+        // `Debug`, and the configuration is what is worth printing. The
+        // source is part of it, printed and so bounded: a `Verifier` prints
+        // its secrets redacted, and a closure source's receiver has a type no
+        // struct field can name, so there is nothing to derive `Debug` on.
         let mut debug = formatter.debug_struct("WebhookReceiver");
         self.inner.config.debug_fields(&mut debug);
         debug.finish_non_exhaustive()
     }
 }
 
-impl<H> Clone for WebhookReceiver<H> {
+impl<H, S> Clone for WebhookReceiver<H, S> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -226,10 +271,11 @@ impl<H> Clone for WebhookReceiver<H> {
     }
 }
 
-impl<H> WebhookReceiver<H>
+impl<H, S> WebhookReceiver<H, S>
 where
     H: Handler<Envelope> + MaybeSend + MaybeSync + 'static,
     H::Error: Into<BoxError>,
+    S: VerifierSource + MaybeSend + 'static,
 {
     /// Authenticates, bounds, and dispatches one request.
     ///
@@ -321,13 +367,18 @@ where
     ///
     /// 1. A request whose signature header is absent (401) or not a signature
     ///    (400) is refused from the headers, before the body is looked at.
-    /// 2. A body over the limit is 413.
-    /// 3. [`Envelope::from_signed`] verifies the body and builds the envelope;
-    ///    a mismatch is 401, and a wrong content type or a missing required
-    ///    header is 400.
-    /// 4. A verified `ping` is 204 unless the builder was asked to
+    /// 2. The [`HeaderMeta`] is read from the headers; a missing delivery ID
+    ///    or event name is 400.
+    /// 3. The [`VerifierSource`] is asked for the request's verifier; a
+    ///    request it has none for is 401,
+    ///    [`ReceiveError::UnknownTarget`]. A receiver built with
+    ///    [`WebhookReceiverBuilder::new`] always has its one verifier.
+    /// 4. A body over the limit is 413.
+    /// 5. [`Envelope::from_signed`]'s checks run on the body: a mismatch is
+    ///    401, and a wrong content type is 400.
+    /// 6. A verified `ping` is 204 unless the builder was asked to
     ///    `handle_ping`.
-    /// 5. The handler runs: 204 when it succeeds, and 500 when it fails,
+    /// 7. The handler runs: 204 when it succeeds, and 500 when it fails,
     ///    after the failed-delivery event when `tracing` is enabled.
     ///
     /// Every span and field the `tracing` feature records on `receive` is
@@ -383,10 +434,11 @@ where
     }
 }
 
-impl<H> Inner<H>
+impl<H, S> Inner<H, S>
 where
     H: Handler<Envelope>,
     H::Error: Into<BoxError>,
+    S: VerifierSource,
 {
     /// The receiving path over an `http::Request`: the body is read from the
     /// transport, within the payload-length limit, once the headers have passed.
@@ -464,17 +516,29 @@ where
         }
 
         let Config {
-            verifier,
+            source,
             handle_ping,
             ..
         } = &self.config;
+
+        // The verifier is chosen before the body is read, from the headers
+        // alone, so a request for a target the source does not know is
+        // refused without being buffered. The header meta it is chosen by is
+        // the one the envelope carries: the headers are read once.
+        let meta = match HeaderMeta::from_headers(headers) {
+            Ok(meta) => meta,
+            Err(error) => return refuse(span, &error),
+        };
+        let Some(verifier) = source.verifier(&meta).await else {
+            return refuse(span, &ReceiveError::UnknownTarget);
+        };
 
         let bytes = match body.await {
             Ok(bytes) => bytes,
             Err(error) => return refuse(span, &error),
         };
 
-        let envelope = match Envelope::from_signed(verifier, headers, bytes) {
+        let envelope = match Envelope::from_signed_with(&verifier, headers, meta, bytes) {
             Ok(envelope) => envelope,
             Err(error) => return refuse(span, &error),
         };
@@ -532,10 +596,11 @@ where
 /// # let _ = app;
 /// ```
 #[cfg(feature = "tower")]
-impl<H, B> Service<Request<B>> for WebhookReceiver<H>
+impl<H, S, B> Service<Request<B>> for WebhookReceiver<H, S>
 where
     H: Handler<Envelope> + MaybeSend + MaybeSync + 'static,
     H::Error: Into<BoxError>,
+    S: VerifierSource + MaybeSend + 'static,
     B: Body<Data = Bytes> + MaybeSend + 'static,
     B::Error: fmt::Display,
 {

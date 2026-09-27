@@ -39,7 +39,8 @@
 //! Six headers are named here. Four are required of every request: the
 //! signature, the delivery ID, the event name and the content type. The two
 //! target headers GitHub does not always send, and their absence refuses
-//! nothing.
+//! nothing, unless the receiver chooses its verifier by the target with a
+//! [`VerifierSource`](crate::VerifierSource).
 //!
 //! [`Envelope::from_signed`]: crate::Envelope::from_signed
 //! [`Verifier::sign`]: crate::Verifier::sign
@@ -73,13 +74,13 @@ pub const EVENT_NAME: HeaderName = HeaderName::from_static("x-github-event");
 pub use http::header::CONTENT_TYPE;
 
 /// `X-GitHub-Hook-Installation-Target-Type`: the resource the webhook is
-/// installed on, which parses into
-/// [`EventMeta::target_type`](crate::EventMeta::target_type).
+/// installed on, which parses into the kind of
+/// [`EventMeta::target`](crate::EventMeta::target), a [`Target`](crate::Target).
 pub const TARGET_TYPE: HeaderName =
     HeaderName::from_static("x-github-hook-installation-target-type");
 
 /// `X-GitHub-Hook-Installation-Target-ID`: the ID of that resource, which
-/// parses into [`EventMeta::target_id`](crate::EventMeta::target_id).
+/// parses into the ID of [`EventMeta::target`](crate::EventMeta::target).
 pub const TARGET_ID: HeaderName = HeaderName::from_static("x-github-hook-installation-target-id");
 
 // How the receiving path reads the headers named above. Crate-private: the

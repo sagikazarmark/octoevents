@@ -803,6 +803,34 @@ fn a_malformed_signature_header_is_refused_before_any_verify_span_opens() {
     );
 }
 
+/// A request whose target the receiver's source has no verifier for is
+/// `unauthorized`, as a mismatch is, and is told apart from one by the
+/// receive span's `error`: no verifier was chosen, so no verify span opens.
+#[cfg(feature = "http-body")]
+#[test]
+fn an_unknown_target_is_unauthorized_with_its_own_error_and_no_verify_span() {
+    let receiver = octoevents::WebhookReceiverBuilder::from_source(|_: &octoevents::HeaderMeta| {
+        None::<Verifier>
+    })
+    .build(dispatcher());
+
+    let (recording, response) = common::traced(receiver.receive(receiving::signed_request()));
+
+    assert_eq!(response.status(), 401);
+    assert!(!recording.has_span("octoevents.verify"), "{recording}");
+    let fields = &recording.span("octoevents.receive").at_close;
+    assert_eq!(
+        fields.get("outcome"),
+        Some(&Value::Str("unauthorized".into())),
+        "{fields}"
+    );
+    assert_eq!(
+        fields.debug("error"),
+        Some("no webhook secret is configured for the request's target"),
+        "{fields}"
+    );
+}
+
 /// A field recorded on more than one span is the same field to a dashboard
 /// only if every span records it in the same form: the receive span learns
 /// the delivery ID and event from the headers, the dispatch span from the
