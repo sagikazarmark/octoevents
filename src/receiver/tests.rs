@@ -10,18 +10,19 @@
 //! is built with, so a test that wants a refusal says which header it
 //! tampers with.
 
-#[cfg(feature = "http-body")]
 use std::{
-    collections::VecDeque,
-    pin::Pin,
-    task::{Context, Poll},
-};
-use std::{
+    collections::HashMap,
     convert::Infallible,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+};
+#[cfg(feature = "http-body")]
+use std::{
+    collections::VecDeque,
+    pin::Pin,
+    task::{Context, Poll},
 };
 
 #[cfg(feature = "http-body")]
@@ -35,7 +36,7 @@ use http_body_util::Full;
 
 #[cfg(feature = "http-body")]
 use crate::{DecodeError, EventKind, FromEnvelope, Payload};
-use crate::{Envelope, Handler, Verifier, WebhookSecret};
+use crate::{Envelope, Handler, HeaderMeta, TargetType, Verifier, VerifierSource, WebhookSecret};
 
 /// A production-shaped handler: dependencies as fields, borrowed through
 /// `&self`, and deliberately not `Clone`.
@@ -257,6 +258,32 @@ const WRONG_SIGNATURE: &str =
 /// they accept.
 fn verifier() -> Verifier {
     Verifier::new(WebhookSecret::new("secret"))
+}
+
+/// App `id`'s verifier, for a receiver built `from_source`: a secret no
+/// other App shares.
+fn app(id: u64) -> Verifier {
+    Verifier::new(WebhookSecret::new(format!("app {id}'s secret")))
+}
+
+/// A deployment's GitHub Apps by App ID, looked up the way a secret manager
+/// would be: through an `async fn`, keyed by the target it is handed.
+struct Apps(HashMap<u64, Verifier>);
+
+impl VerifierSource for Apps {
+    // A real source awaits its store; this one reads a map.
+    #[expect(clippy::unused_async_trait_impl)]
+    async fn verifier(&self, headers: &HeaderMeta) -> Option<Verifier> {
+        match (headers.target_type.as_ref(), headers.target_id) {
+            (Some(TargetType::Integration), Some(id)) => self.0.get(&id).cloned(),
+            _ => None,
+        }
+    }
+}
+
+/// Apps 1 and 2, each with its own secret.
+fn apps() -> Apps {
+    Apps(HashMap::from([(1, app(1)), (2, app(2))]))
 }
 
 /// Receiving a request: the handler forms `build` accepts, what the handler
@@ -666,7 +693,7 @@ mod receive_bytes {
     use bytes::Bytes;
     use http::{HeaderMap, StatusCode};
 
-    use super::{Recorder, WRONG_SIGNATURE, verifier};
+    use super::{Recorder, WRONG_SIGNATURE, app, apps, verifier};
     use crate::{
         Action, Dispatcher, Envelope, EventKind, EventMeta, WebhookReceiverBuilder, header,
         test_support::AppError,
@@ -811,6 +838,45 @@ mod receive_bytes {
     }
 
     #[tokio::test]
+    async fn a_source_chooses_the_verifier_by_the_target_on_the_bytes_path() {
+        // The core path, under every feature set: App 1's delivery verifies
+        // under App 1's secret, App 1's body claiming App 2 does not, and a
+        // target the source does not know is refused before any verification.
+        let (handler, calls) = recorder();
+        let receiver = WebhookReceiverBuilder::from_source(apps()).build(handler);
+        let body = br#"{"action":"opened"}"#;
+        let delivery = |target: Option<&str>| {
+            let mut headers = headers(body, "issues");
+            headers.insert(header::SIGNATURE, app(1).sign(body).into());
+            if let Some(id) = target {
+                headers.insert(header::TARGET_TYPE, "integration".parse().unwrap());
+                headers.insert(header::TARGET_ID, id.parse().unwrap());
+            }
+            headers
+        };
+
+        let mut statuses = Vec::new();
+        for target in [Some("1"), Some("2"), Some("3"), None] {
+            statuses.push(
+                receiver
+                    .receive_bytes(&delivery(target), Bytes::from_static(body))
+                    .await,
+            );
+        }
+
+        assert_eq!(
+            statuses,
+            [
+                StatusCode::NO_CONTENT,
+                StatusCode::UNAUTHORIZED,
+                StatusCode::UNAUTHORIZED,
+                StatusCode::UNAUTHORIZED
+            ]
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
     async fn a_body_over_the_limit_is_413_and_one_at_the_limit_is_received() {
         // The limit is checked on the length of the bytes in hand, since
         // there is no read to stop; at the limit passes, one over does not,
@@ -903,7 +969,6 @@ mod receive_bytes {
 #[cfg(feature = "http-body")]
 mod source {
     use std::{
-        collections::HashMap,
         convert::Infallible,
         sync::{
             Arc,
@@ -915,37 +980,10 @@ mod source {
     use http::{Request, StatusCode};
     use http_body_util::Full;
 
-    use super::{Frames, Recorder, verifier};
-    use crate::{
-        Envelope, HeaderMeta, TargetType, Verifier, VerifierSource, WebhookReceiverBuilder,
-        WebhookSecret,
-    };
+    use super::{Frames, Recorder, app, apps, verifier};
+    use crate::{Envelope, HeaderMeta, TargetType, Verifier, WebhookReceiverBuilder};
 
     const BODY: &[u8] = br#"{"action":"opened"}"#;
-
-    /// App `id`'s verifier: a secret no other App shares.
-    fn app(id: u64) -> Verifier {
-        Verifier::new(WebhookSecret::new(format!("app {id}'s secret")))
-    }
-
-    /// A deployment's GitHub Apps by App ID, looked up the way a secret
-    /// manager would be: through an `async fn`.
-    struct Apps(HashMap<u64, Verifier>);
-
-    impl VerifierSource for Apps {
-        // A real source awaits its store; this one reads a map.
-        #[expect(clippy::unused_async_trait_impl)]
-        async fn verifier(&self, headers: &HeaderMeta) -> Option<Verifier> {
-            match (headers.target_type.as_ref(), headers.target_id) {
-                (Some(TargetType::Integration), Some(id)) => self.0.get(&id).cloned(),
-                _ => None,
-            }
-        }
-    }
-
-    fn apps() -> Apps {
-        Apps(HashMap::from([(1, app(1)), (2, app(2))]))
-    }
 
     /// A delivery over `body` claiming the target `(kind, id)`, or none,
     /// signed with `signer`.

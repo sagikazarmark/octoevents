@@ -85,8 +85,10 @@ where
     /// the secret by the request's [`HeaderMeta`], typically by its target,
     /// and a request it has no verifier for is refused as
     /// [`ReceiveError::UnknownTarget`](crate::ReceiveError::UnknownTarget)
-    /// (401) without its body being read. [`VerifierSource`] has the
-    /// security argument for choosing a secret by an unsigned header.
+    /// (401) before verification: on `receive`, before the body is read.
+    /// [`VerifierSource`] has the security argument for choosing a secret by
+    /// an unsigned header, and what attributing a delivery to its target
+    /// takes.
     ///
     /// ```
     /// use octoevents::{

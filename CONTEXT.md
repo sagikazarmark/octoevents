@@ -316,16 +316,19 @@ _Avoid_: Validator, authenticator, signer (a role the verifier plays for a test,
 (nothing else at the crate root is verified, so the qualifier adds length and no meaning),
 keyring (secrets tried in turn is what a verifier already is; and they are not keys)
 
-**VerifierSource**: What a receiver asks, per request and before reading the body,
+**VerifierSource**: What a receiver asks, per request and before verification,
 for the `Verifier` of the request's `HeaderMeta`, typically by its target: one webhook URL serving several GitHub Apps,
 each signing with its own secret.
 Asynchronous, so the secrets can come from a secret manager.
 A `Verifier` is one, answering itself for every request, so a single-secret receiver names no source.
-Finding no verifier, for a missing target or an unknown one, is the `UnknownTarget` refusal, answered as a mismatch is.
+Finding no verifier, for a missing target, an unknown one or a failed lookup, is the `UnknownTarget` refusal,
+answered as a mismatch is.
 Selecting a secret by an unsigned header is safe: a forged target selects a secret its sender does not know,
 so verification fails.
-Attributing a verified delivery to its target is sound only when targets' secrets are distinct,
-which is the source's to ensure.
+Attributing a verified delivery to its target is sound only when the source chose the verifier by that target,
+answering each target with its own secrets only, and no two targets share a secret, both the source's to ensure;
+under a single `Verifier`, which ignores the target, the target stays a claim.
+It runs for unauthenticated requests too, so a remote lookup per request is on the path of forged traffic.
 _Avoid_: Keyring (secrets tried in turn, which is a `Verifier` with `also`), secret store or secret provider
 (the source hands out verifiers, not secrets), resolver
 

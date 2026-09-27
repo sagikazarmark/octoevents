@@ -563,17 +563,18 @@ pub enum ReceiveError {
     #[error(transparent)]
     Signature(#[from] SignatureError),
     /// The receiver's [`VerifierSource`](crate::VerifierSource) has no
-    /// verifier for the request: its target headers are absent, or name a
-    /// target the source does not know.
+    /// verifier for the request: its target headers are absent, name a
+    /// target the source does not know, or the source could not look it up.
     ///
     /// Answered 401, as a mismatching signature is: either way the request
     /// did not authenticate, and a client learns nothing from the status
     /// about which targets are configured. The variant, and the receive
     /// span's `error` text, tell the two apart for an operator. Produced by
-    /// the receiver before the body is read, never by
-    /// [`Envelope::from_signed`], which is handed its verifier; a transport
-    /// choosing the verifier itself constructs it for the same failure.
-    #[error("no webhook secret is configured for the request's target")]
+    /// the receiver before verification (on `receive`, before the body is
+    /// read), never by [`Envelope::from_signed`], which is handed its
+    /// verifier; a transport choosing the verifier itself constructs it for
+    /// the same failure.
+    #[error("no webhook verifier is available for the request's target")]
     UnknownTarget,
     /// A required delivery header was absent or empty.
     #[error("missing {name} header")]

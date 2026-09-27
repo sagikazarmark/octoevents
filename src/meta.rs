@@ -39,11 +39,13 @@ use crate::{Action, EventKind, ReceiveError, events::string_enum, header};
 /// payload data or independently trusted configuration. Delivery-ID
 /// deduplication handles GitHub redelivery, not adversarial replay.
 ///
-/// The one exception is the target a
-/// [`VerifierSource`](crate::VerifierSource) selected the secret by: a
-/// delivery that verified under a secret only one target holds is that
-/// target's. Whether secrets are distinct per target is the source's to
-/// ensure, not something verification can see.
+/// The one exception is the target, under two conditions a
+/// [`VerifierSource`](crate::VerifierSource) must meet and verification
+/// cannot see: the source chose the verifier by the target, answering each
+/// target with its own secrets only, and no two targets share a secret. A
+/// delivery that verified under such a source is the target's it claims.
+/// With a single [`Verifier`](crate::Verifier), which ignores the target, the
+/// target headers stay claims like the rest.
 ///
 /// So "decodes nothing", said of a handler over this type, means no decode on
 /// the handler's behalf, not that the payload went unread. A decode is the

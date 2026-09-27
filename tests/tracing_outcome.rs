@@ -826,7 +826,7 @@ fn an_unknown_target_is_unauthorized_with_its_own_error_and_no_verify_span() {
     );
     assert_eq!(
         fields.debug("error"),
-        Some("no webhook secret is configured for the request's target"),
+        Some("no webhook verifier is available for the request's target"),
         "{fields}"
     );
 }

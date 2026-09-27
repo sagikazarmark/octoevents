@@ -117,15 +117,22 @@ let webhook = WebhookReceiverBuilder::from_source(move |headers: &HeaderMeta| {
 .build(Dispatcher::builder().build());
 ```
 
-- The source is asked before the body is read.
-  A request whose target is absent or unknown is refused 401, as `ReceiveError::UnknownTarget`,
-  without buffering its body.
+- The source is asked before verification.
+  A request whose target is absent or unknown is refused 401, as `ReceiveError::UnknownTarget`: with `receive`,
+  before its body is read; with `receive_bytes`, which is handed the body, before the HMAC is computed.
   A lookup that awaits, such as a secret manager, implements `VerifierSource` on a struct.
 - The target headers are not signed, but choosing a secret by them is safe:
   a forged target selects a secret its sender does not know, so the body fails verification.
-- A verified delivery is authentic for the secret that was selected.
-  Treat its `EventMeta::target_id` as the App it came from only if no two Apps share a secret;
-  keeping secrets distinct is the source's responsibility, and verification cannot detect a shared one.
+- A verified delivery is authentic for the secret that was selected, and for nothing else.
+  Treat its `EventMeta::target_type` and `target_id` as the App it came from only if both hold:
+  the source chose the verifier by the target and answers each target with that target's own secrets only,
+  and no two Apps share a secret, rotation windows included.
+  A source that ignores the target, as a single `Verifier` does,
+  verifies App A's signed body under a forged App B header.
+  Verification can detect neither condition; both are the source's responsibility.
+- The source runs for every request that reaches the URL, including forged ones from senders who know no secret.
+  Keep the secrets in memory or cache them, and bound the lookup's time and concurrency;
+  a source that queries a remote service per request lets unauthenticated traffic slow every App behind the URL.
 - GitHub consistently sends `integration` and the App ID in these headers for an App's deliveries,
   but does not document the values
   ([github/rest-api-description#7210](https://github.com/github/rest-api-description/issues/7210)).

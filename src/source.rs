@@ -2,7 +2,7 @@ use std::{future::Future, sync::Arc};
 
 use crate::{HeaderMeta, MaybeSend, MaybeSync, Verifier};
 
-/// What a receiver asks, per request and before reading the body, for the
+/// What a receiver asks, per request and before verifying it, for the
 /// [`Verifier`] of that request: one webhook URL serving several GitHub Apps,
 /// each signing with its own secret.
 ///
@@ -10,7 +10,10 @@ use crate::{HeaderMeta, MaybeSend, MaybeSync, Verifier};
 /// verifies the body against the verifier it gets back; a source that has
 /// none answers `None`, and the request is refused as
 /// [`ReceiveError::UnknownTarget`](crate::ReceiveError::UnknownTarget) (401)
-/// without its body being read. A source typically keys by the target,
+/// before verification: on `receive`, before the body is read from the
+/// transport, so the receiver buffers nothing for it; on `receive_bytes`, the
+/// bytes being the caller's already, before the HMAC is computed over them.
+/// A source typically keys by the target,
 /// [`HeaderMeta::target_type`] and [`HeaderMeta::target_id`]: for a GitHub
 /// App, `integration` and the App ID.
 ///
@@ -57,13 +60,29 @@ use crate::{HeaderMeta, MaybeSend, MaybeSync, Verifier};
 /// body alone. Choosing a secret by them is safe all the same. A forged
 /// target selects a secret its sender does not know, so the body does not
 /// verify and the request is refused; a delivery that does verify is
-/// authentic for the secret that was selected. Attributing it to that
-/// target, as the App it came from, is sound only when no two targets share
-/// a secret, which is the source's to ensure: verification cannot see it.
+/// authentic for the secret that was selected, and for nothing else.
+///
+/// Attributing it to the target it claims, as the App it came from, takes two
+/// things verification cannot see, both the source's to ensure:
+///
+/// - the source chose the verifier by that target, and answers each target
+///   with that target's own secrets only. A source that ignores the target,
+///   as a single [`Verifier`] does, or maps two targets to one verifier,
+///   verifies App A's signed body under a forged App B header, and the
+///   target stays a claim;
+/// - no two targets share a secret, rotation windows included.
 ///
 /// A lookup that fails, a secret manager that cannot be reached, answers as
 /// a target the source does not know. GitHub records the 401 and the delivery
 /// can be redelivered once the source recovers.
+///
+/// The source runs before verification, so it runs for requests from anyone
+/// who can reach the URL, whether or not they know a secret. A source that
+/// asks a remote service per request puts that service on the path of
+/// unauthenticated traffic, where a flood of forged requests slows the
+/// deliveries of every App behind the URL. Keep the secrets in memory or
+/// cache them, bound the lookup's time and concurrency, and do not answer an
+/// unknown target with a request to the backend.
 pub trait VerifierSource: MaybeSync {
     /// The verifier to authenticate the request whose headers read as
     /// `headers`, or `None` to refuse it.
