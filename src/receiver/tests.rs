@@ -443,7 +443,7 @@ mod receive {
     #[tokio::test]
     async fn answers_a_receive_failure_with_the_status_the_contract_maps_it_to() {
         // The receiver's one test dedicated to the mapping. Which failure a
-        // request earns is pinned on `Envelope::from_signed`, and which
+        // request earns is pinned on `authenticate`, and which
         // status each failure maps to on `ReceiveError::status`, so one
         // failure through HTTP shows the receiver answers with the mapped
         // status; the refusal before the body is read has its own test

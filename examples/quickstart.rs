@@ -26,8 +26,8 @@ use octoevents::{
     WebhookSecret,
 };
 
-/// Runs for `issues.opened`. The envelope is the verified unit of receipt: its
-/// meta (delivery ID, kind, action, repository, sender, ...) and the raw payload.
+/// Runs for `issues.opened`. The envelope is the unit of receipt, which the
+/// receiver authenticated before handing it over: its meta (delivery ID, kind, action, repository, sender, ...) and the raw payload.
 /// `BoxError` is the crate's erased error; any `Error + Send + Sync + 'static` converts into it with `?`.
 async fn thank(envelope: Envelope) -> Result<(), BoxError> {
     let sender = envelope.meta.sender.map(|s| s.login).unwrap_or_default();
@@ -61,7 +61,7 @@ async fn main() -> Result<(), BoxError> {
 
 #[cfg(test)]
 mod tests {
-    use octoevents::{Match, header};
+    use octoevents::{HeaderMeta, Match, header};
 
     use super::*;
 
@@ -76,8 +76,7 @@ mod tests {
             .build();
 
         let envelope = Envelope::new(
-            "delivery-1",
-            EventKind::Issues,
+            HeaderMeta::new("delivery-1", EventKind::Issues),
             br#"{"action":"opened","sender":{"id":1,"login":"octocat"}}"#,
         );
 

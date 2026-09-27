@@ -33,8 +33,8 @@ mod common;
 
 use common::{Fields, SpanRecord, Value};
 use octoevents::{
-    Action, AnyAction, DispatchError, Dispatcher, Envelope, EventKind, Handler as _, Match,
-    Outcome, Signature, SignatureError, Verifier, WebhookSecret,
+    Action, AnyAction, DispatchError, Dispatcher, Envelope, EventKind, Handler as _, HeaderMeta,
+    Match, Outcome, Signature, SignatureError, Verifier, WebhookSecret,
 };
 
 /// The boxed source's text: the handlers here fail with a `&'static str`,
@@ -61,7 +61,7 @@ impl octoevents::Payload for AnyPullRequest {
 /// An envelope of `kind` whose payload carries `action`, or `{}` for none, so
 /// the meta the span records is what the payload says.
 fn envelope(kind: EventKind, action: Option<Action>) -> Envelope {
-    Envelope::new("delivery", kind, payload(action, None))
+    Envelope::new(HeaderMeta::new("delivery", kind), payload(action, None))
 }
 
 /// The smallest payload carrying `action` and an installation ID, each when
@@ -311,8 +311,7 @@ fn the_span_opens_with_the_delivery_id_and_event_and_the_action_and_installation
     // string "42", and the others are strings, which is what a dashboard
     // groups and compares by.
     let with_both = Envelope::new(
-        "delivery",
-        EventKind::PullRequest,
+        HeaderMeta::new("delivery", EventKind::PullRequest),
         payload(Some(Action::Opened), Some(42)),
     );
     let (recording, _) = common::traced(dispatcher.dispatch(with_both));

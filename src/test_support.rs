@@ -1,9 +1,10 @@
 //! Fixtures shared by the crate's unit tests: synthetic envelopes over the
-//! fixture corpus and one application error the tests read a boxed dispatch
-//! source back as.
+//! fixture corpus, one application error the tests read a boxed dispatch
+//! source back as, and the signed request the authenticating path and the
+//! envelope are tested over.
 //!
-//! Nothing here carries an authentication claim; the receiver's tests sign
-//! real requests instead.
+//! The synthetic envelopes carry no authentication claim; the receiver's
+//! tests sign real requests instead.
 
 #![allow(
     dead_code,
@@ -13,12 +14,17 @@
 
 use std::fmt;
 
-use crate::{Action, BoxError, DecodeError, DispatchError, Envelope, EventKind};
+use http::{HeaderMap, HeaderValue};
+
+use crate::{
+    Action, BoxError, DecodeError, DispatchError, Envelope, EventKind, HeaderMeta, Verifier,
+    WebhookSecret, header,
+};
 
 /// A synthetic envelope of `kind` over `payload`, with `"delivery"` as its
 /// delivery ID and the meta the receiver would have read from `payload`.
-pub(crate) fn envelope(kind: EventKind, payload: &'static [u8]) -> Envelope {
-    Envelope::new("delivery", kind, payload)
+pub(crate) fn envelope(kind: EventKind, payload: impl AsRef<[u8]>) -> Envelope {
+    Envelope::new(HeaderMeta::new("delivery", kind), payload)
 }
 
 /// [`envelope`] delivered under `action`, whatever the payload says.
@@ -156,3 +162,45 @@ impl fmt::Display for AppError {
 }
 
 impl std::error::Error for AppError {}
+
+/// The payload of the signed requests the authenticating path and the
+/// envelope are tested over: an `opened` delivery carrying every probed field.
+pub(crate) const BODY: &[u8] = br#"{
+    "action":"opened",
+    "installation":{"id":42},
+    "repository":{"id":1,"name":"repo","full_name":"octo/repo","owner":{"login":"octo"}},
+    "organization":{"id":9919,"login":"github"},
+    "sender":{"id":2,"login":"monalisa"}
+}"#;
+
+/// The verifier every signed envelope in the tests is checked against; it
+/// also signs the bodies it accepts.
+pub(crate) fn verifier() -> Verifier {
+    Verifier::new(WebhookSecret::new("secret"))
+}
+
+/// The headers of a well-formed `pull_request` delivery carrying
+/// `signature`, target included; a test that wants one header wrong
+/// overrides or removes it.
+pub(crate) fn headers(signature: &str) -> HeaderMap {
+    HeaderMap::from_iter([
+        (header::SIGNATURE, signature.parse().unwrap()),
+        (header::DELIVERY_ID, HeaderValue::from_static("delivery")),
+        (header::EVENT_NAME, HeaderValue::from_static("pull_request")),
+        (
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json; charset=utf-8"),
+        ),
+        (header::TARGET_TYPE, HeaderValue::from_static("repository")),
+        (header::TARGET_ID, HeaderValue::from_static("7")),
+    ])
+}
+
+/// A header map from `(name, value)` string pairs, each name parsed into a
+/// `HeaderName`.
+pub(crate) fn headers_from<const N: usize>(entries: [(&str, &str); N]) -> HeaderMap {
+    entries
+        .into_iter()
+        .map(|(name, value)| (name.parse().unwrap(), value.parse().unwrap()))
+        .collect()
+}

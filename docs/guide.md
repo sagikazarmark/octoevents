@@ -616,15 +616,15 @@ let webhook = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("deve
 
 ## Testing without GitHub
 
-A handler is tested through `dispatch` with an envelope from `Envelope::new`: the delivery ID, the kind,
-and the payload bytes.
+A handler is tested through `dispatch` with an envelope from `Envelope::new`: a `HeaderMeta`
+(the delivery ID and the kind, and the target if the handler reads it) and the payload bytes.
 Nothing is signed, because nothing is verified on this path; the constructor reads the action, installation ID,
 repository, organization and sender out of the bytes the way the receiver does,
 so the meta a handler sees is what the payload says.
 In the quickstart's crate:
 
 ```rust,ignore
-use octoevents::{Action, Dispatcher, Envelope, EventKind, Match};
+use octoevents::{Action, Dispatcher, Envelope, EventKind, HeaderMeta, Match};
 
 #[tokio::test]
 async fn thanks_for_an_opened_issue() {
@@ -633,8 +633,7 @@ async fn thanks_for_an_opened_issue() {
         .build();
 
     let envelope = Envelope::new(
-        "delivery-1",
-        EventKind::Issues,
+        HeaderMeta::new("delivery-1", EventKind::Issues),
         br#"{"action":"opened","sender":{"id":1,"login":"octocat"}}"#,
     );
 
@@ -647,7 +646,9 @@ async fn thanks_for_an_opened_issue() {
 
 `Envelope` cannot be built as a struct literal outside the crate,
 so a meta cannot be paired with a payload that says something else.
-The target type and ID come from headers, so they stay `None` unless assigned.
+The target type and ID come from headers, so they stay `None` unless assigned on the `HeaderMeta`.
+An envelope built this way is data: nothing about it says it was authenticated,
+which is why a transport receiving real requests builds its envelopes with `authenticate` instead.
 
 The receiver is tested with a signed synthetic request.
 `Verifier::sign` gives the `Signature` GitHub would send for a body,
@@ -757,8 +758,12 @@ A transport that wants the envelope rather than the answer,
 to persist it before any handler runs or to forward it to another service as the
 [wire format](https://docs.rs/octoevents/latest/octoevents/struct.Envelope.html#wire-format)
 (the one flat JSON document a serialized `Envelope` becomes),
-calls `Envelope::from_signed` with the verifier, the `HeaderMap` and the body,
+calls `octoevents::authenticate` with the verifier, the `HeaderMap` and the body,
 and answers a failure with `ReceiveError::status`; its docs say what the receiver does around that call.
+It is the one path from a request to an envelope that can be trusted: it verifies the signature,
+checks the content type and reads the headers before it builds the envelope.
+A transport that authenticated the request by its own means builds the same envelope with `Envelope::new`,
+from `HeaderMeta::from_headers` and the body.
 `Dispatcher::dispatch` is a plain `async fn` with no runtime of its own.
 
 The [`worker` example](../examples/worker/README.md) runs the receiver on Cloudflare Workers through `receive`,

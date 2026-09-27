@@ -351,16 +351,16 @@ string_enum! {
     /// The conversions are the wire string's, as [`EventKind`]'s are:
     ///
     /// ```
-    /// use octoevents::{Action, Envelope, EventKind};
+    /// use octoevents::{Action, Envelope, EventKind, HeaderMeta};
     ///
     /// assert_eq!(Action::from("ready_for_review"), Action::ReadyForReview);
     /// assert_eq!(Action::ReadyForReview.as_str(), "ready_for_review");
     /// assert_eq!(Action::from("future_action").as_str(), "future_action");
     ///
     /// // What the envelope reads off the payload.
-    /// let opened = Envelope::new("delivery-1", EventKind::Issues, br#"{"action":"opened"}"#);
+    /// let opened = Envelope::new(HeaderMeta::new("delivery-1", EventKind::Issues), br#"{"action":"opened"}"#);
     /// assert_eq!(opened.meta.action, Some(Action::Opened));
-    /// let pushed = Envelope::new("delivery-2", EventKind::Push, br#"{"ref":"refs/heads/main"}"#);
+    /// let pushed = Envelope::new(HeaderMeta::new("delivery-2", EventKind::Push), br#"{"ref":"refs/heads/main"}"#);
     /// assert_eq!(pushed.meta.action, None);
     /// ```
     ///

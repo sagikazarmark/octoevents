@@ -13,9 +13,10 @@
 //!     WebhookSecret,
 //! };
 //!
-//! // Runs for `issues.opened`. The envelope is the verified unit of receipt:
-//! // its meta (delivery ID, kind, action, repository, sender, ...) and the
-//! // raw payload bytes. `BoxError` is the crate's erased error; any
+//! // Runs for `issues.opened`. The envelope is the unit of receipt, which the
+//! // receiver authenticated before handing it over: its meta (delivery ID,
+//! // kind, action, repository, sender, ...) and the raw payload bytes.
+//! // `BoxError` is the crate's erased error; any
 //! // `Error + Send + Sync + 'static` converts into it with `?`, and a
 //! // handler with an error type of its own keeps it.
 //! async fn thank(envelope: Envelope) -> Result<(), BoxError> {
@@ -61,12 +62,16 @@
 //!
 //! # Concepts
 //!
-//! - [`Envelope`]: the verified unit of receipt, an [`EventMeta`] beside the
-//!   exact payload bytes. Produced by [`Envelope::from_signed`] on the
-//!   receiving path and by [`Envelope::new`] in a test, never by a struct
-//!   literal, so the meta and the bytes cannot disagree at birth. An envelope
-//!   a trusted transport forwarded is read back through serde, meta as
-//!   forwarded; only `from_signed` carries an authentication claim.
+//! - [`Envelope`]: the unit of receipt, an [`EventMeta`] beside the exact
+//!   payload bytes. It is data and makes no claim that it was authenticated:
+//!   [`Envelope::new`] builds one from a [`HeaderMeta`] and the bytes, never
+//!   a struct literal, so the meta and the bytes cannot disagree at birth. An
+//!   envelope a trusted transport forwarded is read back through serde, meta
+//!   as forwarded.
+//! - [`authenticate`]: the one path from an untrusted request to an envelope
+//!   that can be trusted. It verifies the signature over the body, then
+//!   builds the envelope; the receiver is built on it, and a received
+//!   envelope is trustworthy because it came from there.
 //! - [`EventMeta`]: the delivery ID, [`EventKind`], [`Action`], installation
 //!   ID, repository, organization, sender and target. The first two and the
 //!   target come from the headers; the rest come from the *probe*, a
@@ -106,10 +111,10 @@
 //!   [`Verifier::sign`] signs a test's synthetic request. The header value
 //!   parsed is a [`Signature`], which is where a malformed one is refused; a
 //!   signature that does not authenticate is a [`SignatureError`].
-//! - [`Envelope::from_signed`] and [`ReceiveError::status`]: the receiving
-//!   path for a transport that wants the envelope and not the receiver's
-//!   answer. `from_signed` takes the same `http::HeaderMap` and body bytes
-//!   the receiver does and produces the envelope; a failure is a
+//! - [`authenticate`] and [`ReceiveError::status`]: the receiving path for a
+//!   transport that wants the envelope and not the receiver's answer.
+//!   `authenticate` takes the same `http::HeaderMap` and body bytes the
+//!   receiver does and produces the envelope; a failure is a
 //!   [`ReceiveError`], and `status` maps it to the `http::StatusCode` the
 //!   receiver would answer. The header names are in [`header`].
 //!
@@ -128,7 +133,7 @@
 //!
 //! The core (envelope, verification, the handler trait and its inputs, the
 //! dispatcher, the receiver over headers and bytes) depends on none of them
-//! and builds for `wasm32-unknown-unknown`. [`Envelope::from_signed`] and
+//! and builds for `wasm32-unknown-unknown`. [`authenticate`] and
 //! [`WebhookReceiver::receive_bytes`] over an `http::HeaderMap`, the
 //! [`header`] constants and [`ReceiveError::status`] as an `http::StatusCode`
 //! are part of it: the `http` crate is not optional, since every surveyed
@@ -264,6 +269,7 @@
 // no separate `doc(cfg(...))`.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+mod authenticate;
 mod dispatch;
 mod envelope;
 mod events;
@@ -282,6 +288,7 @@ mod source;
 mod test_support;
 mod trace;
 
+pub use authenticate::authenticate;
 pub use dispatch::{DispatchError, Dispatcher, DispatcherBuilder, Match, Outcome};
 pub use envelope::{BodyError, DecodeError, Envelope, ReceiveError};
 pub use events::{Action, EventKind, UnknownAction, UnknownEventKind};
@@ -299,7 +306,7 @@ pub use signature::{Signature, SignatureError, Verifier, WebhookSecret, WebhookS
 pub use source::VerifierSource;
 
 /// The byte buffer type of [`Envelope::raw_payload`] and of the body
-/// [`Envelope::from_signed`] takes, re-exported from the `bytes` crate.
+/// [`authenticate`] takes, re-exported from the `bytes` crate.
 ///
 /// A transport that never touches `bytes` otherwise builds the body from
 /// here (`Bytes::from(String)`, `Bytes::from(Vec<u8>)`, or

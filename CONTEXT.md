@@ -8,13 +8,16 @@ since a receiver observes one and must answer it.
 
 ## Language
 
-**Envelope**: The verified unit of receipt:
-exact payload bytes plus the routing metadata extracted from headers and a best-effort payload probe.
+**Envelope**: The unit of receipt: exact payload bytes plus the routing metadata extracted from headers
+and a best-effort payload probe.
 Composed of an `EventMeta` and the raw payload, as the fields `meta` and `raw_payload`.
-The crate produces envelopes and consumers read them: outside the crate one comes from `Envelope::from_signed`
-(the receiving path, verified)
-or `Envelope::new` (a test's path, unverified, the meta probed from the same bytes), never from a struct literal,
-so the two halves cannot disagree at birth.
+Data, with no verification claim: an `Envelope` value proves nothing about how it was built.
+A received one is trustworthy because it came from _authenticate_
+(or the receiver, which is built on it), not because of its type.
+Outside the crate one comes from `authenticate`, or from `Envelope::new`,
+the data constructor over a `HeaderMeta` and the payload
+(a test's path, or a transport that authenticated the request by its own means; unverified,
+the meta probed from the same bytes), never from a struct literal, so the two halves cannot disagree at birth.
 The third way, serde over the _wire format_, reads back an envelope a trusted transport forwarded, meta as forwarded,
 neither verified nor probed.
 Verification authenticates the payload bytes, not the delivery ID, event name, or target headers.
@@ -277,15 +280,30 @@ or changed encodings or meanings are breaking changes documented in release note
 A producer and consumer crossing a breaking boundary migrate together or use a transport adapter.
 _Avoid_: Serialization format (the mechanism), envelope format, transport format, message
 
+**Authenticate**: The one path from an untrusted request to an envelope, `octoevents::authenticate`, over the verifier,
+the headers and the body.
+The signature header is parsed (`Missing`, `Malformed`) and _verified_ over the body (`Mismatch`),
+the content type is checked, then the required headers are read into a `HeaderMeta` and the envelope is built from it
+and the body.
+A free function beside the receiver, which calls it after asking its `VerifierSource`,
+so the receiver and a transport built on it authenticate alike.
+Not a method on `Verifier`, which knows the secrets and the HMAC and nothing of headers,
+and not a constructor on `Envelope`, which is data.
+The content-type check lives here and not in a data constructor:
+refusing a form-encoded body is what makes `raw_payload` the bytes that were signed.
+_Avoid_: `Envelope::from_signed` (the removed constructor, which made an envelope look verified by its type),
+verify as the name of this step (verify is the HMAC inside it)
+
 **Verify**: The mechanism: HMAC comparison of `X-Hub-Signature-256` against the body, `Verifier::verify`,
 over a `Signature` already parsed.
 It decides `Mismatch` and nothing else: whether the header is there is decided from the headers (`Missing`),
 and whether it is a signature by parsing it (`Malformed`), both before the verifier is asked.
-"Authenticate" is acceptable in prose for the goal verification achieves.
+"Authenticate" is acceptable in prose for the goal verification achieves; as a term it names the whole request step,
+_authenticate_, of which verification is one part.
 _Avoid_: Validate (collides with schema validation, despite GitHub's docs)
 
 **Signature**: The `X-Hub-Signature-256` value parsed once, as the type `Signature`: the 32 MAC bytes, nothing else.
-A header value becomes one through `TryFrom<&HeaderValue>`, the path `Envelope::from_signed` and the receiver take,
+A header value becomes one through `TryFrom<&HeaderValue>`, the path `authenticate` and the receiver take,
 `TryFrom<&[u8]>` for the bytes in another shape, or `str::parse`,
 for a consumer parsing a string in a test or their own early-out, and that parse is the one origin of `Malformed`;
 `Display` renders the header value back and `From<Signature> for HeaderValue` puts it on a request, `Debug` is redacted,

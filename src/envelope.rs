@@ -2,16 +2,16 @@ use std::{borrow::Cow, fmt, marker::PhantomData};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bytes::Bytes;
-use http::{HeaderMap, HeaderName, StatusCode};
+use http::{HeaderName, StatusCode};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 
 use crate::{
     AccountMeta, Action, BoxError, EventKind, EventMeta, HeaderMeta, RepositoryMeta,
-    SignatureError, TargetType, Verifier, header,
+    SignatureError, TargetType,
 };
 
-/// The verified unit of receipt: the exact payload bytes and their metadata.
+/// The unit of receipt: the exact payload bytes and their metadata.
 ///
 /// An envelope is the composition of its routing metadata and the exact
 /// payload bytes: `meta` is what a handler routes and deduplicates by, and
@@ -22,28 +22,27 @@ use crate::{
 /// being duplicated onto every decoded view; the two types hold the same
 /// document in its two states, `raw_payload` here and `payload` there.
 ///
-/// The crate produces envelopes and consumers read them. Outside the crate
-/// one comes from [`Envelope::from_signed`], which authenticates an untrusted
-/// request before it reads the payload, from [`Envelope::new`], which reads
-/// the payload a test supplies the same way and authenticates nothing, or
-/// from the serde `Deserialize` impl for one a trusted internal transport
-/// forwarded (see the wire format below). Only the first carries an
-/// authentication claim. The struct is `#[non_exhaustive]` so that a struct
-/// literal cannot pair a meta with a payload that says something else; the
-/// fields stay public, so reading them and destructuring with `..` work:
+/// An envelope is data, and makes no claim that it was authenticated. What
+/// makes a received one trustworthy is the path it came from:
+/// [`authenticate`](crate::authenticate), which verifies an untrusted request
+/// before it builds the envelope, and the receiver, which is built on it.
+/// Outside the crate an envelope comes from there, from [`Envelope::new`],
+/// which builds one from a [`HeaderMeta`] and the payload bytes and
+/// authenticates nothing, or from the serde `Deserialize` impl for one a
+/// trusted internal transport forwarded (see the wire format below). The
+/// struct is `#[non_exhaustive]` so that a struct literal cannot pair a meta
+/// with a payload that says something else; the fields stay public, so
+/// reading them and destructuring with `..` work:
 ///
 /// ```
-/// use octoevents::{Action, Envelope, EventKind};
+/// use octoevents::{Action, Envelope, EventKind, HeaderMeta};
 ///
-/// let envelope = Envelope::new("delivery-1", EventKind::Issues, br#"{"action":"opened"}"#);
+/// let meta = HeaderMeta::new("delivery-1", EventKind::Issues);
+/// let envelope = Envelope::new(meta, br#"{"action":"opened"}"#);
 ///
 /// let Envelope { meta, .. } = &envelope;
 /// assert_eq!(meta.action, Some(Action::Opened));
 /// assert_eq!(envelope.raw_payload.len(), 19);
-///
-/// // A field the payload cannot supply is assigned afterwards.
-/// let mut envelope = envelope;
-/// envelope.meta.target_id = Some(7);
 /// ```
 ///
 /// The literal is rejected outside the crate, where it could otherwise
@@ -136,7 +135,9 @@ use crate::{
 /// The meta is read back as forwarded: nothing is verified, and the payload
 /// is not probed again, so a document whose `action` disagrees with the
 /// `action` inside its `raw_payload` reads back disagreeing. The producer is
-/// trusted to have built the envelope through one of the two constructors,
+/// trusted to have built the envelope through
+/// [`authenticate`](crate::authenticate) or [`Envelope::new`], so that its
+/// meta agrees with its payload, and to have authenticated what it forwards,
 /// which is what the wire format is for: a hop between services of one
 /// deployment, not an input from outside it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -148,12 +149,13 @@ pub struct Envelope {
     /// The payload as it arrived: the exact bytes, undecoded and never
     /// re-encoded.
     ///
-    /// On the receiving path these are the bytes the signature was verified
-    /// over; [`Envelope::new`] and the `Deserialize` impl hold whatever they
-    /// were given, with no such claim. Either way they are the bytes every
-    /// decode reads. Serialized as standard base64 so an envelope survives a
-    /// JSON hop to an internal service without the payload being re-encoded;
-    /// the encoded field is 4/3 of the payload's size.
+    /// From [`authenticate`](crate::authenticate) these are the bytes the
+    /// signature was verified over; [`Envelope::new`] and the `Deserialize`
+    /// impl hold whatever they were given, with no such claim. Either way
+    /// they are the bytes every decode reads. Serialized as standard base64
+    /// so an envelope survives a JSON hop to an internal service without the
+    /// payload being re-encoded; the encoded field is 4/3 of the payload's
+    /// size.
     #[serde(serialize_with = "serialize_bytes")]
     pub raw_payload: Bytes,
 }
@@ -245,194 +247,25 @@ impl<'de> Deserialize<'de> for Envelope {
 }
 
 impl Envelope {
-    /// Verifies the signature over the body, then builds the envelope.
+    /// Builds an envelope from the header meta and the payload bytes,
+    /// verifying nothing.
     ///
-    /// This is the one step of receiving that produces the envelope, and the
-    /// receiver is built on it. A transport calls it directly when it wants
-    /// the envelope and not the receiver's answer: to forward the envelope
-    /// over the wire format, to persist it before any handler runs, or to
-    /// route it itself.
+    /// A data constructor: the envelope it returns makes no claim that the
+    /// bytes were authenticated. The path that authenticates a request and
+    /// builds its envelope is [`authenticate`](crate::authenticate), which
+    /// the receiver is built on. This is the path for everything else: a
+    /// test, which dispatches an envelope built here through
+    /// [`Dispatcher::dispatch`](crate::Dispatcher::dispatch) with nothing
+    /// signed and no [`Verifier`](crate::Verifier) needed; and a transport
+    /// that authenticated the request by its own means, which builds the
+    /// envelope `authenticate` would have from the [`HeaderMeta`] it read,
+    /// target included, and the bytes.
     ///
-    /// It takes the request's `http::HeaderMap` and the body as [`Bytes`],
-    /// the shape every surveyed Rust runtime hands over. A consumer
-    /// hand-parsing a raw invocation event collects its `(name, value)` pairs
-    /// into a `HeaderMap`; header-name case is `HeaderName`'s to handle. A
-    /// failure is answered with [`ReceiveError::status`], the receiver's
-    /// contract.
-    ///
-    /// Verification authenticates only the payload bytes. GitHub's signature
-    /// does not cover the delivery ID, event name, or target headers, so
-    /// their metadata is not an authenticated authorization claim. Use
-    /// authenticated payload data or independently trusted configuration for
-    /// authorization. Delivery-ID deduplication handles GitHub redelivery,
-    /// not an attacker resubmitting a captured signed payload with a new ID.
-    ///
-    /// For the whole contract over the same two arguments (the header-only
-    /// refusal, the body limit, the `ping` short-circuit, the handler and the
-    /// tracing), call
-    /// [`WebhookReceiver::receive_bytes`](crate::WebhookReceiver::receive_bytes)
-    /// instead, which is in the core beside this.
-    ///
-    /// The headers are read by the names in [`header`](crate::header), by
-    /// which `HeaderMap` matches case-insensitively, and a repeated header
-    /// reads as its first value. The signature is parsed from the header
-    /// value's bytes, so a value that is not visible ASCII is
-    /// [`SignatureError::Malformed`], not `Missing`; for every other header
-    /// such a value reads as absent, and an empty delivery ID or event name
-    /// is [`ReceiveError::MissingHeader`] as an absent one is.
-    ///
-    /// The probe of the payload is best-effort and never fails the
-    /// construction; the rules are on [`Envelope::new`], which reads the
-    /// payload the same way. Once the body is authenticated, the headers are
-    /// read into a [`HeaderMeta`], as [`HeaderMeta::from_headers`] reads them,
-    /// which adds what only the headers carry: the target type and ID. A
-    /// target type this crate does not know is [`TargetType::Unknown`] with
-    /// the value intact; a target ID that is present but not a number reads
-    /// as `None`, since the header is optional and refusing an authenticated
-    /// delivery over it would serve nothing.
-    ///
-    /// The verifier is the caller's to choose. A transport serving several
-    /// GitHub Apps at one URL chooses it per request, as the receiver does
-    /// with a [`VerifierSource`](crate::VerifierSource): it reads the
-    /// [`HeaderMeta`] first, asks its source for the verifier of that
-    /// target, and passes the verifier here, answering a target it has no
-    /// verifier for with [`ReceiveError::UnknownTarget`].
-    ///
-    /// The body must be `application/json`, which is a setting on the GitHub
-    /// webhook; anything else is [`ReceiveError::UnsupportedContentType`]. The
-    /// other setting, `application/x-www-form-urlencoded`, wraps the JSON in a
-    /// `payload` form parameter and signs the form body, so the signed input
-    /// would no longer be the payload every decode reads. Refusing it is what
-    /// lets [`Envelope::raw_payload`] be both.
-    ///
-    /// In a test, the request is signed with the verifier the envelope is
-    /// checked against:
-    ///
-    /// ```
-    /// use http::HeaderMap;
-    /// use octoevents::{Action, Bytes, Envelope, EventKind, Verifier, WebhookSecret, header};
-    ///
-    /// let verifier = Verifier::new(WebhookSecret::new("test-secret"));
-    /// let body = Bytes::from_static(br#"{"action":"opened","installation":{"id":42}}"#);
-    ///
-    /// let mut headers = HeaderMap::new();
-    /// headers.insert(header::CONTENT_TYPE, "application/json".parse()?);
-    /// headers.insert(header::DELIVERY_ID, "delivery-1".parse()?);
-    /// headers.insert(header::EVENT_NAME, "issues".parse()?);
-    /// headers.insert(header::SIGNATURE, verifier.sign(&body).into());
-    ///
-    /// let envelope = Envelope::from_signed(&verifier, &headers, body)?;
-    ///
-    /// assert_eq!(envelope.meta.delivery_id, "delivery-1");
-    /// assert_eq!(envelope.meta.kind, EventKind::Issues);
-    /// assert_eq!(envelope.meta.action, Some(Action::Opened));
-    /// assert_eq!(envelope.meta.installation_id, Some(42));
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
-    /// ```
-    ///
-    /// # What the receiver adds
-    ///
-    /// Around this call the receiver refuses a request whose signature header
-    /// is absent (401) or not a signature (400) from the headers alone: on
-    /// `receive`, before the body is read from the transport, so unsigned
-    /// traffic is never buffered by the receiver, and on `receive_bytes`,
-    /// before anything else, the bytes being the caller's already. It bounds
-    /// the payload length at the configured limit (413), and answers a
-    /// verified `ping` 204 before any handler runs, unless asked to
-    /// `handle_ping`. A transport
-    /// calling this function directly does those for itself, or decides to go
-    /// without: without the first, unsigned traffic is buffered before it is
-    /// refused; without the second, this function verifies whatever it is
-    /// given; without the third, a transport that forwards every envelope
-    /// forwards pings too. The header check is `Signature::try_from` on the
-    /// [`header::SIGNATURE`](crate::header::SIGNATURE) value, answered with
-    /// [`ReceiveError::status`]:
-    ///
-    /// ```
-    /// use http::{HeaderMap, StatusCode};
-    /// use octoevents::{Bytes, Envelope, ReceiveError, Signature, SignatureError, Verifier, WebhookSecret, header};
-    ///
-    /// fn envelope_or_status(
-    ///     verifier: &Verifier,
-    ///     headers: &HeaderMap,
-    ///     body: Bytes,
-    /// ) -> Result<Envelope, StatusCode> {
-    ///     // Decidable from the headers, so a transport that streams runs it
-    ///     // before buffering; `from_signed` reaches the same answer after.
-    ///     headers
-    ///         .get(&header::SIGNATURE)
-    ///         .ok_or(SignatureError::Missing)
-    ///         .and_then(Signature::try_from)
-    ///         .map_err(|error| ReceiveError::from(error).status())?;
-    ///
-    ///     Envelope::from_signed(verifier, headers, body).map_err(|error| error.status())
-    /// }
-    ///
-    /// // An unsigned request is refused at the header check, before the body is read.
-    /// let verifier = Verifier::new(WebhookSecret::new("test-secret"));
-    /// let unsigned = HeaderMap::new();
-    /// assert_eq!(
-    ///     envelope_or_status(&verifier, &unsigned, Bytes::from_static(b"{}")).unwrap_err(),
-    ///     StatusCode::UNAUTHORIZED
-    /// );
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns a signature error first, [`ReceiveError::Signature`]:
-    /// [`SignatureError::Missing`] when the header is absent,
-    /// [`SignatureError::Malformed`] when it does not parse as a
-    /// [`Signature`](crate::Signature), [`SignatureError::Mismatch`] when no configured secret
-    /// produced it for `body`, in that order. Then content-type and
-    /// required-header errors, for an authenticated request.
-    pub fn from_signed(
-        verifier: &Verifier,
-        headers: &HeaderMap,
-        body: Bytes,
-    ) -> Result<Self, ReceiveError> {
-        authenticate(verifier, headers, &body)?;
-        let meta = HeaderMeta::from_headers(headers)?;
-        Ok(Self::probed(meta, body))
-    }
-
-    /// [`Envelope::from_signed`] for the receiver, which read the header meta
-    /// before the body to choose the verifier: the same authentication, and
-    /// the meta it already has rather than a second read of the headers.
-    pub(crate) fn from_signed_with(
-        verifier: &Verifier,
-        headers: &HeaderMap,
-        meta: HeaderMeta,
-        body: Bytes,
-    ) -> Result<Self, ReceiveError> {
-        authenticate(verifier, headers, &body)?;
-        Ok(Self::probed(meta, body))
-    }
-
-    /// The envelope around `body`, its meta the header meta and the probe
-    /// of `body`: what every constructor but serde ends in.
-    fn probed(meta: HeaderMeta, body: Bytes) -> Self {
-        Self {
-            meta: EventMeta::probe(meta, &body),
-            raw_payload: body,
-        }
-    }
-
-    /// Builds an envelope from the delivery ID, the kind and the payload
-    /// bytes, verifying nothing.
-    ///
-    /// This is the test's path: a handler is tested through
-    /// [`Dispatcher::dispatch`](crate::Dispatcher::dispatch) with an envelope
-    /// built here, so nothing is signed and no [`Verifier`] is needed. The
-    /// receiving path is [`Envelope::from_signed`], which authenticates the
-    /// request first and reads the payload the same way.
-    ///
-    /// The meta carries what the receiver would have read from the same
-    /// payload: the action, the installation ID, the repository, the
-    /// organization and the sender, so a handler over
+    /// The meta is the header meta as given, and what the receiver would have
+    /// read from the same payload: the action, the installation ID, the
+    /// repository, the organization and the sender, so a handler over
     /// [`Event<P>`](crate::Event) sees the `installation_id` the payload
-    /// carries rather than whatever a test remembered to assign. The target
-    /// type and ID come from headers this constructor does not have, so they
-    /// stay `None`; assign them if the handler reads them.
+    /// carries rather than whatever a test remembered to assign.
     ///
     /// The read of the payload is best-effort and never fails the
     /// construction. Invalid UTF-8 anywhere in the payload, malformed JSON
@@ -456,28 +289,40 @@ impl Envelope {
     /// as given.
     ///
     /// The payload is anything that views as bytes, a byte-string literal
-    /// included, and is copied into [`Envelope::raw_payload`]; a test's
-    /// payload is small and the copy is one allocation.
+    /// included, and is copied into [`Envelope::raw_payload`]: one
+    /// allocation, which a test's small payload does not notice and a
+    /// transport pays once per delivery, beside the probe's pass over the
+    /// same bytes.
     ///
     /// ```
-    /// use octoevents::{Action, Envelope, EventKind};
+    /// use octoevents::{Action, Envelope, EventKind, HeaderMeta, TargetType};
+    ///
+    /// let mut meta = HeaderMeta::new("72d3162e-cc78-11e3-81ab-4c9367dc0958", EventKind::Issues);
+    /// meta.target_type = Some(TargetType::Integration);
+    /// meta.target_id = Some(12345);
     ///
     /// let envelope = Envelope::new(
-    ///     "72d3162e-cc78-11e3-81ab-4c9367dc0958",
-    ///     EventKind::Issues,
+    ///     meta,
     ///     br#"{"action":"opened","installation":{"id":42},"issue":{"number":7}}"#,
     /// );
     ///
     /// assert_eq!(envelope.meta.action, Some(Action::Opened));
     /// assert_eq!(envelope.meta.installation_id, Some(42));
-    /// assert_eq!(envelope.meta.target_id, None);
+    /// assert_eq!(envelope.meta.target_id, Some(12345));
     /// ```
     #[must_use]
-    pub fn new(delivery_id: impl Into<String>, kind: EventKind, payload: impl AsRef<[u8]>) -> Self {
-        Self::probed(
-            HeaderMeta::new(delivery_id, kind),
-            Bytes::copy_from_slice(payload.as_ref()),
-        )
+    pub fn new(meta: HeaderMeta, payload: impl AsRef<[u8]>) -> Self {
+        Self::from_bytes(meta, Bytes::copy_from_slice(payload.as_ref()))
+    }
+
+    /// [`Envelope::new`] over bytes already owned, which become
+    /// [`Envelope::raw_payload`] without a copy: what
+    /// [`authenticate`](crate::authenticate) builds with.
+    pub(crate) fn from_bytes(meta: HeaderMeta, payload: Bytes) -> Self {
+        Self {
+            meta: EventMeta::probe(meta, &payload),
+            raw_payload: payload,
+        }
     }
 
     /// Decodes the exact payload into a caller-defined view, checking nothing
@@ -498,7 +343,7 @@ impl Envelope {
     /// fields. Routed inputs still use the owned decode through `FromEnvelope`.
     ///
     /// ```
-    /// use octoevents::{Envelope, EventKind};
+    /// use octoevents::{Envelope, EventKind, HeaderMeta};
     ///
     /// /// The sender's account type, which every kind carries.
     /// #[derive(serde::Deserialize)]
@@ -507,8 +352,7 @@ impl Envelope {
     /// struct Sender { r#type: String }
     ///
     /// let envelope = Envelope::new(
-    ///     "delivery-1",
-    ///     EventKind::Push,
+    ///     HeaderMeta::new("delivery-1", EventKind::Push),
     ///     br#"{"ref":"refs/heads/main","sender":{"id":1,"login":"octocat","type":"User"}}"#,
     /// );
     ///
@@ -523,19 +367,6 @@ impl Envelope {
     pub fn decode<'de, T: Deserialize<'de>>(&'de self) -> Result<T, DecodeError> {
         serde_json::from_slice(&self.raw_payload).map_err(DecodeError::Json)
     }
-}
-
-/// The authentication both signed constructors run before reading the meta:
-/// the signature, parsed and verified over `body`, then the content type, so
-/// a request is refused for its content type only once it authenticated.
-fn authenticate(verifier: &Verifier, headers: &HeaderMap, body: &[u8]) -> Result<(), ReceiveError> {
-    let signature = header::signature(headers)?;
-    verifier.verify(&signature, body)?;
-
-    if !header::is_json(headers) {
-        return Err(ReceiveError::UnsupportedContentType);
-    }
-    Ok(())
 }
 
 /// A failure while receiving a webhook.
@@ -571,9 +402,9 @@ pub enum ReceiveError {
     /// about which targets are configured. The variant, and the receive
     /// span's `error` text, tell the two apart for an operator. Produced by
     /// the receiver before verification (on `receive`, before the body is
-    /// read), never by [`Envelope::from_signed`], which is handed its
-    /// verifier; a transport choosing the verifier itself constructs it for
-    /// the same failure.
+    /// read), never by [`authenticate`](crate::authenticate), which is
+    /// handed its verifier; a transport choosing the verifier itself
+    /// constructs it for the same failure.
     #[error("no webhook verifier is available for the request's target")]
     UnknownTarget,
     /// A required delivery header was absent or empty.
@@ -596,7 +427,7 @@ pub enum ReceiveError {
     /// Produced by `WebhookReceiver::receive` (`http-body` feature) when a
     /// body frame is an error rather than data or trailers: the connection
     /// dropped, the client stopped sending. Never by
-    /// [`Envelope::from_signed`] or `WebhookReceiver::receive_bytes`, which
+    /// [`authenticate`](crate::authenticate) or `WebhookReceiver::receive_bytes`, which
     /// are handed the bytes already read; a transport that streams the body
     /// itself constructs it for the same failure. The
     /// [`source`](std::error::Error::source) is the transport's own error as
@@ -630,7 +461,7 @@ impl ReceiveError {
     /// status here: the envelope is built around them and a handler over it
     /// runs, so only an input that decodes them fails, as a handler failure.
     /// `WebhookReceiver` applies this itself; it is public so a transport
-    /// built directly on [`Envelope::from_signed`] answers GitHub the same
+    /// built directly on [`authenticate`](crate::authenticate) answers GitHub the same
     /// way, as its docs show.
     #[must_use]
     pub const fn status(&self) -> StatusCode {
@@ -695,7 +526,7 @@ pub struct BodyError(String);
 
 impl BodyError {
     /// Captures `error`'s text: the transport's error, or a message a
-    /// transport built on [`Envelope::from_signed`] writes for itself.
+    /// transport built on [`authenticate`](crate::authenticate) writes for itself.
     #[must_use]
     pub fn new(error: impl fmt::Display) -> Self {
         Self(error.to_string())
