@@ -209,8 +209,8 @@ where
 ///     }
 /// }
 ///
-/// async fn revoke(meta: EventMeta) -> Result<(), BoxError> {
-///     println!("revoke tokens for installation {:?}", meta.installation_id);
+/// async fn record_installation(meta: EventMeta) -> Result<(), BoxError> {
+///     println!("installation update for {:?}", meta.installation_id);
 ///     Ok(())
 /// }
 ///
@@ -225,7 +225,7 @@ where
 /// }
 ///
 /// let dispatcher = Dispatcher::builder()
-///     .on((EventKind::Installation, Action::Deleted), revoke)
+///     .on((EventKind::Installation, Action::Deleted), record_installation)
 ///     .on(EventKind::Push, forward)
 ///     .on([EventKind::Issues, EventKind::IssueComment], metrics)
 ///     .build();
@@ -309,6 +309,13 @@ impl Dispatcher {
     /// matched delivery can fail, and an unmatched one succeeds unless an
     /// `always` or `fallback` handler fails it. [`Handler::handle`] on the
     /// dispatcher keeps only the result.
+    ///
+    /// Ordering is per dispatch: concurrent calls can invoke the same handler
+    /// concurrently, and there is no ordering across envelopes. The first
+    /// error does not roll back earlier handlers' side effects. Dropping the
+    /// future stops further polling, not effects already performed; redispatch
+    /// can repeat completed handlers, so recovery needs application-level
+    /// idempotency and processing ownership.
     ///
     /// A plain `async fn` with no runtime of its own: a transport awaits it
     /// on whatever executor it has, and a test awaits it on the test's. The
@@ -984,15 +991,15 @@ impl DispatcherBuilder {
     ///     Ok(())
     /// }
     ///
-    /// async fn revoke(meta: EventMeta) -> Result<(), BoxError> {
-    ///     println!("revoke tokens for installation {:?}", meta.installation_id);
+    /// async fn record_installation(meta: EventMeta) -> Result<(), BoxError> {
+    ///     println!("installation update for {:?}", meta.installation_id);
     ///     Ok(())
     /// }
     ///
     /// let dispatcher = Dispatcher::builder()
     ///     .on([Action::Opened, Action::Reopened], label)          // `pull_request`, from the type
     ///     .on(AnyAction, notify)                                  // every `pull_request` action
-    ///     .on((EventKind::Installation, Action::Deleted), revoke) // `EventMeta` declares no kind
+    ///     .on((EventKind::Installation, Action::Deleted), record_installation)
     ///     .build();
     /// # let _ = dispatcher;
     /// ```

@@ -36,8 +36,8 @@ use crate::{MaybeSend, MaybeSync};
 /// }
 ///
 /// // Meta only: routed by kind and action, nothing decoded.
-/// async fn revoke(meta: EventMeta) -> Result<(), std::io::Error> {
-///     println!("revoke tokens for installation {:?}", meta.installation_id);
+/// async fn record_installation(meta: EventMeta) -> Result<(), std::io::Error> {
+///     println!("installation update for {:?}", meta.installation_id);
 ///     Ok(())
 /// }
 ///
@@ -54,7 +54,7 @@ use crate::{MaybeSend, MaybeSync};
 /// }
 /// # fn assert_handler<I, H: Handler<I>>(_: H) {}
 /// # assert_handler(audit);
-/// # assert_handler(revoke);
+/// # assert_handler(record_installation);
 /// # assert_handler(label);
 /// # assert_handler(notify);
 /// ```

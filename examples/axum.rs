@@ -15,7 +15,7 @@
 //! ```
 //!
 //! `WEBHOOK_ADDRESS` overrides the address it listens on, `127.0.0.1:3000` by
-//! default, which is what the README's `gh webhook forward` line targets.
+//! default, which is what the integration guide's `gh webhook forward` line targets.
 //! The tests at the bottom drive the receiver with a request signed by
 //! `Verifier::sign`; run them with `cargo test --example axum --features tower`.
 

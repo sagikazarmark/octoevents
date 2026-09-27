@@ -128,7 +128,8 @@ use crate::{
 /// field. Adding optional fields is wire-compatible. Removing or renaming
 /// existing fields, making optional fields required, or changing existing
 /// fields' encodings or meanings is treated as a breaking change and
-/// documented in release notes. Before 1.0, a minor release may include such
+/// documented in [release notes](https://github.com/sagikazarmark/octoevents/releases).
+/// Before 1.0, a minor release may include such
 /// changes; producers and consumers crossing that boundary must migrate
 /// together or use a transport adapter.
 ///

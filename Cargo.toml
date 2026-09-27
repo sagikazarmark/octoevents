@@ -24,8 +24,8 @@ documentation = "https://docs.rs/octoevents"
 keywords = ["github", "webhook", "tower", "cloudflare", "wasm"]
 categories = ["web-programming", "cryptography"]
 # What the published crate ships: the sources, the examples, the tests with
-# their fixture corpus, the README and the licences. The design docs, the
-# glossary, the CI and the devenv/dagger files stay in the repository, and so
+# their fixture corpus, the reader guides, README and licences. The maintainer
+# context, CI and devenv/dagger files stay in the repository, and so
 # does `examples/worker`, a package of its own that cargo leaves out on its
 # own account.
 include = [
@@ -33,6 +33,7 @@ include = [
   "/examples/**",
   "/tests/**",
   "/README.md",
+  "/docs/**",
   "/LICENSE-APACHE",
   "/LICENSE-MIT",
 ]
@@ -107,6 +108,11 @@ required-features = ["tower", "derive"]
 name = "policy_seam"
 test = true
 required-features = ["tower", "octocrab"]
+
+[[example]]
+name = "observability"
+test = true
+required-features = ["tracing"]
 
 [lints]
 workspace = true

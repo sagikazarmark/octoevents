@@ -29,7 +29,7 @@
 //! default `handle_ping(false)` this example keeps. A redelivery from GitHub
 //! carries the delivery ID of the first
 //! attempt, so a delivery ID already in the store is answered with success
-//! and not routed, and the handlers never run twice for it. That holds after
+//! and not routed, so that redelivery does not run handlers again. That holds after
 //! a handler failure too: the first attempt was stored before it was routed,
 //! so it is the store's to recover, by an operator or a job re-dispatching
 //! the stored envelope, not GitHub's to redeliver. And the envelope of a kind
@@ -37,6 +37,12 @@
 //! stays green in GitHub, since a redelivery would change nothing; an action
 //! GitHub added to a kind this app handles is tolerated. Errors from the
 //! handlers that ran pass through either way.
+//!
+//! This is an illustration, not a durable processor: the in-memory store is
+//! lost on restart and tracks neither completion nor processing ownership.
+//! Redispatch can repeat earlier successful side effects. Before replacing
+//! it with a database, follow `docs/recovery.md` for atomic acceptance,
+//! concurrent claims, cancellation and idempotent effects.
 //!
 //! Inside the dispatcher, handlers over three inputs appear, as structs and
 //! as a closure, each with the error type it has; the dispatcher boxes every
