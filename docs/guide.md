@@ -647,7 +647,7 @@ async fn thanks_for_an_opened_issue() {
 
 `Envelope` cannot be built as a struct literal outside the crate,
 so a meta cannot be paired with a payload that says something else.
-The target comes from headers, so it stays `None` unless assigned.
+The target type and ID come from headers, so they stay `None` unless assigned.
 
 The receiver is tested with a signed synthetic request.
 `Verifier::sign` gives the `Signature` GitHub would send for a body,
