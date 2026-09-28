@@ -93,13 +93,13 @@ it does not expose which secret verified a real request.
 
 Each GitHub App signs its deliveries with its own webhook secret.
 To serve several Apps at one URL, build the receiver with `WebhookReceiverBuilder::from_source` and a `VerifierSource`
-that chooses the verifier from the request's `HeaderMeta`, typically by its target type and ID:
+that chooses the verifier from the request's `WebhookMeta`, typically by its target type and ID:
 
 ```rust
 use std::collections::HashMap;
 
 use octoevents::{
-    Dispatcher, HeaderMeta, TargetType, Verifier, WebhookReceiverBuilder, WebhookSecret,
+    Dispatcher, WebhookMeta, TargetType, Verifier, WebhookReceiverBuilder, WebhookSecret,
 };
 
 // By App ID. Each App's verifier can open its own rotation window with `also`.
@@ -108,7 +108,7 @@ let apps = HashMap::from([
     (2, Verifier::new(WebhookSecret::new("second-app-development-secret"))),
 ]);
 
-let webhook = WebhookReceiverBuilder::from_source(move |headers: &HeaderMeta| {
+let webhook = WebhookReceiverBuilder::from_source(move |headers: &WebhookMeta| {
     match (headers.target_type.as_ref(), headers.target_id) {
         (Some(TargetType::Integration), Some(id)) => apps.get(&id).cloned(),
         _ => None,

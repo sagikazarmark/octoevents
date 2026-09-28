@@ -184,7 +184,7 @@ async fn main() -> Result<(), BoxError> {
 
 #[cfg(test)]
 mod tests {
-    use octoevents::{HeaderMeta, Match, header};
+    use octoevents::{WebhookMeta, Match, header};
 
     use super::*;
 
@@ -194,7 +194,7 @@ mod tests {
     /// Every tier that applies runs and the route table reports the match.
     #[tokio::test]
     async fn an_opened_issue_matches_and_every_handler_succeeds() {
-        let envelope = Envelope::new(HeaderMeta::new("delivery-1", EventKind::Issues), OPENED);
+        let envelope = Envelope::new(WebhookMeta::new("delivery-1", EventKind::Issues), OPENED);
 
         let outcome = dispatcher().dispatch(envelope).await;
 
@@ -207,7 +207,7 @@ mod tests {
     #[tokio::test]
     async fn a_closed_issue_is_unmatched_by_action_and_still_succeeds() {
         let envelope = Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::Issues),
+            WebhookMeta::new("delivery-1", EventKind::Issues),
             br#"{"action":"closed","issue":{"number":7,"title":"Hello"}}"#,
         );
 
@@ -221,7 +221,7 @@ mod tests {
     #[tokio::test]
     async fn a_push_is_unmatched_by_kind_and_still_succeeds() {
         let envelope = Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::Push),
+            WebhookMeta::new("delivery-1", EventKind::Push),
             br#"{"ref":"refs/heads/main"}"#,
         );
 
@@ -236,7 +236,7 @@ mod tests {
     #[tokio::test]
     async fn an_installation_deleted_reaches_the_meta_handler() {
         let envelope = Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::Installation),
+            WebhookMeta::new("delivery-1", EventKind::Installation),
             br#"{"action":"deleted","installation":{"id":42}}"#,
         );
 
@@ -252,7 +252,7 @@ mod tests {
     #[tokio::test]
     async fn a_payload_the_view_does_not_fit_fails_at_the_decode() {
         let envelope = Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::Issues),
+            WebhookMeta::new("delivery-1", EventKind::Issues),
             br#"{"action":"opened","issue":{"number":7}}"#,
         );
 

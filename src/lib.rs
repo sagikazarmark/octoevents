@@ -64,7 +64,7 @@
 //!
 //! - [`Envelope`]: the unit of receipt, an [`EventMeta`] beside the exact
 //!   payload bytes. It is data and makes no claim that it was authenticated:
-//!   [`Envelope::new`] builds one from a [`HeaderMeta`] and the bytes, never
+//!   [`Envelope::new`] builds one from a [`WebhookMeta`] and the bytes, never
 //!   a struct literal, so the meta and the bytes cannot disagree at birth. An
 //!   envelope a trusted transport forwarded is read back through serde, meta
 //!   as forwarded.
@@ -104,7 +104,7 @@
 //!   feature) or [`WebhookReceiver::receive_bytes`] over the `http::HeaderMap`
 //!   and the body already read, answered as the `http::StatusCode`. Built
 //!   with [`WebhookReceiverBuilder`], which takes the [`Verifier`] (or a
-//!   [`VerifierSource`] choosing one per request from the [`HeaderMeta`], for
+//!   [`VerifierSource`] choosing one per request from the [`WebhookMeta`], for
 //!   several GitHub Apps at one URL), the body limit and `ping` handling.
 //! - [`Verifier`] and [`WebhookSecret`]: the configured secrets and the HMAC
 //!   comparison; [`Verifier::also`] opens a rotation window, and
@@ -294,7 +294,7 @@ pub use envelope::{BodyError, DecodeError, Envelope, ReceiveError};
 pub use events::{Action, EventKind, UnknownAction, UnknownEventKind};
 pub use handler::Handler;
 pub use matcher::{AnyAction, EventMatcher, IntoMatcher};
-pub use meta::{AccountMeta, EventMeta, HeaderMeta, RepositoryMeta, TargetType, UnknownTargetType};
+pub use meta::{AccountMeta, EventMeta, WebhookMeta, RepositoryMeta, TargetType, UnknownTargetType};
 /// Derives [`Payload`] for a serde type, declaring its kind:
 /// `#[derive(Payload)] #[payload(EventKind::..)]`. See the trait.
 #[cfg(feature = "derive")]

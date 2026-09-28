@@ -17,14 +17,14 @@ use std::fmt;
 use http::{HeaderMap, HeaderValue};
 
 use crate::{
-    Action, BoxError, DecodeError, DispatchError, Envelope, EventKind, HeaderMeta, Verifier,
+    Action, BoxError, DecodeError, DispatchError, Envelope, EventKind, WebhookMeta, Verifier,
     WebhookSecret, header,
 };
 
 /// A synthetic envelope of `kind` over `payload`, with `"delivery"` as its
 /// delivery ID and the meta the receiver would have read from `payload`.
 pub(crate) fn envelope(kind: EventKind, payload: impl AsRef<[u8]>) -> Envelope {
-    Envelope::new(HeaderMeta::new("delivery", kind), payload)
+    Envelope::new(WebhookMeta::new("delivery", kind), payload)
 }
 
 /// [`envelope`] delivered under `action`, whatever the payload says.

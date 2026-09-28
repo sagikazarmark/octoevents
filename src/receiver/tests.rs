@@ -36,7 +36,7 @@ use http_body_util::Full;
 
 #[cfg(feature = "http-body")]
 use crate::{DecodeError, EventKind, FromEnvelope, Payload};
-use crate::{Envelope, Handler, HeaderMeta, TargetType, Verifier, VerifierSource, WebhookSecret};
+use crate::{Envelope, Handler, WebhookMeta, TargetType, Verifier, VerifierSource, WebhookSecret};
 
 /// A production-shaped handler: dependencies as fields, borrowed through
 /// `&self`, and deliberately not `Clone`.
@@ -273,7 +273,7 @@ struct Apps(HashMap<u64, Verifier>);
 impl VerifierSource for Apps {
     // A real source awaits its store; this one reads a map.
     #[expect(clippy::unused_async_trait_impl)]
-    async fn verifier(&self, headers: &HeaderMeta) -> Option<Verifier> {
+    async fn verifier(&self, headers: &WebhookMeta) -> Option<Verifier> {
         match (headers.target_type.as_ref(), headers.target_id) {
             (Some(TargetType::Integration), Some(id)) => self.0.get(&id).cloned(),
             _ => None,
@@ -981,7 +981,7 @@ mod source {
     use http_body_util::Full;
 
     use super::{Frames, Recorder, app, apps, verifier};
-    use crate::{Envelope, HeaderMeta, TargetType, Verifier, WebhookReceiverBuilder};
+    use crate::{Envelope, WebhookMeta, TargetType, Verifier, WebhookReceiverBuilder};
 
     const BODY: &[u8] = br#"{"action":"opened"}"#;
 
@@ -1071,7 +1071,7 @@ mod source {
         // A lookup in memory is a closure over the header meta; a registry
         // the application shares is an `Arc` of its source.
         let first = app(1);
-        let closure = WebhookReceiverBuilder::from_source(move |headers: &HeaderMeta| {
+        let closure = WebhookReceiverBuilder::from_source(move |headers: &WebhookMeta| {
             (headers.target_type == Some(TargetType::Integration) && headers.target_id == Some(1))
                 .then(|| first.clone())
         })

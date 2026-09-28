@@ -61,7 +61,7 @@ async fn main() -> Result<(), BoxError> {
 
 #[cfg(test)]
 mod tests {
-    use octoevents::{HeaderMeta, Match, header};
+    use octoevents::{WebhookMeta, Match, header};
 
     use super::*;
 
@@ -76,7 +76,7 @@ mod tests {
             .build();
 
         let envelope = Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::Issues),
+            WebhookMeta::new("delivery-1", EventKind::Issues),
             br#"{"action":"opened","sender":{"id":1,"login":"octocat"}}"#,
         );
 

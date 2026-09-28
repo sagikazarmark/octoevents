@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use http::HeaderMap;
 
-use crate::{Envelope, HeaderMeta, ReceiveError, Verifier, header};
+use crate::{Envelope, WebhookMeta, ReceiveError, Verifier, header};
 
 /// Authenticates a request and builds its envelope: the one path from an
 /// untrusted request to an [`Envelope`] that can be trusted.
@@ -41,7 +41,7 @@ use crate::{Envelope, HeaderMeta, ReceiveError, Verifier, header};
 /// absent one is.
 ///
 /// Once the body is authenticated, the headers are read into a
-/// [`HeaderMeta`], as [`HeaderMeta::from_headers`] reads them, and the
+/// [`WebhookMeta`], as [`WebhookMeta::from_headers`] reads them, and the
 /// envelope is built from it and the body as [`Envelope::new`] builds one,
 /// the payload probed by the same rules. A target type this crate does not
 /// know is [`TargetType::Unknown`](crate::TargetType::Unknown) with the value
@@ -52,7 +52,7 @@ use crate::{Envelope, HeaderMeta, ReceiveError, Verifier, header};
 ///
 /// The verifier is the caller's to choose. A transport serving several
 /// GitHub Apps at one URL chooses it per request, as the receiver does with a
-/// [`VerifierSource`](crate::VerifierSource): it reads the [`HeaderMeta`]
+/// [`VerifierSource`](crate::VerifierSource): it reads the [`WebhookMeta`]
 /// first, asks its source for the verifier of that target, and passes the
 /// verifier here, answering a target it has no verifier for with
 /// [`ReceiveError::UnknownTarget`].
@@ -163,7 +163,7 @@ pub fn authenticate(
         return Err(ReceiveError::UnsupportedContentType);
     }
 
-    let meta = HeaderMeta::from_headers(headers)?;
+    let meta = WebhookMeta::from_headers(headers)?;
     Ok(Envelope::from_bytes(meta, body))
 }
 

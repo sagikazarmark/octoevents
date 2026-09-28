@@ -87,13 +87,13 @@ mod new {
 
     use crate::test_support::{BODY, headers, verifier};
     use crate::{
-        AccountMeta, Action, Envelope, EventKind, HeaderMeta, RepositoryMeta, TargetType,
+        AccountMeta, Action, Envelope, EventKind, WebhookMeta, RepositoryMeta, TargetType,
         authenticate,
     };
 
     #[test]
     fn carries_the_header_meta_it_was_given_and_the_probe_of_the_payload() {
-        let mut meta = HeaderMeta::new("delivery", EventKind::PullRequest);
+        let mut meta = WebhookMeta::new("delivery", EventKind::PullRequest);
         meta.target_type = Some(TargetType::Integration);
         meta.target_id = Some(12345);
 
@@ -128,7 +128,7 @@ mod new {
         let headers = headers(&signature);
         let authenticated = authenticate(&verifier(), &headers, Bytes::from_static(BODY)).unwrap();
 
-        let built = Envelope::new(HeaderMeta::from_headers(&headers).unwrap(), BODY);
+        let built = Envelope::new(WebhookMeta::from_headers(&headers).unwrap(), BODY);
 
         assert_eq!(built, authenticated);
         assert_eq!(built.meta.target_type, Some(TargetType::Repository));
@@ -139,7 +139,7 @@ mod new {
     fn verifies_nothing() {
         // Nothing is signed and nothing is checked: bytes no verifier would
         // accept still build an envelope, which is why one proves nothing.
-        let envelope = Envelope::new(HeaderMeta::new("delivery", EventKind::Push), b"not json");
+        let envelope = Envelope::new(WebhookMeta::new("delivery", EventKind::Push), b"not json");
 
         assert_eq!(envelope.meta.kind, EventKind::Push);
         assert_eq!(envelope.raw_payload, Bytes::from_static(b"not json"));
@@ -498,7 +498,7 @@ mod meta {
 
     use crate::test_support::BODY;
     use crate::{
-        AccountMeta, Envelope, EventKind, EventMeta, HeaderMeta, RepositoryMeta, test_support,
+        AccountMeta, Envelope, EventKind, EventMeta, WebhookMeta, RepositoryMeta, test_support,
     };
 
     #[test]
@@ -527,7 +527,7 @@ mod meta {
         // its own.
         let first = test_support::envelope(EventKind::PullRequest, BODY).meta;
         let again = test_support::envelope(EventKind::PullRequest, BODY).meta;
-        let other = Envelope::new(HeaderMeta::new("other", EventKind::PullRequest), BODY).meta;
+        let other = Envelope::new(WebhookMeta::new("other", EventKind::PullRequest), BODY).meta;
 
         let seen: HashSet<EventMeta> = [first, again, other].into_iter().collect();
 

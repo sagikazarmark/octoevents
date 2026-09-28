@@ -7,7 +7,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 
 use crate::{
-    AccountMeta, Action, BoxError, EventKind, EventMeta, HeaderMeta, RepositoryMeta,
+    AccountMeta, Action, BoxError, EventKind, EventMeta, WebhookMeta, RepositoryMeta,
     SignatureError, TargetType,
 };
 
@@ -27,7 +27,7 @@ use crate::{
 /// [`authenticate`](crate::authenticate), which verifies an untrusted request
 /// before it builds the envelope, and the receiver, which is built on it.
 /// Outside the crate an envelope comes from there, from [`Envelope::new`],
-/// which builds one from a [`HeaderMeta`] and the payload bytes and
+/// which builds one from a [`WebhookMeta`] and the payload bytes and
 /// authenticates nothing, or from the serde `Deserialize` impl for one a
 /// trusted internal transport forwarded (see the wire format below). The
 /// struct is `#[non_exhaustive]` so that a struct literal cannot pair a meta
@@ -35,9 +35,9 @@ use crate::{
 /// reading them and destructuring with `..` work:
 ///
 /// ```
-/// use octoevents::{Action, Envelope, EventKind, HeaderMeta};
+/// use octoevents::{Action, Envelope, EventKind, WebhookMeta};
 ///
-/// let meta = HeaderMeta::new("delivery-1", EventKind::Issues);
+/// let meta = WebhookMeta::new("delivery-1", EventKind::Issues);
 /// let envelope = Envelope::new(meta, br#"{"action":"opened"}"#);
 ///
 /// let Envelope { meta, .. } = &envelope;
@@ -258,7 +258,7 @@ impl Envelope {
     /// [`Dispatcher::dispatch`](crate::Dispatcher::dispatch) with nothing
     /// signed and no [`Verifier`](crate::Verifier) needed; and a transport
     /// that authenticated the request by its own means, which builds the
-    /// envelope `authenticate` would have from the [`HeaderMeta`] it read,
+    /// envelope `authenticate` would have from the [`WebhookMeta`] it read,
     /// target included, and the bytes.
     ///
     /// The meta is the header meta as given, and what the receiver would have
@@ -295,9 +295,9 @@ impl Envelope {
     /// same bytes.
     ///
     /// ```
-    /// use octoevents::{Action, Envelope, EventKind, HeaderMeta, TargetType};
+    /// use octoevents::{Action, Envelope, EventKind, WebhookMeta, TargetType};
     ///
-    /// let mut meta = HeaderMeta::new("72d3162e-cc78-11e3-81ab-4c9367dc0958", EventKind::Issues);
+    /// let mut meta = WebhookMeta::new("72d3162e-cc78-11e3-81ab-4c9367dc0958", EventKind::Issues);
     /// meta.target_type = Some(TargetType::Integration);
     /// meta.target_id = Some(12345);
     ///
@@ -311,14 +311,14 @@ impl Envelope {
     /// assert_eq!(envelope.meta.target_id, Some(12345));
     /// ```
     #[must_use]
-    pub fn new(meta: HeaderMeta, payload: impl AsRef<[u8]>) -> Self {
+    pub fn new(meta: WebhookMeta, payload: impl AsRef<[u8]>) -> Self {
         Self::from_bytes(meta, Bytes::copy_from_slice(payload.as_ref()))
     }
 
     /// [`Envelope::new`] over bytes already owned, which become
     /// [`Envelope::raw_payload`] without a copy: what
     /// [`authenticate`](crate::authenticate) builds with.
-    pub(crate) fn from_bytes(meta: HeaderMeta, payload: Bytes) -> Self {
+    pub(crate) fn from_bytes(meta: WebhookMeta, payload: Bytes) -> Self {
         Self {
             meta: EventMeta::probe(meta, &payload),
             raw_payload: payload,
@@ -343,7 +343,7 @@ impl Envelope {
     /// fields. Routed inputs still use the owned decode through `FromEnvelope`.
     ///
     /// ```
-    /// use octoevents::{Envelope, EventKind, HeaderMeta};
+    /// use octoevents::{Envelope, EventKind, WebhookMeta};
     ///
     /// /// The sender's account type, which every kind carries.
     /// #[derive(serde::Deserialize)]
@@ -352,7 +352,7 @@ impl Envelope {
     /// struct Sender { r#type: String }
     ///
     /// let envelope = Envelope::new(
-    ///     HeaderMeta::new("delivery-1", EventKind::Push),
+    ///     WebhookMeta::new("delivery-1", EventKind::Push),
     ///     br#"{"ref":"refs/heads/main","sender":{"id":1,"login":"octocat","type":"User"}}"#,
     /// );
     ///

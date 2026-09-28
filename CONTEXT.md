@@ -15,7 +15,7 @@ Data, with no verification claim: an `Envelope` value proves nothing about how i
 A received one is trustworthy because it came from _authenticate_
 (or the receiver, which is built on it), not because of its type.
 Outside the crate one comes from `authenticate`, or from `Envelope::new`,
-the data constructor over a `HeaderMeta` and the payload
+the data constructor over a `WebhookMeta` and the payload
 (a test's path, or a transport that authenticated the request by its own means; unverified,
 the meta probed from the same bytes), never from a struct literal, so the two halves cannot disagree at birth.
 The third way, serde over the _wire format_, reads back an envelope a trusted transport forwarded, meta as forwarded,
@@ -30,7 +30,7 @@ _Avoid_: Delivery (reserved for the outbound `octodelivery` project), event
 repository, organization, sender, target.
 An input in its own right, for a handler routed by kind and action that reads no payload;
 and the `meta` half of `Event<P>`.
-Built from a `HeaderMeta` and the probe, its header-read fields under the same names beside the probed ones.
+Built from a `WebhookMeta` and the probe, its header-read fields under the same names beside the probed ones.
 _Avoid_: Common (the former nested group; its name carried no meaning), header
 (it also holds probed payload fields),
 delivery (reserved for `octodelivery`), receipt (reads as acknowledgement, and sits too close to Receiver), context
@@ -232,7 +232,7 @@ In prose, "delivery" names one attempt
 **Target**: The resource the webhook is configured on, GitHub's _hook installation target_,
 from the `X-GitHub-Hook-Installation-Target-Type` and `-ID` headers: `integration` for a GitHub App,
 `repository` for a repository webhook, `organization` for an organization webhook, as the fields `target_type`
-(a `TargetType`) and `target_id`, on `HeaderMeta` and `EventMeta` alike.
+(a `TargetType`) and `target_id`, on `WebhookMeta` and `EventMeta` alike.
 The one meta field pair read from headers GitHub does not always send.
 The key a `VerifierSource` typically selects a secret by.
 It names the webhook's resource, not the webhook: two webhooks on one repository share a target.
@@ -241,7 +241,7 @@ made on both metas at once.
 Distinct from the `installation_target` event kind, which reports a change to a target.
 _Avoid_: Hook target, installation (the App installation, `installation_id`, is a different thing), owner, scope
 
-**HeaderMeta**: The values the receiver reads from a request's headers before the body: delivery ID, kind,
+**WebhookMeta**: The values the receiver reads from a request's headers before the body: delivery ID, kind,
 target type and target ID, but not the signature, which is parsed on its own into a `Signature`.
 What a `VerifierSource` is given to select a verifier, and the header half of an `EventMeta`.
 Unsigned when read, and still unsigned after verification, which authenticates the body alone: it selects a secret,
@@ -283,7 +283,7 @@ _Avoid_: Serialization format (the mechanism), envelope format, transport format
 **Authenticate**: The one path from an untrusted request to an envelope, `octoevents::authenticate`, over the verifier,
 the headers and the body.
 The signature header is parsed (`Missing`, `Malformed`) and _verified_ over the body (`Mismatch`),
-the content type is checked, then the required headers are read into a `HeaderMeta` and the envelope is built from it
+the content type is checked, then the required headers are read into a `WebhookMeta` and the envelope is built from it
 and the body.
 A free function beside the receiver, which calls it after asking its `VerifierSource`,
 so the receiver and a transport built on it authenticate alike.
@@ -335,7 +335,7 @@ _Avoid_: Validator, authenticator, signer (a role the verifier plays for a test,
 keyring (secrets tried in turn is what a verifier already is; and they are not keys)
 
 **VerifierSource**: What a receiver asks, per request and before verification,
-for the `Verifier` of the request's `HeaderMeta`, typically by its target: one webhook URL serving several GitHub Apps,
+for the `Verifier` of the request's `WebhookMeta`, typically by its target: one webhook URL serving several GitHub Apps,
 each signing with its own secret.
 Asynchronous, so the secrets can come from a secret manager.
 A `Verifier` is one, answering itself for every request, so a single-secret receiver names no source.

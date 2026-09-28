@@ -16,7 +16,7 @@ use crate::{Action, EventKind, ReceiveError, events::string_enum, header};
 ///
 /// # Where the fields come from
 ///
-/// Four fields are read from the headers, the [`HeaderMeta`] the receiver
+/// Four fields are read from the headers, the [`WebhookMeta`] the receiver
 /// reads before the body: the delivery ID and the kind, which every delivery
 /// carries, and the target type and ID. The other five,
 /// the action, installation ID, repository, organization and sender, are read
@@ -142,7 +142,7 @@ impl EventMeta {
     /// an object invalidates that object. Skipped string values are checked
     /// for escape syntax, not surrogate pairing; see `Envelope::new` for the
     /// policy. The rest of the document is not decoded.
-    pub(crate) fn probe(headers: HeaderMeta, raw_payload: &[u8]) -> Self {
+    pub(crate) fn probe(headers: WebhookMeta, raw_payload: &[u8]) -> Self {
         // Skipped JSON strings do not get UTF-8 validation from serde_json.
         // Validate the entire payload before any field can supply metadata.
         let probe = std::str::from_utf8(raw_payload)
@@ -150,7 +150,7 @@ impl EventMeta {
             .and_then(|payload| serde_json::from_str::<Probe<'_>>(payload).ok())
             .unwrap_or_default();
 
-        let HeaderMeta {
+        let WebhookMeta {
             delivery_id,
             kind,
             target_type,
@@ -199,19 +199,19 @@ impl EventMeta {
 /// `#[non_exhaustive]` for the reason [`EventMeta`] is: GitHub can add a
 /// header worth selecting by (`X-GitHub-Hook-ID`, say) without that being a
 /// breaking change for every source. A test builds one with
-/// [`HeaderMeta::new`] and assigns the target.
+/// [`WebhookMeta::new`] and assigns the target.
 ///
 /// ```
-/// use octoevents::{EventKind, HeaderMeta, TargetType};
+/// use octoevents::{EventKind, WebhookMeta, TargetType};
 ///
-/// let mut headers = HeaderMeta::new("72d3162e-cc78-11e3-81ab-4c9367dc0958", EventKind::Issues);
+/// let mut headers = WebhookMeta::new("72d3162e-cc78-11e3-81ab-4c9367dc0958", EventKind::Issues);
 /// headers.target_type = Some(TargetType::Integration);
 /// headers.target_id = Some(12345);
 /// # let _ = headers;
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub struct HeaderMeta {
+pub struct WebhookMeta {
     /// The `X-GitHub-Delivery` value.
     pub delivery_id: String,
     /// The event kind parsed from `X-GitHub-Event`.
@@ -223,7 +223,7 @@ pub struct HeaderMeta {
     pub target_id: Option<u64>,
 }
 
-impl HeaderMeta {
+impl WebhookMeta {
     /// Creates the header meta of one delivery of one kind, with no target.
     #[must_use]
     pub fn new(delivery_id: impl Into<String>, kind: EventKind) -> Self {
@@ -258,7 +258,7 @@ impl HeaderMeta {
     ///
     /// ```
     /// use http::HeaderMap;
-    /// use octoevents::{EventKind, HeaderMeta, TargetType, header};
+    /// use octoevents::{EventKind, WebhookMeta, TargetType, header};
     ///
     /// let mut headers = HeaderMap::new();
     /// headers.insert(header::DELIVERY_ID, "delivery-1".parse()?);
@@ -266,7 +266,7 @@ impl HeaderMeta {
     /// headers.insert(header::TARGET_TYPE, "integration".parse()?);
     /// headers.insert(header::TARGET_ID, "12345".parse()?);
     ///
-    /// let meta = HeaderMeta::from_headers(&headers)?;
+    /// let meta = WebhookMeta::from_headers(&headers)?;
     ///
     /// assert_eq!(meta.kind, EventKind::Issues);
     /// assert_eq!(meta.target_type, Some(TargetType::Integration));

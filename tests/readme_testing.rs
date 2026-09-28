@@ -19,7 +19,7 @@ use std::error::Error as _;
 
 use octoevents::{
     AccountMeta, Action, BoxError, DispatchError, Dispatcher, Envelope, EventKind, EventMeta,
-    HeaderMeta, Match, Verifier, WebhookReceiverBuilder, WebhookSecret, header,
+    WebhookMeta, Match, Verifier, WebhookReceiverBuilder, WebhookSecret, header,
 };
 
 /// The quickstart's handler, verbatim.
@@ -45,7 +45,7 @@ async fn thanks_for_an_opened_issue() {
         .build();
 
     let envelope = Envelope::new(
-        HeaderMeta::new("delivery-1", EventKind::Issues),
+        WebhookMeta::new("delivery-1", EventKind::Issues),
         br#"{"action":"opened","sender":{"id":1,"login":"octocat"}}"#,
     );
 
@@ -143,7 +143,7 @@ fn an_envelope_reads_its_meta_from_the_bytes() {
         br#"{"action":"opened","installation":{"id":42},"sender":{"id":1,"login":"octocat"}}"#;
 
     let meta = EventMeta::new("delivery-1", EventKind::Issues);
-    let probed = Envelope::new(HeaderMeta::new("delivery-1", EventKind::Issues), payload);
+    let probed = Envelope::new(WebhookMeta::new("delivery-1", EventKind::Issues), payload);
 
     assert_eq!(meta.action, None);
     assert_eq!(meta.installation_id, None);
@@ -158,7 +158,7 @@ fn an_envelope_reads_its_meta_from_the_bytes() {
 #[tokio::test]
 async fn a_payload_without_an_action_is_unmatched_by_action() {
     let envelope = Envelope::new(
-        HeaderMeta::new("delivery-1", EventKind::Issues),
+        WebhookMeta::new("delivery-1", EventKind::Issues),
         br#"{"sender":{"id":1,"login":"octocat"}}"#,
     );
 
@@ -172,7 +172,7 @@ async fn a_payload_without_an_action_is_unmatched_by_action() {
 /// registered.
 #[tokio::test]
 async fn a_kind_the_route_table_does_not_know_is_unmatched_by_kind() {
-    let envelope = Envelope::new(HeaderMeta::new("delivery-1", EventKind::Push), b"{}");
+    let envelope = Envelope::new(WebhookMeta::new("delivery-1", EventKind::Push), b"{}");
 
     let outcome = thanks_opened_issues().dispatch(envelope).await;
 

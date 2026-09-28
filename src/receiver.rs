@@ -27,7 +27,7 @@ use crate::BodyError;
 #[cfg(feature = "tower")]
 use crate::runtime::BoxFuture;
 use crate::{
-    BoxError, DEFAULT_BODY_LIMIT, Envelope, EventKind, EventMeta, Handler, HeaderMeta, MaybeSend,
+    BoxError, DEFAULT_BODY_LIMIT, Envelope, EventKind, EventMeta, Handler, WebhookMeta, MaybeSend,
     MaybeSync, ReceiveError, Verifier, VerifierSource, authenticate, envelope::Refusal, header,
     trace,
 };
@@ -83,7 +83,7 @@ where
     /// [`new`](WebhookReceiverBuilder::new) has.
     ///
     /// For one webhook URL serving several GitHub Apps: the source chooses
-    /// the secret by the request's [`HeaderMeta`], typically by its target,
+    /// the secret by the request's [`WebhookMeta`], typically by its target,
     /// and a request it has no verifier for is refused as
     /// [`ReceiveError::UnknownTarget`](crate::ReceiveError::UnknownTarget)
     /// (401) before verification: on `receive`, before the body is read.
@@ -93,13 +93,13 @@ where
     ///
     /// ```
     /// use octoevents::{
-    ///     Dispatcher, HeaderMeta, TargetType, Verifier, WebhookReceiverBuilder, WebhookSecret,
+    ///     Dispatcher, WebhookMeta, TargetType, Verifier, WebhookReceiverBuilder, WebhookSecret,
     /// };
     ///
     /// let first = Verifier::new(WebhookSecret::new("first app's secret"));
     /// let second = Verifier::new(WebhookSecret::new("second app's secret"));
     ///
-    /// let webhook = WebhookReceiverBuilder::from_source(move |headers: &HeaderMeta| {
+    /// let webhook = WebhookReceiverBuilder::from_source(move |headers: &WebhookMeta| {
     ///     match (headers.target_type.as_ref(), headers.target_id) {
     ///         (Some(TargetType::Integration), Some(1)) => Some(first.clone()),
     ///         (Some(TargetType::Integration), Some(2)) => Some(second.clone()),
@@ -369,7 +369,7 @@ where
     ///
     /// 1. A request whose signature header is absent (401) or not a signature
     ///    (400) is refused from the headers, before the body is looked at.
-    /// 2. The [`HeaderMeta`] is read from the headers; a missing delivery ID
+    /// 2. The [`WebhookMeta`] is read from the headers; a missing delivery ID
     ///    or event name is 400.
     /// 3. The [`VerifierSource`] is asked for the request's verifier; a
     ///    request it has none for is 401,
@@ -530,7 +530,7 @@ where
         // what the source was asked with and refuses nothing this did not;
         // the second read is a few short strings, the price of one
         // authenticating path shared with every transport.
-        let meta = match HeaderMeta::from_headers(headers) {
+        let meta = match WebhookMeta::from_headers(headers) {
             Ok(meta) => meta,
             Err(error) => return refuse(span, &error),
         };

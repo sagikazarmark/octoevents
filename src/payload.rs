@@ -125,7 +125,7 @@ pub trait FromEnvelope: Sized {
 ///
 #[cfg_attr(feature = "derive", doc = "```")]
 #[cfg_attr(not(feature = "derive"), doc = "```ignore")]
-/// use octoevents::{DecodeError, Envelope, EventKind, FromEnvelope, HeaderMeta};
+/// use octoevents::{DecodeError, Envelope, EventKind, FromEnvelope, WebhookMeta};
 ///
 /// #[derive(serde::Deserialize, octoevents::Payload)]
 /// #[payload(EventKind::Issues)]
@@ -133,7 +133,7 @@ pub trait FromEnvelope: Sized {
 /// #[derive(serde::Deserialize)]
 /// struct Numbered { number: u64 }
 ///
-/// let envelope = Envelope::new(HeaderMeta::new("delivery", EventKind::PullRequest), br#"{"issue":{"number":7}}"#);
+/// let envelope = Envelope::new(WebhookMeta::new("delivery", EventKind::PullRequest), br#"{"issue":{"number":7}}"#);
 ///
 /// // The bytes would fit the view; the kind is what is wrong.
 /// assert!(matches!(
@@ -302,13 +302,13 @@ impl<P: Payload> Payload for Event<P> {
 ///
 #[cfg_attr(feature = "derive", doc = "```")]
 #[cfg_attr(not(feature = "derive"), doc = "```ignore")]
-/// use octoevents::{Envelope, EventKind, FromEnvelope as _, HeaderMeta, Payload};
+/// use octoevents::{Envelope, EventKind, FromEnvelope as _, WebhookMeta, Payload};
 ///
 /// #[derive(serde::Deserialize, Payload)]
 /// #[payload(EventKind::from_static("future_event"))]
 /// struct FutureEvent { number: u64 }
 ///
-/// let envelope = Envelope::new(HeaderMeta::new("delivery", EventKind::from("future_event")), br#"{"number":7}"#);
+/// let envelope = Envelope::new(WebhookMeta::new("delivery", EventKind::from("future_event")), br#"{"number":7}"#);
 /// assert_eq!(FutureEvent::from_envelope(&envelope).unwrap().number, 7);
 /// ```
 ///

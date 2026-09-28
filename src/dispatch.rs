@@ -322,7 +322,7 @@ impl Dispatcher {
     /// envelope comes from [`Envelope::new`], so nothing is signed:
     ///
     /// ```
-    /// use octoevents::{BoxError, Dispatcher, Envelope, EventKind, HeaderMeta, Match};
+    /// use octoevents::{BoxError, Dispatcher, Envelope, EventKind, WebhookMeta, Match};
     ///
     /// async fn log(envelope: Envelope) -> Result<(), BoxError> {
     ///     println!("{} bytes of {}", envelope.raw_payload.len(), envelope.meta.kind);
@@ -332,7 +332,7 @@ impl Dispatcher {
     /// # tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
     /// let dispatcher = Dispatcher::builder().on(EventKind::Push, log).build();
     /// let envelope = Envelope::new(
-    ///     HeaderMeta::new("72d3162e-cc78-11e3-81ab-4c9367dc0958", EventKind::Push),
+    ///     WebhookMeta::new("72d3162e-cc78-11e3-81ab-4c9367dc0958", EventKind::Push),
     ///     br#"{"ref":"refs/heads/main"}"#,
     /// );
     ///
@@ -352,11 +352,11 @@ impl Dispatcher {
     /// use std::pin::pin;
     /// use std::task::{Context, Poll, Waker};
     ///
-    /// use octoevents::{BoxError, Dispatcher, Envelope, EventKind, HeaderMeta};
+    /// use octoevents::{BoxError, Dispatcher, Envelope, EventKind, WebhookMeta};
     /// # async fn log(_: Envelope) -> Result<(), BoxError> { Ok(()) }
     ///
     /// let dispatcher = Dispatcher::builder().on(EventKind::Push, log).build();
-    /// let envelope = Envelope::new(HeaderMeta::new("delivery-1", EventKind::Push), br#"{"ref":"refs/heads/main"}"#);
+    /// let envelope = Envelope::new(WebhookMeta::new("delivery-1", EventKind::Push), br#"{"ref":"refs/heads/main"}"#);
     ///
     /// let mut future = pin!(dispatcher.dispatch(envelope));
     /// let Poll::Ready(outcome) = future.as_mut().poll(&mut Context::from_waker(Waker::noop())) else {
@@ -670,7 +670,7 @@ impl fmt::Display for Match {
 /// ```
 /// use std::error::Error as _;
 ///
-/// use octoevents::{DecodeError, Dispatcher, Envelope, EventKind, HeaderMeta};
+/// use octoevents::{DecodeError, Dispatcher, Envelope, EventKind, WebhookMeta};
 ///
 /// #[derive(Debug, thiserror::Error)]
 /// #[error("database is down")]
@@ -682,7 +682,7 @@ impl fmt::Display for Match {
 ///
 /// # tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
 /// let dispatcher = Dispatcher::builder().always(persist).build();
-/// let envelope = Envelope::new(HeaderMeta::new("delivery-1", EventKind::Push), b"{}");
+/// let envelope = Envelope::new(WebhookMeta::new("delivery-1", EventKind::Push), b"{}");
 ///
 /// let error = dispatcher.dispatch(envelope).await.result.unwrap_err();
 ///
@@ -1239,7 +1239,7 @@ impl DispatcherBuilder {
     /// kind. "Log it, then reject it" is the two handlers in that order:
     ///
     /// ```
-    /// use octoevents::{BoxError, Dispatcher, Envelope, EventKind, HeaderMeta};
+    /// use octoevents::{BoxError, Dispatcher, Envelope, EventKind, WebhookMeta};
     ///
     /// async fn log_unrouted(envelope: Envelope) -> Result<(), BoxError> {
     ///     println!("unrouted {} {}", envelope.meta.delivery_id, envelope.meta.kind);

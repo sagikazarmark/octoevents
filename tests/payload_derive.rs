@@ -19,7 +19,7 @@
 use std::convert::Infallible;
 
 use octoevents::{
-    AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind, FromEnvelope as _, HeaderMeta,
+    AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind, FromEnvelope as _, WebhookMeta,
     Payload,
 };
 
@@ -44,14 +44,14 @@ struct KnownFromStatic {
 #[test]
 fn static_kinds_decode_both_unknown_and_recognized_names() {
     let future = Envelope::new(
-        HeaderMeta::new("future", EventKind::from("future_event")),
+        WebhookMeta::new("future", EventKind::from("future_event")),
         br#"{"number":7}"#,
     );
     assert_eq!(FutureEvent::from_envelope(&future).unwrap().number, 7);
     assert_eq!(<Event<FutureEvent>>::KIND, future.meta.kind);
 
     let known = Envelope::new(
-        HeaderMeta::new("known", EventKind::Issues),
+        WebhookMeta::new("known", EventKind::Issues),
         br#"{"number":8}"#,
     );
     assert_eq!(KnownFromStatic::KIND, EventKind::Issues);
@@ -107,7 +107,7 @@ async fn static_kinds_and_actions_route_like_runtime_wire_values() {
     ] {
         let outcome = dispatcher
             .dispatch(Envelope::new(
-                HeaderMeta::new("delivery", EventKind::from(kind)),
+                WebhookMeta::new("delivery", EventKind::from(kind)),
                 bytes,
             ))
             .await;
@@ -157,7 +157,7 @@ fn the_declared_kind_is_the_payloads_kind() {
 #[test]
 fn an_envelope_of_the_kind_decodes_into_the_view() {
     let envelope = Envelope::new(
-        HeaderMeta::new("delivery", EventKind::Issues),
+        WebhookMeta::new("delivery", EventKind::Issues),
         br#"{"action":"opened","issue":{"number":7,"title":"unread"}}"#,
     );
 
@@ -172,7 +172,7 @@ fn an_envelope_of_the_kind_decodes_into_the_view() {
 #[test]
 fn an_envelope_of_another_kind_is_a_kind_mismatch() {
     let envelope = Envelope::new(
-        HeaderMeta::new("delivery", EventKind::PullRequest),
+        WebhookMeta::new("delivery", EventKind::PullRequest),
         br#"{"issue":{"number":7}}"#,
     );
 
@@ -192,7 +192,7 @@ fn an_envelope_of_another_kind_is_a_kind_mismatch() {
 #[test]
 fn a_generic_view_decodes_as_each_type_its_field_deserializes_as() {
     let envelope = Envelope::new(
-        HeaderMeta::new("delivery", EventKind::PullRequest),
+        WebhookMeta::new("delivery", EventKind::PullRequest),
         br#"{"action":"opened","pull_request":{"number":7}}"#,
     );
 
@@ -203,7 +203,7 @@ fn a_generic_view_decodes_as_each_type_its_field_deserializes_as() {
     assert_eq!(untyped.pull_request["number"], 7);
 
     let push = Envelope::new(
-        HeaderMeta::new("delivery", EventKind::Push),
+        WebhookMeta::new("delivery", EventKind::Push),
         br#"{"ref":"refs/heads/main"}"#,
     );
     let named = Ref::<String>::from_envelope(&push).unwrap();

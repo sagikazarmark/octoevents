@@ -356,7 +356,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use octoevents::{HeaderMeta, header};
+    use octoevents::{WebhookMeta, header};
 
     use super::*;
 
@@ -407,7 +407,7 @@ mod tests {
     async fn a_delivery_is_stored_then_routed() {
         let (inbox, counter) = inbox();
         let envelope = Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::PullRequest),
+            WebhookMeta::new("delivery-1", EventKind::PullRequest),
             OPENED,
         );
 
@@ -426,7 +426,7 @@ mod tests {
     async fn a_redelivery_is_answered_with_success_without_routing() {
         let (inbox, counter) = inbox();
         let envelope = Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::PullRequest),
+            WebhookMeta::new("delivery-1", EventKind::PullRequest),
             OPENED,
         );
 
@@ -459,7 +459,7 @@ mod tests {
                 .build(),
         };
         let envelope = Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::PullRequest),
+            WebhookMeta::new("delivery-1", EventKind::PullRequest),
             OPENED,
         );
 
@@ -488,7 +488,7 @@ mod tests {
     async fn an_unknown_kind_is_dead_lettered_and_succeeds() {
         let (inbox, counter) = inbox();
         let envelope = Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::Push),
+            WebhookMeta::new("delivery-1", EventKind::Push),
             br#"{"ref":"refs/heads/main"}"#,
         );
 
@@ -507,7 +507,7 @@ mod tests {
     async fn an_added_action_of_a_known_kind_is_tolerated() {
         let (inbox, _) = inbox();
         let envelope = Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::PullRequest),
+            WebhookMeta::new("delivery-1", EventKind::PullRequest),
             br#"{"action":"future_action","number":2}"#,
         );
 

@@ -33,7 +33,7 @@ mod common;
 
 use common::{Fields, SpanRecord, Value};
 use octoevents::{
-    Action, AnyAction, DispatchError, Dispatcher, Envelope, EventKind, Handler as _, HeaderMeta,
+    Action, AnyAction, DispatchError, Dispatcher, Envelope, EventKind, Handler as _, WebhookMeta,
     Match, Outcome, Signature, SignatureError, Verifier, WebhookSecret,
 };
 
@@ -61,7 +61,7 @@ impl octoevents::Payload for AnyPullRequest {
 /// An envelope of `kind` whose payload carries `action`, or `{}` for none, so
 /// the meta the span records is what the payload says.
 fn envelope(kind: EventKind, action: Option<Action>) -> Envelope {
-    Envelope::new(HeaderMeta::new("delivery", kind), payload(action, None))
+    Envelope::new(WebhookMeta::new("delivery", kind), payload(action, None))
 }
 
 /// The smallest payload carrying `action` and an installation ID, each when
@@ -311,7 +311,7 @@ fn the_span_opens_with_the_delivery_id_and_event_and_the_action_and_installation
     // string "42", and the others are strings, which is what a dashboard
     // groups and compares by.
     let with_both = Envelope::new(
-        HeaderMeta::new("delivery", EventKind::PullRequest),
+        WebhookMeta::new("delivery", EventKind::PullRequest),
         payload(Some(Action::Opened), Some(42)),
     );
     let (recording, _) = common::traced(dispatcher.dispatch(with_both));
@@ -808,7 +808,7 @@ fn a_malformed_signature_header_is_refused_before_any_verify_span_opens() {
 #[cfg(feature = "http-body")]
 #[test]
 fn an_unknown_target_is_unauthorized_with_its_own_error_and_no_verify_span() {
-    let receiver = octoevents::WebhookReceiverBuilder::from_source(|_: &octoevents::HeaderMeta| {
+    let receiver = octoevents::WebhookReceiverBuilder::from_source(|_: &octoevents::WebhookMeta| {
         None::<Verifier>
     })
     .build(dispatcher());

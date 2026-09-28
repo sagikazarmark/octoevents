@@ -1,12 +1,12 @@
 use std::{future::Future, sync::Arc};
 
-use crate::{HeaderMeta, MaybeSend, MaybeSync, Verifier};
+use crate::{WebhookMeta, MaybeSend, MaybeSync, Verifier};
 
 /// What a receiver asks, per request and before verifying it, for the
 /// [`Verifier`] of that request: one webhook URL serving several GitHub Apps,
 /// each signing with its own secret.
 ///
-/// The receiver reads the request's [`HeaderMeta`], hands it here, and
+/// The receiver reads the request's [`WebhookMeta`], hands it here, and
 /// verifies the body against the verifier it gets back; a source that has
 /// none answers `None`, and the request is refused as
 /// [`ReceiveError::UnknownTarget`](crate::ReceiveError::UnknownTarget) (401)
@@ -14,13 +14,13 @@ use crate::{HeaderMeta, MaybeSend, MaybeSync, Verifier};
 /// transport, so the receiver buffers nothing for it; on `receive_bytes`, the
 /// bytes being the caller's already, before the HMAC is computed over them.
 /// A source typically keys by the target,
-/// [`HeaderMeta::target_type`] and [`HeaderMeta::target_id`]: for a GitHub
+/// [`WebhookMeta::target_type`] and [`WebhookMeta::target_id`]: for a GitHub
 /// App, `integration` and the App ID.
 ///
 /// A [`Verifier`] is a source, answering itself for every request, which is
 /// what [`WebhookReceiverBuilder::new`](crate::WebhookReceiverBuilder::new)
 /// builds on; [`WebhookReceiverBuilder::from_source`](crate::WebhookReceiverBuilder::from_source)
-/// takes any other. So is a closure over `&HeaderMeta` returning
+/// takes any other. So is a closure over `&WebhookMeta` returning
 /// `Option<Verifier>`, for a lookup in memory, and an `Arc` of a source, for
 /// a registry shared with the rest of the application. A lookup that awaits,
 /// a secret manager or a database, implements the trait on a struct:
@@ -28,7 +28,7 @@ use crate::{HeaderMeta, MaybeSend, MaybeSync, Verifier};
 /// ```
 /// use std::collections::HashMap;
 ///
-/// use octoevents::{HeaderMeta, TargetType, Verifier, VerifierSource, WebhookSecret};
+/// use octoevents::{WebhookMeta, TargetType, Verifier, VerifierSource, WebhookSecret};
 ///
 /// /// The deployment's GitHub Apps, by App ID.
 /// struct Apps {
@@ -36,7 +36,7 @@ use crate::{HeaderMeta, MaybeSend, MaybeSync, Verifier};
 /// }
 ///
 /// impl VerifierSource for Apps {
-///     async fn verifier(&self, headers: &HeaderMeta) -> Option<Verifier> {
+///     async fn verifier(&self, headers: &WebhookMeta) -> Option<Verifier> {
 ///         // A secret manager would be awaited here.
 ///         match (headers.target_type.as_ref(), headers.target_id) {
 ///             (Some(TargetType::Integration), Some(id)) => self.verifiers.get(&id).cloned(),
@@ -86,7 +86,7 @@ use crate::{HeaderMeta, MaybeSend, MaybeSync, Verifier};
 pub trait VerifierSource: MaybeSync {
     /// The verifier to authenticate the request whose headers read as
     /// `headers`, or `None` to refuse it.
-    fn verifier(&self, headers: &HeaderMeta) -> impl Future<Output = Option<Verifier>> + MaybeSend;
+    fn verifier(&self, headers: &WebhookMeta) -> impl Future<Output = Option<Verifier>> + MaybeSend;
 }
 
 /// The one verifier for every request: a receiver with one secret, or one
@@ -94,7 +94,7 @@ pub trait VerifierSource: MaybeSync {
 impl VerifierSource for Verifier {
     fn verifier(
         &self,
-        _headers: &HeaderMeta,
+        _headers: &WebhookMeta,
     ) -> impl Future<Output = Option<Verifier>> + MaybeSend {
         // Clones share the secrets, so this is a reference count.
         std::future::ready(Some(self.clone()))
@@ -102,15 +102,15 @@ impl VerifierSource for Verifier {
 }
 
 // `do_not_recommend` keeps rustc from explaining a missing impl as "the trait
-// `Fn(&HeaderMeta)` is not implemented" for a type that was never meant to be
+// `Fn(&WebhookMeta)` is not implemented" for a type that was never meant to be
 // a closure. `Fn` is fundamental, so this blanket does not overlap the
 // `Verifier` and `Arc` impls, as it does not for `Handler`.
 #[diagnostic::do_not_recommend]
 impl<F> VerifierSource for F
 where
-    F: Fn(&HeaderMeta) -> Option<Verifier> + MaybeSync,
+    F: Fn(&WebhookMeta) -> Option<Verifier> + MaybeSync,
 {
-    fn verifier(&self, headers: &HeaderMeta) -> impl Future<Output = Option<Verifier>> + MaybeSend {
+    fn verifier(&self, headers: &WebhookMeta) -> impl Future<Output = Option<Verifier>> + MaybeSend {
         std::future::ready(self(headers))
     }
 }
@@ -119,7 +119,7 @@ where
 // supplies `MaybeSync`, and `MaybeSend` is what the builder requires of `S`
 // anyway.
 impl<S: VerifierSource + MaybeSend> VerifierSource for Arc<S> {
-    fn verifier(&self, headers: &HeaderMeta) -> impl Future<Output = Option<Verifier>> + MaybeSend {
+    fn verifier(&self, headers: &WebhookMeta) -> impl Future<Output = Option<Verifier>> + MaybeSend {
         S::verifier(self, headers)
     }
 }

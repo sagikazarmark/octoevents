@@ -288,7 +288,7 @@ mod header_map {
 
     use crate::test_support::{BODY, headers, headers_from, verifier};
     use crate::{
-        Action, EventKind, HeaderMeta, ReceiveError, SignatureError, TargetType, authenticate,
+        Action, EventKind, WebhookMeta, ReceiveError, SignatureError, TargetType, authenticate,
         header,
     };
 
@@ -325,7 +325,7 @@ mod header_map {
         let signature = verifier().sign(BODY).to_string();
         let headers = headers(&signature);
 
-        let meta = HeaderMeta::from_headers(&headers).unwrap();
+        let meta = WebhookMeta::from_headers(&headers).unwrap();
         let envelope = authenticate(&verifier(), &headers, Bytes::from_static(BODY)).unwrap();
 
         assert_eq!(meta.delivery_id, envelope.meta.delivery_id);
@@ -346,13 +346,13 @@ mod header_map {
         no_event.insert(header::DELIVERY_ID, HeaderValue::from_static("delivery"));
 
         assert_eq!(
-            HeaderMeta::from_headers(&neither),
+            WebhookMeta::from_headers(&neither),
             Err(ReceiveError::MissingHeader {
                 name: header::DELIVERY_ID
             })
         );
         assert_eq!(
-            HeaderMeta::from_headers(&no_event),
+            WebhookMeta::from_headers(&no_event),
             Err(ReceiveError::MissingHeader {
                 name: header::EVENT_NAME
             })
