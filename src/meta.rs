@@ -514,7 +514,10 @@ impl From<Repository> for RepositoryMeta {
             id: repository.id,
             name: repository.name,
             full_name: repository.full_name,
-            owner: repository.owner.0.login,
+            owner: {
+                let Object(owner) = repository.owner;
+                owner.login
+            },
         }
     }
 }

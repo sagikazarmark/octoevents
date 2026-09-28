@@ -72,9 +72,9 @@ where
 /// action.
 ///
 /// Per delivery the dispatcher runs three tiers: always, route and fallback.
-/// The `always` chain runs first, for every delivery, and receives any
-/// input, usually the verified [`Envelope`], bytes included, or the meta
-/// beside it. The routed chains run next: the
+/// The `always` chain runs first, for every delivery whose meta decoded,
+/// and receives any input, usually the verified [`Envelope`], bytes
+/// included, or the meta beside it. The routed chains run next: the
 /// chain for the envelope's kind and action, then the kind-wide chain. Every
 /// routed handler is a [`Handler`] over some [`FromEnvelope`] input,
 /// registered with `on` for the kinds and actions a matcher selects; a
@@ -1462,9 +1462,9 @@ struct Route {
 
 impl Route {
     /// A registered handler, erased behind its input's decode: it decodes
-    /// `I` from the envelope when it runs, and a decode failure is this
-    /// handler's failure. The `always` and `fallback` tiers use `Envelope`,
-    /// whose decode is an infallible clone.
+    /// `I` from the envelope and the dispatcher's meta when it runs, and a
+    /// decode failure is this handler's failure. The `fallback` tier uses
+    /// `Envelope`, whose decode is an infallible clone.
     ///
     /// `#[track_caller]` here, on [`registered`](Self::registered) below and
     /// on the registration method calling this makes the location the

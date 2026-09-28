@@ -371,7 +371,7 @@ Per delivery it decodes the `EventMeta` once, then runs three tiers in order:
 
 | Tier | Runs | Receives | Registered with |
 | --- | --- | --- | --- |
-| Always | First, for every delivery | Any input | `always` |
+| Always | First, for every delivery whose metadata decodes | Any input | `always` |
 | Route | The handlers matching the kind and action, then those matching the kind | Any input | `on` |
 | Fallback | Only when no route matched | `Envelope` | `fallback` |
 
@@ -803,7 +803,7 @@ where Probot runs every matching handler and aggregates their errors.
 | --- | --- |
 | `app.on('issues.opened', h)` | `on((EventKind::Issues, Action::Opened), h)`, or `on(Action::Opened, h)` with the kind taken from `h`'s payload type. There is no string route form |
 | `app.on('issues', h)` | `on(EventKind::Issues, h)`, or `on(AnyAction, h)` with the kind taken from `h`'s payload type |
-| `app.onAny(h)` | `always(h)`: first, for every delivery, over the envelope, the meta, or `Event<Envelope>` for both; its error fails the delivery. Sees `ping` only with `handle_ping(true)` |
+| `app.onAny(h)` | `always(h)`: first, for every delivery whose metadata decodes, over the envelope, the meta, or `Event<Envelope>` for both; its error fails the delivery. Sees `ping` only with `handle_ping(true)` |
 | `app.onError(h)` | Inspect `dispatcher.dispatch(envelope).await.result` in the policy seam; see [Error handling](#error-handling). A `DispatchError` says where (tier, handler, registration site, or none when the payload's meta did not decode), and its source chain says why. Refused requests reach no handler |
 | `app.receive(event)` | `dispatcher.dispatch(envelope)` with an envelope from `Envelope::new`; see [Testing without GitHub](#testing-without-github) |
 | `context.payload` | The handler's input: a serde view of your own (`#[derive(Payload)]`), or octocrab's structs with the `octocrab` feature |
