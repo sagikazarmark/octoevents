@@ -906,7 +906,7 @@ impl Error for DispatchError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Tier {
     /// The `always` chain: handlers over any input, that run for every
-    /// delivery before routing.
+    /// delivery whose meta decoded, before routing.
     Always,
     /// The routed chains: the handlers `on` or `handle` registered for the
     /// delivery's kind and action.

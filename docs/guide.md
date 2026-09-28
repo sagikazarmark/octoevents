@@ -441,7 +441,7 @@ async fn reject(envelope: Envelope) -> Result<(), BoxError> {
 }
 
 let dispatcher = Dispatcher::builder()
-    // Always: first, for every delivery, bytes included.
+    // Always: first, for every delivery whose metadata decodes; `audit` takes the bytes.
     .always(audit)
     // Routes with the kind taken from the payload type...
     .on(AnyAction, notify)                                  // every `issues` action
