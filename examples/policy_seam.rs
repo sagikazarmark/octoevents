@@ -150,11 +150,16 @@ impl Store {
 
 /// Everything the seam can fail with: its own store, or whatever the
 /// dispatcher reports, tier, handler and registration site included.
+///
+/// The dispatch error is this error's `source()`, not forwarded through it
+/// with `#[error(transparent)]`, which would skip it: the receiver walks the
+/// chain to the `DispatchError` for the failed delivery's action and
+/// installation ID.
 #[derive(Debug, thiserror::Error)]
 enum InboxError {
     #[error(transparent)]
     Store(#[from] StoreError),
-    #[error(transparent)]
+    #[error("the dispatcher failed the delivery")]
     Dispatch(#[from] DispatchError),
 }
 
@@ -491,6 +496,34 @@ mod tests {
         assert_eq!(stored.raw_payload, envelope.raw_payload);
         let recovered = inbox.dispatcher.dispatch(stored).await;
         assert_eq!(recovered.matched, Match::Matched);
+    }
+
+    /// The dispatcher's error stays in the seam's error chain, where the
+    /// receiver finds it to record the failed delivery's action and
+    /// installation ID.
+    #[tokio::test]
+    async fn a_failed_dispatch_stays_in_the_error_chain() {
+        let inbox = Inbox {
+            store: Store::default(),
+            dispatcher: Dispatcher::builder()
+                .on(EventKind::PullRequest, |_: EventMeta| async {
+                    Err::<(), _>("the GitHub API is unavailable")
+                })
+                .build(),
+        };
+        let envelope = Envelope::new(
+            WebhookMeta::new("delivery-1", EventKind::PullRequest),
+            OPENED,
+        );
+
+        let error = inbox.handle(envelope).await.unwrap_err();
+
+        let dispatch = error
+            .source()
+            .and_then(|source| source.downcast_ref::<DispatchError>())
+            .expect("the dispatch error is the seam error's source");
+        assert_eq!(dispatch.action, Some(Action::Opened));
+        assert_eq!(dispatch.installation_id, Some(7_777_777));
     }
 
     /// A kind the route table never registered is dead-lettered, not failed,

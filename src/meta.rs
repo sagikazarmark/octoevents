@@ -158,6 +158,9 @@ impl EventMeta {
     /// `action` that is not a string, or an `installation`, `repository`,
     /// `organization` or `sender` that is not an object with the fields
     /// read here. A field that is absent or `null` is `None`, not an error.
+    /// Invalid UTF-8 is an error in a value read here, not in one skipped:
+    /// the decode does not validate the rest of the document, and a view
+    /// that reads such a value fails at its own decode.
     pub fn decode(envelope: &Envelope) -> Result<Self, DecodeError> {
         let Object(PayloadMeta {
             action,

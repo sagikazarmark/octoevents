@@ -62,6 +62,9 @@ The dispatch span and the `handler failed` event record `action` and `installati
 decoded from the payload; the event reads them from the dispatcher's error.
 A receiver whose handler is not a dispatcher, or a delivery whose metadata did not decode,
 records only the header fields, `delivery_id` and `event`.
+A policy seam that wraps the dispatcher's error in its own keeps the two fields only if the `DispatchError` stays in the
+error's `source()` chain: hold it as the wrapper's source, not behind `#[error(transparent)]`,
+which forwards `source()` past it.
 
 ## Interpret results
 

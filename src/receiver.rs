@@ -768,7 +768,11 @@ fn record_refusal(_span: &trace::Span, _error: &ReceiveError) {}
 /// [`DispatchError`] the handler failed with, the first in the error's
 /// source chain, which carries the meta its dispatcher decoded. A handler
 /// that is not a dispatcher, or a delivery whose meta did not decode,
-/// records the header fields alone.
+/// records the header fields alone. So does a wrapping handler whose error
+/// forwards the dispatch error with `#[error(transparent)]`: that forwards
+/// `source()` past it too, so the chain never reaches it. A wrapper keeps
+/// the fields by holding the dispatch error as its `source()`, as the
+/// `policy_seam` example does.
 ///
 /// Takes the handler's error by value and boxes it here, so the conversion
 /// happens only with the feature. `error` is recorded as an error value: the

@@ -305,6 +305,25 @@ mod meta_decode {
     }
 
     #[test]
+    fn invalid_utf8_in_a_value_the_meta_skips_is_not_validated() {
+        // The decode is one serde pass that skips what it does not keep, and
+        // serde_json does not validate the UTF-8 of a skipped string: the
+        // meta decodes, and only a view that reads the value fails on it.
+        let fields = &BODY[..BODY.len() - 1];
+        for extra in [
+            &b",\"extra\":\"\xff\"}"[..],
+            b",\"extra\":{\"nested\":[\"\x80\"]}}",
+        ] {
+            let payload = [fields, extra].concat();
+
+            let meta = decode(&payload).unwrap();
+
+            assert_eq!(meta.action, Some(Action::Opened));
+            assert_eq!(meta.sender, Some(AccountMeta::new(2, "monalisa")));
+        }
+    }
+
+    #[test]
     fn invalid_json_is_an_error() {
         for payload in [&b"not json"[..], b"{", b"", b"{\"action\":\"\xff\"}"] {
             assert!(

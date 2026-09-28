@@ -127,6 +127,32 @@ fn a_failed_delivery_emits_one_failed_delivery_event_with_its_event_meta() {
 }
 
 #[test]
+fn a_wrapping_error_whose_source_is_the_dispatch_error_keeps_its_event_meta() {
+    // The policy seam's shape: a handler wrapping the dispatcher, whose own
+    // error holds the dispatch error as its source. The receiver walks the
+    // chain to it.
+    #[derive(Debug, thiserror::Error)]
+    #[error("the dispatcher failed the delivery")]
+    struct Seam(#[source] octoevents::DispatchError);
+
+    let dispatcher = failing_dispatcher();
+    let receiver = receiver(move |envelope: Envelope| {
+        let dispatcher = dispatcher.clone();
+        async move { dispatcher.dispatch(envelope).await.result.map_err(Seam) }
+    });
+
+    let (recording, response) = common::traced(receiver.receive(request("pull_request")));
+    assert_eq!(response.status(), 500);
+
+    let fields = failed_delivery_event(&recording);
+    assert_identifies_the_delivery(fields);
+    assert_eq!(
+        fields.error("error").expect("the error").text,
+        "the dispatcher failed the delivery"
+    );
+}
+
+#[test]
 fn without_a_dispatcher_the_event_records_the_header_fields_alone() {
     // The envelope carries the header meta only, and nothing decoded the
     // payload for the receiver: the action and installation are absent.

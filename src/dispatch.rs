@@ -1582,8 +1582,6 @@ impl Routes {
         (matched, specific.iter().chain(any_action))
     }
 
-    /// Prints the route table under the name of the type that owns it, so
-    /// the dispatcher and its builder read alike.
     /// What the table decides for a delivery of `kind` whose action it
     /// cannot read: nothing matched, by the kind alone.
     fn lookup_kind(&self, kind: &EventKind) -> Match {
@@ -1594,6 +1592,8 @@ impl Routes {
         }
     }
 
+    /// Prints the route table under the name of the type that owns it, so
+    /// the dispatcher and its builder read alike.
     fn fmt_as(&self, name: &str, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct(name)
