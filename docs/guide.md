@@ -520,8 +520,8 @@ The dispatcher boxes the error where the handler is registered,
 so handlers with different error types share one dispatcher and no enum joins them.
 A payload that does not fit a routed handler's view is boxed the same way, as the `DecodeError` it is.
 
-A failure is a `DispatchError`: the boxed error wrapped with the tier, the delivery's ID, kind, action and installation
-ID, the failing handler's name, and the source location of the registration that put it there.
+A failure is a `DispatchError`: the boxed error wrapped with the delivery's ID, kind, action and installation ID,
+the failing handler's name, and the source location of the registration that put it there.
 When the delivery's meta did not decode, no handler ran: `handler()` and `registration_site()` are `None`,
 and the source is the `DecodeError`.
 Its text says *where*; its source chain says *why*:
@@ -569,7 +569,7 @@ let webhook = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("deve
 When an `issues.opened` payload lacks the `title` the view names, `report` prints:
 
 ```text
-delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (issues.opened) failed in the route tier at the handler `app::label` registered at src/main.rs:29:6
+delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (issues.opened) failed at the handler `app::label` registered at src/main.rs:29:6
   caused by: payload could not be decoded
   caused by: missing field `title` at line 1 column 39
 ```
@@ -804,7 +804,7 @@ where Probot runs every matching handler and aggregates their errors.
 | `app.on('issues.opened', h)` | `on((EventKind::Issues, Action::Opened), h)`, or `on(Action::Opened, h)` with the kind taken from `h`'s payload type. There is no string route form |
 | `app.on('issues', h)` | `on(EventKind::Issues, h)`, or `on(AnyAction, h)` with the kind taken from `h`'s payload type |
 | `app.onAny(h)` | `always(h)`: first, for every delivery whose metadata decodes, over the envelope, the meta, or `Event<Envelope>` for both; its error fails the delivery. Sees `ping` only with `handle_ping(true)` |
-| `app.onError(h)` | Inspect `dispatcher.dispatch(envelope).await.result` in the policy seam; see [Error handling](#error-handling). A `DispatchError` says where (tier, handler, registration site, or none when the payload's meta did not decode), and its source chain says why. Refused requests reach no handler |
+| `app.onError(h)` | Inspect `dispatcher.dispatch(envelope).await.result` in the policy seam; see [Error handling](#error-handling). A `DispatchError` says where (handler and registration site, or none when the payload's meta did not decode), and its source chain says why. Refused requests reach no handler |
 | `app.receive(event)` | `dispatcher.dispatch(envelope)` with an envelope from `Envelope::new`; see [Testing without GitHub](#testing-without-github) |
 | `context.payload` | The handler's input: a serde view of your own (`#[derive(Payload)]`), or octocrab's structs with the `octocrab` feature |
 | `context.id`, `context.name` | `meta.delivery_id` and `meta.kind` on the `EventMeta`; a handler gets it beside the payload as `Event<P>` |

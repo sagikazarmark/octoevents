@@ -154,9 +154,8 @@ Empty by default, so unmatched deliveries succeed.
 
 **Tier**: One of the three steps a dispatcher runs a delivery through, in order: always, route
 (the matched routes, action-specific then kind-wide), fallback.
-A _dispatch error_ names the tier its failing handler ran in, and none when the meta failed to decode, before any tier ran.
-The `Tier` enum is internal: the tier appears in error text and tracing output,
-not as a public field consumers branch on.
+The tier is a property of the registration method (`always`, `on`, `fallback`), not a value:
+no type names it, and a _dispatch error_ points at its failing handler's registration site, which says which tier it was.
 _Avoid_: Stage, phase (kept for decode versus handle inside one handler), layer (middleware vocabulary)
 
 **Registration site**: The source location of the call that registered a handler
@@ -172,12 +171,12 @@ For an operator to read, not for code to match on; `type_name` promises no stabl
 `DispatchError::handler`, and the `handler` field of the dispatch span.
 _Avoid_: Handler ID, handler label, type name alone (says the mechanism, not what it names)
 
-**Dispatch error**: What a failed dispatch reports: the application error, boxed as a `BoxError`, wrapped with the tier,
+**Dispatch error**: What a failed dispatch reports: the application error, boxed as a `BoxError`, wrapped with
 the delivery's ID, kind, action and installation ID, the handler name and the registration site of the failing handler.
 Says where, not why; why is its source, the boxed application error,
 which a policy that wants its own type back downcasts (`source.downcast_ref::<AppError>()`).
 A decode failure is reported at the handler that needed the decode, the `DecodeError` as the source;
-the one failure no handler owns is the `EventMeta` decode, reported with no tier, handler or registration site,
+the one failure no handler owns is the `EventMeta` decode, reported with no handler or registration site,
 and no action or installation ID.
 The type is `DispatchError`, an `Error` whatever the handler's error was, so a dispatcher nests as a route of another.
 The policy seam can inspect it before returning it to the receiver.

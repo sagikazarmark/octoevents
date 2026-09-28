@@ -115,9 +115,9 @@ where
 /// handler failed it; the outcome is for the policy seam to read.
 ///
 /// A failure is reported as a [`DispatchError`]: the handler's error, boxed
-/// as a [`BoxError`], wrapped with the tier the failing handler ran in,
-/// the delivery's ID, kind, action and installation ID, the handler's name,
-/// and the source location of the registration that put the handler there.
+/// as a [`BoxError`], wrapped with the delivery's ID, kind, action and
+/// installation ID, the handler's name, and the source location of the
+/// registration that put the handler there.
 /// Every registration method records its handler's name and its caller's
 /// location, so an operator reading "delivery X failed" knows which handler
 /// and can go to the line of code that registered it.
@@ -356,11 +356,10 @@ impl Dispatcher {
     /// The outcome carries the match the route table decided and the result
     /// of the handlers that ran: the first handler error, or the decode error
     /// of the first handler whose input could not be decoded, each wrapped in
-    /// a [`DispatchError`] naming the tier it came from, the delivery, the
-    /// handler, and where it was registered. The two are independent: a
-    /// matched delivery can fail, and an unmatched one succeeds unless an
-    /// `always` or `fallback` handler fails it. [`Handler::handle`] on the
-    /// dispatcher keeps only the result.
+    /// a [`DispatchError`] naming the delivery, the handler, and where it was
+    /// registered. The two are independent: a matched delivery can fail, and
+    /// an unmatched one succeeds unless an `always` or `fallback` handler
+    /// fails it. [`Handler::handle`] on the dispatcher keeps only the result.
     ///
     /// Ordering is per dispatch: concurrent calls can invoke the same handler
     /// concurrently, and there is no ordering across envelopes. The first
@@ -425,11 +424,10 @@ impl Dispatcher {
     /// `unmatched_ok` (nothing routed matched, no fallback failed) and
     /// `unmatched_error` (nothing routed matched, a handler failed, in
     /// whichever tier, or the meta did not decode). On failure it also
-    /// records `tier`, `handler` and `registration_site`, the
-    /// [`DispatchError`]'s, so the span alone says
-    /// which handler failed the delivery; a delivery whose meta did not
-    /// decode records none of the three. The crate's tracing contract as a
-    /// whole is under [Tracing](crate#tracing).
+    /// records `handler` and `registration_site`, the [`DispatchError`]'s,
+    /// so the span alone says which handler failed the delivery; a delivery
+    /// whose meta did not decode records neither. The crate's tracing
+    /// contract as a whole is under [Tracing](crate#tracing).
     pub async fn dispatch(&self, envelope: Envelope) -> Outcome {
         let meta = EventMeta::decode(&envelope);
         #[cfg(feature = "tracing")]
@@ -444,7 +442,6 @@ impl Dispatcher {
                 .map(Action::as_str),
             installation_id = decoded.and_then(|meta| meta.installation_id),
             outcome = tracing::field::Empty,
-            tier = tracing::field::Empty,
             handler = tracing::field::Empty,
             registration_site = tracing::field::Empty,
         );
@@ -470,7 +467,6 @@ impl Dispatcher {
             if let Err(error) = &outcome.result
                 && let Some(registration) = &error.registration
             {
-                span.record("tier", registration.tier.as_str());
                 span.record("handler", registration.handler);
                 trace::record_display(&span, "registration_site", registration.site);
             }
@@ -562,8 +558,8 @@ impl Handler<Envelope> for Dispatcher {
 /// never by a handler, so it is known even when the `always` tier failed
 /// before routing began. `result` is `Ok` when every handler that ran
 /// succeeded, and otherwise the first error, whichever tier it came from,
-/// wrapped in a [`DispatchError`] that names the tier, the delivery, the
-/// failing handler and where it was registered. A matched delivery can fail;
+/// wrapped in a [`DispatchError`] that names the delivery, the failing
+/// handler and where it was registered. A matched delivery can fail;
 /// an unmatched one succeeds unless an `always` or `fallback` handler fails
 /// it. A delivery whose meta did not decode is unmatched, by its kind alone,
 /// and fails with no handler named, as [`Dispatcher::dispatch`] describes.
@@ -588,8 +584,9 @@ impl Handler<Envelope> for Dispatcher {
 ///
 /// The label says whether the delivery matched and whether it failed, not
 /// which tier failed it: an `always` handler failing an unrouted kind is
-/// `unmatched_error` with no fallback registered. The tier, the handler and
-/// the registration site are fields of their own on the same span.
+/// `unmatched_error` with no fallback registered. The handler and the
+/// registration site are fields of their own on the same span, and the
+/// registration site says which tier it put the handler in.
 ///
 /// The dispatcher produces this and consumers only read it, so it is
 /// `#[non_exhaustive]` for the reason [`DispatchError`] is: another field
@@ -614,7 +611,7 @@ impl Handler<Envelope> for Dispatcher {
 /// }
 ///
 /// impl Handler<Envelope> for DeadLetter {
-///     // The dispatcher's error passes through, tier, handler and registration site included.
+///     // The dispatcher's error passes through, handler and registration site included.
 ///     type Error = DispatchError;
 ///
 ///     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
@@ -641,7 +638,7 @@ pub struct Outcome {
     /// knew the kind.
     pub matched: Match,
     /// `Ok` when every handler that ran succeeded; otherwise the first error,
-    /// with the tier, handler and registration site it came from.
+    /// with the handler and registration site it came from.
     pub result: Result<(), DispatchError>,
 }
 
@@ -713,14 +710,14 @@ impl fmt::Display for Match {
 /// the dispatch and in the consumer's source it came from.
 ///
 /// The dispatcher wraps the error of the handler that failed the delivery
-/// with what it knew and the handler did not: the tier the handler ran
-/// in, the delivery's ID, kind, action and installation ID, the handler's
-/// name, and the source location of the registration (`always`, `on` or
-/// `fallback`) that put the handler there. Every registration method records
-/// its caller's location and its handler's name at compile time, so each
-/// costs two static references per registration, on `wasm32` as anywhere. A
-/// decode failure is reported at the handler that needed the decode: its
-/// tier, its name, its registration site, and the
+/// with what it knew and the handler did not: the delivery's ID, kind,
+/// action and installation ID, the handler's name, and the source location
+/// of the registration (`always`, `on` or `fallback`) that put the handler
+/// there. Every registration method records its caller's location and its
+/// handler's name, two static references known at compile time, in one
+/// small allocation per registration that every failure shares, on
+/// `wasm32` as anywhere. A decode failure is reported at the handler that
+/// needed the decode: its name, its registration site, and the
 /// [`DecodeError`](crate::DecodeError) as the source.
 ///
 /// The one failure no handler owns is a delivery whose [`EventMeta`] did not
@@ -741,8 +738,9 @@ impl fmt::Display for Match {
 /// code to match on; a policy that keys on the failing handler compares
 /// [`registration_site`](Self::registration_site).
 ///
-/// [`Display`](fmt::Display) names where, not why: the tier, the delivery,
-/// the handler, and the registration site. Why is the
+/// [`Display`](fmt::Display) names where, not why: the delivery, the
+/// handler, and the registration site, the call that says which tier the
+/// handler ran in. Why is the
 /// [`source`](Error::source), the application error, so a reporter that walks
 /// the chain prints both; [`into_source`](Self::into_source) drops the
 /// wrapping for code that wants the application error alone, and code that
@@ -752,8 +750,6 @@ impl fmt::Display for Match {
 /// handler's error was, since the source is always the box, so a dispatcher
 /// nests as a route of another and the receiver puts the error on the
 /// failed-delivery event with no bound left to ask.
-/// The tier is internal context, included in the error's text and tracing
-/// output.
 ///
 /// ```
 /// use std::error::Error as _;
@@ -783,7 +779,7 @@ impl fmt::Display for Match {
 /// ```
 ///
 /// A wrapping handler that passes the dispatcher's result through keeps the
-/// tier, handler name and registration site by making this its error type;
+/// handler name and registration site by making this its error type;
 /// the receiver accepts it as it does any error and answers 500. Custom
 /// reporting belongs in that handler, before it returns the error.
 ///
@@ -797,7 +793,7 @@ impl fmt::Display for Match {
 /// does:
 ///
 /// ```text
-/// delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (pull_request.opened) failed in the route tier at the handler `app::label` registered at src/main.rs:42:10
+/// delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (pull_request.opened) failed at the handler `app::label` registered at src/main.rs:42:10
 ///   caused by: database is down
 /// ```
 ///
@@ -811,8 +807,8 @@ impl fmt::Display for Match {
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct DispatchError {
-    /// The failing handler's registration: its tier, name and registration
-    /// site, read through [`handler`](Self::handler) and
+    /// The failing handler's registration: its name and registration site,
+    /// read through [`handler`](Self::handler) and
     /// [`registration_site`](Self::registration_site). `None` when the
     /// delivery's meta did not decode, so no handler ran.
     registration: Option<Arc<Registration>>,
@@ -870,15 +866,6 @@ impl DispatchError {
             .map(|registration| registration.site)
     }
 
-    /// The tier the failing handler ran in; `None` when the meta did not
-    /// decode and no handler ran.
-    #[cfg(test)]
-    fn tier(&self) -> Option<Tier> {
-        self.registration
-            .as_ref()
-            .map(|registration| registration.tier)
-    }
-
     /// Drops the wrapping and returns the application error.
     ///
     /// The one-call path from a dispatch result to the boxed application
@@ -902,8 +889,8 @@ impl fmt::Display for DispatchError {
         match &self.registration {
             Some(registration) => write!(
                 formatter,
-                ") failed in the {} tier at the handler `{}` registered at {}",
-                registration.tier, registration.handler, registration.site
+                ") failed at the handler `{}` registered at {}",
+                registration.handler, registration.site
             ),
             None => formatter.write_str(") failed before any handler ran: its meta did not decode"),
         }
@@ -913,40 +900,6 @@ impl fmt::Display for DispatchError {
 impl Error for DispatchError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         Some(&*self.source)
-    }
-}
-
-/// The tiers a [`Dispatcher`] runs a delivery through, in order.
-///
-/// Named by a [`DispatchError`] to say which one the failing handler ran in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Tier {
-    /// The `always` chain: handlers over any input, that run for every
-    /// delivery whose meta decoded, before routing.
-    Always,
-    /// The routed chains: the handlers `on` or `handle` registered for the
-    /// delivery's kind and action.
-    Route,
-    /// The `fallback` chain: handlers over the envelope that run only when
-    /// no routed handler matched.
-    Fallback,
-}
-
-impl Tier {
-    /// The tier's name as it appears in a [`DispatchError`]'s message.
-    #[must_use]
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Always => "always",
-            Self::Route => "route",
-            Self::Fallback => "fallback",
-        }
-    }
-}
-
-impl fmt::Display for Tier {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
     }
 }
 
@@ -1030,9 +983,7 @@ impl DispatcherBuilder {
         H: Handler<I> + MaybeSend + MaybeSync + 'static,
         H::Error: Into<BoxError>,
     {
-        self.routes
-            .always
-            .push(Route::routed::<I, H>(Tier::Always, handler));
+        self.routes.always.push(Route::routed::<I, H>(handler));
         self
     }
 
@@ -1351,7 +1302,7 @@ impl DispatcherBuilder {
         H::Error: Into<BoxError>,
         M: IntoMatcher<I>,
     {
-        let route = Route::routed(Tier::Route, handler);
+        let route = Route::routed(handler);
         self.insert_each(matcher.into_matcher().into_slots(), &route);
         self
     }
@@ -1426,7 +1377,7 @@ impl DispatcherBuilder {
     {
         self.routes
             .fallback
-            .push(Route::routed::<Envelope, H>(Tier::Fallback, handler));
+            .push(Route::routed::<Envelope, H>(handler));
         self
     }
 
@@ -1470,19 +1421,17 @@ impl DispatcherBuilder {
 /// recorded without the other.
 struct Route {
     handler: Arc<dyn ErasedHandler>,
-    /// Which tier, which handler and where, shared with every clone of the
-    /// route and every [`DispatchError`] it fails a delivery with.
+    /// Which handler and where it was registered, shared with every clone of
+    /// the route and every [`DispatchError`] it fails a delivery with.
     registration: Arc<Registration>,
 }
 
-/// One registration: the tier it put its handler in, the handler's name and
-/// the call that registered it. Built once per registration method call and
-/// shared behind an `Arc`, so a [`DispatchError`] carries all three in one
-/// pointer and a failure costs a reference count, not a copy.
+/// One registration: the handler's name and the call that registered it.
+/// Built once per registration method call and shared behind an `Arc`, so a
+/// [`DispatchError`] carries both in one pointer and a failure costs a
+/// reference count, not a copy.
 #[derive(Debug)]
 struct Registration {
-    /// The tier the registration method put the handler in.
-    tier: Tier,
     /// [`type_name`] of the handler before erasure: a static string, on
     /// `wasm32` as anywhere.
     handler: &'static str,
@@ -1501,14 +1450,13 @@ impl Route {
     /// on the registration method calling this makes the location the
     /// consumer's call to that method, not any frame of this chain.
     #[track_caller]
-    fn routed<I, H>(tier: Tier, handler: H) -> Self
+    fn routed<I, H>(handler: H) -> Self
     where
         I: FromEnvelope + 'static,
         H: Handler<I> + MaybeSend + MaybeSync + 'static,
         H::Error: Into<BoxError>,
     {
         Self::registered(
-            tier,
             Arc::new(Routed {
                 handler,
                 input: PhantomData,
@@ -1521,11 +1469,10 @@ impl Route {
     /// `#[track_caller]` resolves to: the consumer's call to the registration
     /// method, through the constructor above and that method.
     #[track_caller]
-    fn registered(tier: Tier, handler: Arc<dyn ErasedHandler>, handler_name: &'static str) -> Self {
+    fn registered(handler: Arc<dyn ErasedHandler>, handler_name: &'static str) -> Self {
         Self {
             handler,
             registration: Arc::new(Registration {
-                tier,
                 handler: handler_name,
                 site: Location::caller(),
             }),
@@ -1533,7 +1480,7 @@ impl Route {
     }
 
     /// Wraps this route's failure with the delivery and the registration the
-    /// route carries: its tier, handler name and registration site.
+    /// route carries: its handler name and registration site.
     fn failed(&self, meta: &EventMeta, source: BoxError) -> DispatchError {
         DispatchError {
             registration: Some(Arc::clone(&self.registration)),

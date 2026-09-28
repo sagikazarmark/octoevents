@@ -286,7 +286,7 @@ fn with_a_dispatcher_the_text_says_where_and_the_chain_says_why() {
     assert!(
         error
             .text
-            .starts_with("delivery delivery (pull_request.opened) failed in the always tier"),
+            .starts_with("delivery delivery (pull_request.opened) failed at the handler"),
         "{}",
         error.text
     );
@@ -328,7 +328,7 @@ fn an_anyhow_error_is_traced_through_its_conversion_into_the_box() {
     let fields = failed_delivery_event(&recording);
     let error = fields.error("error").expect("the error");
     assert!(
-        error.text.contains("failed in the always tier"),
+        error.text.contains("failed at the handler"),
         "{}",
         error.text
     );

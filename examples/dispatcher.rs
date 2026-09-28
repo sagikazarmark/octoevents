@@ -267,7 +267,7 @@ mod tests {
 
         assert_eq!(outcome.matched, Match::Matched);
         let error = outcome.result.unwrap_err();
-        assert!(error.to_string().contains("failed in the route tier"));
+        assert!(error.to_string().contains("failed at the handler"));
         assert!(error.source.is::<DecodeError>(), "{error}");
         assert_eq!(error.delivery_id, "delivery-1");
     }

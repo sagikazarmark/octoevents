@@ -95,7 +95,7 @@
 //!   its kinds, or, for a handler over a payload, actions alone or
 //!   [`AnyAction`]. Each handler's error is boxed where it is registered,
 //!   so handlers share no error enum. A failure is a [`DispatchError`]
-//!   naming the tier, the handler and its registration site, the boxed
+//!   naming the handler and its registration site, the boxed
 //!   error its source, or naming no handler when the meta did not decode.
 //!   The policy the tiers cannot express lives in a handler wrapping
 //!   `dispatch`, [the policy seam](Dispatcher#the-policy-seam).
@@ -171,8 +171,8 @@
 //!   records `delivery_id`, `event` and, when the decoded meta has them,
 //!   `action` and `installation_id` on open; on the way out `outcome`, one of `ok`,
 //!   `handler_error`, `unmatched_ok` and `unmatched_error`, and when a
-//!   handler failed the tier it ran in as `tier`, its name as `handler`
-//!   and its registration site as `registration_site`.
+//!   handler failed its name as `handler` and its registration site as
+//!   `registration_site`.
 //!
 //! A field recorded in more than one place is recorded in one form
 //! everywhere: `delivery_id`, `event` and `action` as strings,
@@ -199,8 +199,8 @@
 //! decoded meta has them, and the handler's error, boxed, as `error`: an error
 //! value, so the subscriber renders its text and the chain of sources beneath
 //! it (the `fmt` subscriber prints `error=<text> error.sources=[<cause>,
-//! ..]`). With a dispatcher the text says where (the tier, the handler and
-//! its registration site) and the chain why (the application error, and its
+//! ..]`). With a dispatcher the text says where (the handler and its
+//! registration site) and the chain why (the application error, and its
 //! own sources). A subscriber filtering at ERROR sees every failed delivery
 //! and why; the 500 it is answered with is
 //! the receive span's `status`, since a handler failure is answered nothing

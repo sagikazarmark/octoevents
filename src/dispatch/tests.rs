@@ -572,7 +572,7 @@ mod matching {
         }
 
         impl Handler<Envelope> for DeadLetter {
-            // The dispatcher's error passes through, tier, handler and registration site included.
+            // The dispatcher's error passes through, handler and registration site included.
             type Error = DispatchError;
 
             async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
@@ -698,7 +698,7 @@ mod matching {
     }
 }
 
-/// Dispatch errors: the tier, delivery, handler name and registration site
+/// Dispatch errors: the delivery, handler name and registration site
 /// a failure names, where a decode failure is reported, what `Display` and
 /// `source` say, and the bounds the dispatcher places on its error type.
 mod errors {
@@ -710,7 +710,6 @@ mod errors {
     use crate::{
         Action, AnyAction, BoxError, DecodeError, DispatchError, Dispatcher, Envelope, Event,
         EventKind, EventMeta, FromEnvelope, Handler, Match,
-        dispatch::Tier,
         test_support::{AppError, envelope, installation_created, ping, pull_request_opened},
     };
 
@@ -727,7 +726,7 @@ mod errors {
     }
 
     #[tokio::test]
-    async fn a_failure_names_the_tier_the_delivery_and_the_registration_site() {
+    async fn a_failure_names_the_delivery_the_handler_and_the_registration_site() {
         // The location is that of the registration method's name, so the
         // failing handler is registered on the line after `line!()`.
         let calls = Calls::default();
@@ -745,7 +744,6 @@ mod errors {
             .result
             .unwrap_err();
 
-        assert_eq!(error.tier(), Some(Tier::Route));
         assert_eq!(error.delivery_id, "delivery");
         assert_eq!(error.kind, EventKind::PullRequest);
         assert_eq!(error.action, Some(Action::Opened));
@@ -758,7 +756,7 @@ mod errors {
     }
 
     #[tokio::test]
-    async fn every_registration_method_names_its_tier_and_its_own_line() {
+    async fn every_registration_method_names_its_own_line() {
         let calls = Calls::default();
 
         /// Registers a failing handler with the named method and pairs the
@@ -771,8 +769,7 @@ mod errors {
         }
 
         // One failing handler per registration method, so the locations are
-        // distinct and each error must carry its own. Registration order is
-        // irrelevant to the tier: the method decides it.
+        // distinct and each error must carry its own.
         let cases = [
             (
                 registered!(always(recording::<Envelope>(
@@ -780,7 +777,6 @@ mod errors {
                     "always",
                     Err("always")
                 ))),
-                Tier::Always,
                 "always",
             ),
             (
@@ -788,7 +784,6 @@ mod errors {
                     EventKind::PullRequest,
                     recording::<EventMeta>(&calls, "on", Err("on"))
                 )),
-                Tier::Route,
                 "on",
             ),
             (
@@ -796,7 +791,6 @@ mod errors {
                     [Action::Opened],
                     recording::<AnyPullRequest>(&calls, "action", Err("action"))
                 )),
-                Tier::Route,
                 "action",
             ),
             (
@@ -804,7 +798,6 @@ mod errors {
                     AnyAction,
                     recording::<AnyPullRequest>(&calls, "kind", Err("kind"))
                 )),
-                Tier::Route,
                 "kind",
             ),
             (
@@ -813,7 +806,6 @@ mod errors {
                     "handle",
                     Err("handle")
                 ))),
-                Tier::Route,
                 "handle",
             ),
             (
@@ -822,18 +814,16 @@ mod errors {
                     "fallback",
                     Err("fallback")
                 ))),
-                Tier::Fallback,
                 "fallback",
             ),
         ];
-        for ((builder, line), tier, value) in cases {
+        for ((builder, line), value) in cases {
             let error = builder
                 .build()
                 .dispatch(pull_request_opened())
                 .await
                 .result
                 .unwrap_err();
-            assert_eq!(error.tier(), Some(tier), "{value}");
             assert_eq!(error.registration_site().unwrap().line(), line, "{value}");
             assert_eq!(AppError::from_boxed(error.source), AppError::Handler(value));
         }
@@ -848,7 +838,6 @@ mod errors {
 
         let error = dispatcher.dispatch(ping()).await.result.unwrap_err();
 
-        assert_eq!(error.tier(), Some(Tier::Fallback));
         assert_eq!(error.kind, EventKind::Ping);
         assert_eq!(error.action, None);
     }
@@ -947,7 +936,6 @@ mod errors {
             .result
             .unwrap_err();
 
-        assert_eq!(error.tier(), Some(Tier::Route));
         assert_eq!(error.registration_site().unwrap().line(), registration_site);
         assert_eq!(AppError::from_boxed(error.source), AppError::Decode);
         assert_eq!(calls.lock().await.as_slice(), ["always"]);
@@ -984,7 +972,6 @@ mod errors {
             .result
             .unwrap_err();
 
-        assert_eq!(error.tier(), Some(Tier::Route));
         assert_eq!(error.registration_site().unwrap().line(), registration_site);
         assert_eq!(AppError::from_boxed(error.source), AppError::Decode);
         assert_eq!(calls.lock().await.as_slice(), ["always", "payload-before"]);
@@ -1042,7 +1029,6 @@ mod errors {
             .await
             .result
             .unwrap_err();
-        assert_eq!(error.tier(), Some(Tier::Route));
         assert_eq!(error.registration_site().unwrap().line(), registration_site);
         let reason = error.source().expect("the decode error is the source");
         assert_eq!(reason.to_string(), "payload has no installation");
@@ -1059,7 +1045,7 @@ mod errors {
     }
 
     #[tokio::test]
-    async fn display_names_the_tier_the_handler_and_the_registration_site_and_source_yields_the_application_error()
+    async fn display_names_the_handler_and_the_registration_site_and_source_yields_the_application_error()
      {
         use std::{any::type_name_of_val, error::Error as _};
 
@@ -1089,7 +1075,7 @@ mod errors {
         assert_eq!(
             error.to_string(),
             format!(
-                "delivery delivery (pull_request.opened) failed in the route tier at the handler \
+                "delivery delivery (pull_request.opened) failed at the handler \
                  `{}` registered at {}",
                 type_name_of_val(&database_down),
                 error.registration_site().unwrap()
@@ -1110,7 +1096,7 @@ mod errors {
         assert!(
             error
                 .to_string()
-                .starts_with("delivery delivery (ping) failed in the fallback tier at the handler"),
+                .starts_with("delivery delivery (ping) failed at the handler"),
             "{error}"
         );
     }
@@ -1135,7 +1121,10 @@ mod errors {
             .result
             .unwrap_err();
 
-        assert!(error.to_string().contains("route tier"), "{error}");
+        assert!(
+            error.to_string().contains("failed at the handler"),
+            "{error}"
+        );
         assert_eq!(error.source().expect("the boxed error").to_string(), "boom");
         assert_eq!(error.into_source().to_string(), "boom");
     }
@@ -1194,12 +1183,10 @@ mod errors {
         let outcome = outer.dispatch(pull_request_opened()).await;
         assert_eq!(outcome.matched, Match::Matched);
         let error = outcome.result.unwrap_err();
-        assert_eq!(error.tier(), Some(Tier::Route));
         let inner_error = error
             .source()
             .and_then(|source| source.downcast_ref::<DispatchError>())
             .expect("the inner dispatch error is the source");
-        assert_eq!(inner_error.tier(), Some(Tier::Route));
         assert_eq!(
             inner_error
                 .source()
@@ -1421,7 +1408,6 @@ mod meta {
             assert_eq!(error.installation_id, None, "{text}");
             assert_eq!(error.handler(), None, "{text}");
             assert_eq!(error.registration_site(), None, "{text}");
-            assert_eq!(error.tier(), None, "{text}");
             assert!(
                 matches!(
                     error.source.downcast_ref::<DecodeError>(),
@@ -1513,7 +1499,6 @@ mod inputs {
     use crate::{
         Action, AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind, EventMeta,
         FromEnvelope, Handler, Match, Payload,
-        dispatch::Tier,
         test_support::{
             AppError, check_run_completed, envelope, installation_created, pull_request,
             pull_request_opened, unrepresentable,
@@ -1694,7 +1679,6 @@ mod inputs {
             .await
             .result
             .unwrap_err();
-        assert_eq!(error.tier(), Some(Tier::Route));
         assert_eq!(AppError::from_boxed(error.source), AppError::Decode);
     }
 
@@ -1936,7 +1920,6 @@ mod matchers {
     use crate::{
         Action, AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind, EventMatcher,
         EventMeta, Match, Payload,
-        dispatch::Tier,
         test_support::{
             AppError, check_run_completed, envelope, envelope_with_action, installation_created,
             pull_request_opened,
@@ -2063,7 +2046,6 @@ mod matchers {
             .result
             .unwrap_err();
 
-        assert_eq!(error.tier(), Some(Tier::Route));
         assert_eq!(error.registration_site().unwrap().line(), registration_site);
         assert!(
             matches!(
@@ -2257,7 +2239,6 @@ mod octocrab {
     use super::{AnyPullRequest, Calls, recording, unwrapped};
     use crate::{
         Action, AnyAction, Dispatcher, Envelope, Event, EventKind, Handler,
-        dispatch::Tier,
         test_support::{
             AppError, check_run_completed, envelope, installation_created, pull_request_opened,
             source_as, unrepresentable,
@@ -2421,7 +2402,6 @@ mod octocrab {
             .result
             .unwrap_err();
 
-        assert_eq!(error.tier(), Some(Tier::Route));
         assert_eq!(error.registration_site().unwrap().line(), registration_site);
         assert_eq!(AppError::from_boxed(error.source), AppError::Decode);
         assert_eq!(calls.lock().await.as_slice(), ["view"]);

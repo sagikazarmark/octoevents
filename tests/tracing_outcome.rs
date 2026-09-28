@@ -4,8 +4,8 @@
 //! - `octoevents.dispatch` records what happened to one delivery: `ok` and
 //!   `handler_error` for a matched delivery, `unmatched_ok` and
 //!   `unmatched_error` for an unmatched one, whichever tier failed it, derived
-//!   from the [`Outcome`] the dispatcher returns; beside it the tier, handler
-//!   name and registration site of the handler that failed it, and the
+//!   from the [`Outcome`] the dispatcher returns; beside it the handler name
+//!   and registration site of the handler that failed it, and the
 //!   fields of the `EventMeta` it decoded (`delivery_id`, `event`, `action`,
 //!   `installation_id`). The same span wraps `Handler::handle`, so the
 //!   receiver's path records the value too.
@@ -167,11 +167,12 @@ fn a_failure_before_routing_is_labelled_by_the_match_the_route_table_decided() {
     // The always tier fails both deliveries before any route or fallback
     // runs. The label follows the match, not the tier that failed: the
     // unmatched one reads as `unmatched_error`, which is true whichever tier
-    // failed it; the tier itself is a field of its own.
+    // failed it; the failing handler and its registration are fields of
+    // their own.
     let (fields, outcome) =
         traced(dispatcher.dispatch(envelope(EventKind::PullRequest, Some(Action::Opened))));
     assert_eq!(fields.str("outcome"), Some("handler_error"));
-    assert_eq!(fields.str("tier"), Some("always"));
+    assert_registered_on(&fields, registration_line);
     assert_eq!(
         unwrapped_outcome(outcome),
         (Match::Matched, Err("audit".to_owned()))
@@ -180,7 +181,6 @@ fn a_failure_before_routing_is_labelled_by_the_match_the_route_table_decided() {
     let (fields, outcome) =
         traced(dispatcher.dispatch(envelope(EventKind::CheckRun, Some(Action::Completed))));
     assert_eq!(fields.str("outcome"), Some("unmatched_error"));
-    assert_eq!(fields.str("tier"), Some("always"));
     assert_registered_on(&fields, registration_line);
     assert_eq!(
         unwrapped_outcome(outcome),
@@ -213,7 +213,7 @@ async fn fail_check_run(envelope: Envelope) -> Result<(), &'static str> {
 }
 
 #[test]
-fn a_failure_records_the_tier_the_handler_and_the_registration_site_of_the_failing_handler() {
+fn a_failure_records_the_handler_and_the_registration_site_of_the_failing_handler() {
     // The location is that of the registration method's name, so the failing
     // handler is registered on the line after `line!()`.
     let builder = Dispatcher::builder();
@@ -223,7 +223,6 @@ fn a_failure_records_the_tier_the_handler_and_the_registration_site_of_the_faili
     let (fields, outcome) =
         traced(dispatcher.dispatch(envelope(EventKind::CheckRun, Some(Action::Completed))));
     assert_eq!(fields.str("outcome"), Some("unmatched_error"));
-    assert_eq!(fields.str("tier"), Some("fallback"));
     assert_registered_on(&fields, registration_line);
     // The handler is named as the error names it: `type_name` of the
     // registered handler, here the `async fn` item's path.
@@ -250,7 +249,6 @@ fn a_failure_records_the_tier_the_handler_and_the_registration_site_of_the_faili
     let (fields, _) =
         traced(dispatcher.dispatch(envelope(EventKind::PullRequest, Some(Action::Opened))));
     assert_eq!(fields.str("outcome"), Some("unmatched_ok"));
-    assert_eq!(fields.get("tier"), None);
     assert_eq!(fields.get("handler"), None);
     assert_eq!(fields.get("registration_site"), None);
 }
@@ -346,7 +344,7 @@ fn a_delivery_whose_meta_does_not_decode_closes_unmatched_error_with_no_handler(
     let dispatcher = dispatcher();
 
     // The meta did not decode, so the span has the header fields alone,
-    // nothing was routed, and no handler failed it: no tier, handler or
+    // nothing was routed, and no handler failed it: no handler or
     // registration site.
     let not_json = Envelope::new(
         WebhookMeta::new("delivery", EventKind::PullRequest),
@@ -363,7 +361,7 @@ fn a_delivery_whose_meta_does_not_decode_closes_unmatched_error_with_no_handler(
         assert_eq!(fields.get("installation_id"), None, "at {when}: {fields:?}");
     }
     assert_eq!(span.at_close.str("outcome"), Some("unmatched_error"));
-    for field in ["tier", "handler", "registration_site"] {
+    for field in ["handler", "registration_site"] {
         assert_eq!(
             span.at_close.get(field),
             None,
@@ -497,7 +495,6 @@ fn caller_span() -> tracing::Span {
         delivery_id = "caller-delivery",
         event = "caller-event",
         error = "caller-error",
-        tier = "caller-tier",
         handler = "caller-handler",
         registration_site = "caller-site",
     )

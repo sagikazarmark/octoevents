@@ -250,11 +250,7 @@ async fn the_reporter_reaches_the_serde_field_by_walking_source() {
 
     let lines = reported.lock().unwrap();
     assert_eq!(lines.len(), 3, "{lines:#?}");
-    assert!(
-        lines[0].contains("failed in the route tier"),
-        "{}",
-        lines[0]
-    );
+    assert!(lines[0].contains("failed at the handler"), "{}", lines[0]);
     assert!(
         lines[1].ends_with("payload could not be decoded"),
         "{}",

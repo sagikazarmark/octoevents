@@ -24,7 +24,7 @@
 | Route table / match | Registrations from `on` / whether the table has a handler for this kind or kind/action |
 | Outcome | Match classification plus the result of dispatch; unmatched can succeed and matched can fail |
 | Refusal | A request answered before any handler ran, such as an invalid signature or oversized body |
-| Dispatch error | The failing handler's error, wrapped with delivery, tier, handler name and registration site; or the meta's decode error, with no handler |
+| Dispatch error | The failing handler's error, wrapped with delivery, handler name and registration site; or the meta's decode error, with no handler |
 | Policy seam | The handler over an envelope wrapping `dispatch`, where persistence, deduplication and outcome policy live |
 | Redelivery | Another GitHub attempt with the same delivery ID, requested by an operator or automation; GitHub does not do it automatically |
 | Wire format | The flat JSON representation of an envelope for a trusted internal hop; deserialization authenticates nothing |

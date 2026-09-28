@@ -73,7 +73,7 @@
 //! [`Inbox`] logs every failed delivery, source chain included, before
 //! returning the error, since the receiver answers a handler
 //! error with a bare 500 and says nothing else: the dispatcher's
-//! `DispatchError` names the tier, the delivery, the failing handler and the
+//! `DispatchError` names the delivery, the failing handler and the
 //! line that registered it, and its source is the handler's error, which the
 //! reporting code downcasts to tell a decode failure from the application's own.
 //!
@@ -149,7 +149,7 @@ impl Store {
 }
 
 /// Everything the seam can fail with: its own store, or whatever the
-/// dispatcher reports, tier, handler and registration site included.
+/// dispatcher reports, handler and registration site included.
 ///
 /// The dispatch error is this error's `source()`, not forwarded through it
 /// with `#[error(transparent)]`, which would skip it: the receiver walks the
@@ -318,7 +318,7 @@ fn dispatcher() -> Dispatcher {
 ///
 /// The receiver's response is GitHub's delivery record, not a log. The
 /// handler calls this so an operator without a `tracing` subscriber learns
-/// why a delivery failed. A dispatch error names the tier, the delivery, the
+/// why a delivery failed. A dispatch error names the delivery, the
 /// failing handler and the line that registered it, or no handler when the
 /// delivery's meta did not decode; its source is the handler's error, or the
 /// decode error, boxed, which a downcast gets back.
