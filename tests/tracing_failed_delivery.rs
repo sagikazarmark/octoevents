@@ -1,8 +1,9 @@
 //! A failed delivery is one event at ERROR, carrying the error.
 //!
 //! When a handler fails and the receiver answers 500, it emits one `tracing`
-//! event at ERROR carrying the event meta's identifying fields (`delivery_id`,
-//! `event`, and `action` and `installation_id` when the delivery has them)
+//! event at ERROR carrying the delivery's identifying fields (`delivery_id`
+//! and `event` from its headers, and, from the `DispatchError` a dispatcher
+//! failed it with, `action` and `installation_id` when the delivery has them)
 //! and the handler's error, boxed, as `error`, an error value whose source
 //! chain the subscriber renders; the 500 is the receive span's `status`, not
 //! a field of the event, since a handler failure is answered nothing else.
@@ -28,7 +29,7 @@ use common::{Fields, Recording, Value};
 use http::Request;
 use http_body_util::Full;
 use octoevents::{
-    BoxError, Dispatcher, Envelope, Verifier, WebhookReceiver, WebhookReceiverBuilder,
+    BoxError, Dispatcher, Envelope, EventMeta, Verifier, WebhookReceiver, WebhookReceiverBuilder,
     WebhookSecret,
 };
 use tracing::Level;
@@ -73,11 +74,11 @@ fn failed_delivery_event(recording: &Recording) -> &Fields {
     &recording.event_at(Level::ERROR).fields
 }
 
-/// Asserts the event identifies the delivery [`request`] sends: the meta's
-/// fields in the form every span records them, strings and integers, and no
-/// `status`, which is the receive span's.
+/// Asserts the event identifies the delivery [`request`] sends by its
+/// headers, `delivery_id` and `event`, in the form every span records them,
+/// and has no `status`, which is the receive span's.
 #[track_caller]
-fn assert_identifies_the_delivery(fields: &Fields) {
+fn assert_identifies_the_delivery_by_its_headers(fields: &Fields) {
     assert_eq!(
         fields.get("delivery_id"),
         Some(&Value::Str("delivery".into()))
@@ -86,14 +87,36 @@ fn assert_identifies_the_delivery(fields: &Fields) {
         fields.get("event"),
         Some(&Value::Str("pull_request".into()))
     );
+    assert_eq!(fields.get("status"), None, "{fields:?}");
+}
+
+/// Asserts the event identifies the delivery [`request`] sends by the meta
+/// a dispatcher decoded: the header fields, and the action and installation
+/// ID, strings and integers.
+#[track_caller]
+fn assert_identifies_the_delivery(fields: &Fields) {
+    assert_identifies_the_delivery_by_its_headers(fields);
     assert_eq!(fields.get("action"), Some(&Value::Str("opened".into())));
     assert_eq!(fields.get("installation_id"), Some(&Value::U64(42)));
-    assert_eq!(fields.get("status"), None, "{fields:?}");
+}
+
+/// Asserts the event has neither of the fields only a decoded meta supplies.
+#[track_caller]
+fn assert_has_no_payload_meta(fields: &Fields) {
+    assert_eq!(fields.get("action"), None, "{fields:?}");
+    assert_eq!(fields.get("installation_id"), None, "{fields:?}");
+}
+
+/// A dispatcher whose one handler, over the meta, fails every delivery.
+fn failing_dispatcher() -> Dispatcher {
+    Dispatcher::builder()
+        .always(|_: EventMeta| async { Err::<(), _>("handler failed") })
+        .build()
 }
 
 #[test]
 fn a_failed_delivery_emits_one_failed_delivery_event_with_its_event_meta() {
-    let receiver = receiver(|_: Envelope| async { Err::<(), _>("handler failed") });
+    let receiver = receiver(failing_dispatcher());
 
     let (recording, response) = common::traced(receiver.receive(request("pull_request")));
     assert_eq!(response.status(), 500);
@@ -104,8 +127,43 @@ fn a_failed_delivery_emits_one_failed_delivery_event_with_its_event_meta() {
 }
 
 #[test]
-fn the_event_omits_the_action_and_installation_id_a_delivery_does_not_have() {
+fn without_a_dispatcher_the_event_records_the_header_fields_alone() {
+    // The envelope carries the header meta only, and nothing decoded the
+    // payload for the receiver: the action and installation are absent.
     let receiver = receiver(|_: Envelope| async { Err::<(), _>("handler failed") });
+
+    let (recording, response) = common::traced(receiver.receive(request("pull_request")));
+    assert_eq!(response.status(), 500);
+
+    let fields = failed_delivery_event(&recording);
+    assert_identifies_the_delivery_by_its_headers(fields);
+    assert_has_no_payload_meta(fields);
+}
+
+#[test]
+fn a_delivery_whose_meta_does_not_decode_records_the_header_fields_alone() {
+    let receiver = receiver(failing_dispatcher());
+
+    let (recording, response) =
+        common::traced(receiver.receive(request_with("pull_request", b"not json")));
+    assert_eq!(response.status(), 500);
+
+    let fields = failed_delivery_event(&recording);
+    assert_identifies_the_delivery_by_its_headers(fields);
+    assert_has_no_payload_meta(fields);
+    let error = fields.error("error").expect("the error");
+    assert!(
+        error
+            .text
+            .ends_with("failed before any handler ran: its meta did not decode"),
+        "{}",
+        error.text
+    );
+}
+
+#[test]
+fn the_event_omits_the_action_and_installation_id_a_delivery_does_not_have() {
+    let receiver = receiver(failing_dispatcher());
 
     // A `push` carries neither: the fields are absent rather than empty or
     // `None`, as they are on the dispatch span.
@@ -177,7 +235,7 @@ fn the_event_records_the_error_as_a_value_with_the_chain_beneath_it() {
     // Without a dispatcher the handler's error is the value: its text, and
     // its sources beneath it, for the subscriber to render as it sees fit.
     let fields = failed_delivery_event(&recording);
-    assert_identifies_the_delivery(fields);
+    assert_identifies_the_delivery_by_its_headers(fields);
     let error = fields.error("error").expect("the error");
     assert_eq!(error.text, "database is down");
     assert_eq!(error.sources, ["connection refused", "timed out"]);

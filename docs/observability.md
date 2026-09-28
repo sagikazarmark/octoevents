@@ -55,6 +55,13 @@ Expect these distinguishing fields (timestamps and formatting are subscriber-dep
 A dispatcher adds the failing handler, registration site and tier to its error;
 the subscriber renders the source chain beneath it.
 Decode failures appear at the handler whose input needed the decode.
+A payload whose metadata the dispatcher cannot decode (not JSON, or outside GitHub's shape) fails before any handler:
+its error says so and names no handler, and the dispatch span closes with `outcome="unmatched_error"` and no `tier`.
+
+The dispatch span and the `handler failed` event record `action` and `installation_id` from the metadata the dispatcher
+decoded from the payload; the event reads them from the dispatcher's error.
+A receiver whose handler is not a dispatcher, or a delivery whose metadata did not decode,
+records only the header fields, `delivery_id` and `event`.
 
 ## Interpret results
 

@@ -16,9 +16,10 @@
 //! The dispatcher runs three tiers per delivery, in order, and the first
 //! error ends the dispatch:
 //!
-//! - **always**: [`audit`], a handler over the [`Envelope`], runs first for
-//!   every delivery the dispatcher is handed, bytes included and nothing
-//!   decoded on its behalf.
+//! - **always**: [`audit`], a handler over the meta beside the [`Envelope`]
+//!   (`Event<Envelope>`), runs first for every delivery the dispatcher is
+//!   handed, bytes included and no view decoded on its behalf. The meta is
+//!   the one the dispatcher decoded once, before any tier, to route by.
 //! - **route**: the handlers registered with `on` whose kind and action match.
 //!   [`label`] takes the payload alone, decoded as the [`IssueView`] view; its
 //!   kind comes from the view's type, so its matcher says only the action (a
@@ -26,7 +27,7 @@
 //!   [`Event<IssueView>`](Event), under two actions. [`record_installation`] takes the
 //!   [`EventMeta`] alone, which declares no kind, so its matcher spells the
 //!   kind and the action (an *absolute* matcher); nothing is decoded for it.
-//! - **fallback**: [`log_unrouted`], another handler over the envelope, runs
+//! - **fallback**: [`log_unrouted`], a handler over the envelope, runs
 //!   only when no route matched: a kind the route table never registered
 //!   (`push`), or an action GitHub added to one it did (`issues.closed`
 //!   here). It leaves the delivery green in GitHub; a strict one would fail
@@ -35,8 +36,10 @@
 //! Each handler keeps its own error type, and the dispatcher boxes it where
 //! the handler is registered. A payload the view does not fit fails the
 //! delivery at the handler that needed the decode, and the `DispatchError`
-//! names that handler and the line that registered it. The receiver's handler
-//! prints it, then walks the chain of sources for the why.
+//! names that handler and the line that registered it. A payload whose meta
+//! does not decode (not JSON, or outside GitHub's shape) fails before any
+//! tier runs. The receiver's handler prints the error, then walks the chain
+//! of sources for the why.
 //!
 //! The tests at the bottom drive the dispatcher with envelopes from
 //! [`Envelope::new`] and read the [`Match`](octoevents::Match) each reports;
@@ -65,9 +68,14 @@ struct Issue {
     title: String,
 }
 
-/// Always tier: the envelope, bytes included, for every delivery.
-async fn audit(envelope: Envelope) -> Result<(), BoxError> {
-    let meta = &envelope.meta;
+/// Always tier: the meta beside the envelope, bytes included, for every
+/// delivery.
+async fn audit(
+    Event {
+        meta,
+        payload: envelope,
+    }: Event<Envelope>,
+) -> Result<(), BoxError> {
     println!(
         "audit {} {} {:?} ({} bytes)",
         meta.delivery_id,
@@ -105,13 +113,11 @@ async fn record_installation(meta: EventMeta) -> Result<(), BoxError> {
     Ok(())
 }
 
-/// Fallback tier: whatever no route matched. It cannot see why.
+/// Fallback tier: whatever no route matched, as the envelope. It cannot see
+/// why.
 async fn log_unrouted(envelope: Envelope) -> Result<(), BoxError> {
     let meta = &envelope.meta;
-    println!(
-        "unrouted {} {} {:?}",
-        meta.delivery_id, meta.kind, meta.action
-    );
+    println!("unrouted {} {}", meta.delivery_id, meta.kind);
     Ok(())
 }
 
@@ -184,7 +190,7 @@ async fn main() -> Result<(), BoxError> {
 
 #[cfg(test)]
 mod tests {
-    use octoevents::{WebhookMeta, Match, header};
+    use octoevents::{Match, WebhookMeta, header};
 
     use super::*;
 

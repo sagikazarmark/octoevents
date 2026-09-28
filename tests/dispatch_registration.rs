@@ -5,7 +5,7 @@
 use std::{convert::Infallible, sync::Arc};
 
 use octoevents::{
-    Action, Dispatcher, Envelope, EventKind, EventMatcher, EventMeta, Handler, WebhookMeta, Match,
+    Action, Dispatcher, Envelope, EventKind, EventMatcher, EventMeta, Handler, Match, WebhookMeta,
 };
 use tokio::sync::Mutex;
 

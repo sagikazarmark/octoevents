@@ -6,7 +6,7 @@
 //!   `unmatched_error` for an unmatched one, whichever tier failed it, derived
 //!   from the [`Outcome`] the dispatcher returns; beside it the tier, handler
 //!   name and registration site of the handler that failed it, and the
-//!   `EventMeta` fields it ran with (`delivery_id`, `event`, `action`,
+//!   fields of the `EventMeta` it decoded (`delivery_id`, `event`, `action`,
 //!   `installation_id`). The same span wraps `Handler::handle`, so the
 //!   receiver's path records the value too.
 //! - `octoevents.receive` records how the receiver answered: `ok`,
@@ -33,8 +33,8 @@ mod common;
 
 use common::{Fields, SpanRecord, Value};
 use octoevents::{
-    Action, AnyAction, DispatchError, Dispatcher, Envelope, EventKind, Handler as _, WebhookMeta,
-    Match, Outcome, Signature, SignatureError, Verifier, WebhookSecret,
+    Action, AnyAction, DispatchError, Dispatcher, Envelope, EventKind, Handler as _, Match,
+    Outcome, Signature, SignatureError, Verifier, WebhookMeta, WebhookSecret,
 };
 
 /// The boxed source's text: the handlers here fail with a `&'static str`,
@@ -234,12 +234,12 @@ fn a_failure_records_the_tier_the_handler_and_the_registration_site_of_the_faili
     let error = outcome.result.unwrap_err();
     assert_eq!(
         fields.str("handler"),
-        Some(error.handler),
+        error.handler,
         "the span and the error name the same handler"
     );
     assert_eq!(
         fields.str("registration_site"),
-        Some(error.registration_site.to_string().as_str()),
+        error.registration_site.map(ToString::to_string).as_deref(),
         "the span and the error name the same registration site"
     );
 
@@ -296,7 +296,7 @@ fn a_handler_name_with_spaces_in_it_is_recorded_whole() {
     assert_eq!(fields.str("handler"), Some(name));
     assert_eq!(
         fields.str("handler"),
-        Some(outcome.result.unwrap_err().handler),
+        outcome.result.unwrap_err().handler,
         "the span and the error name the same handler"
     );
 }
@@ -335,6 +335,38 @@ fn the_span_opens_with_the_delivery_id_and_event_and_the_action_and_installation
         assert_eq!(fields.str("event"), Some("ping"));
         assert_eq!(fields.get("action"), None, "at {when}: {fields:?}");
         assert_eq!(fields.get("installation_id"), None, "at {when}: {fields:?}");
+    }
+}
+
+#[test]
+fn a_delivery_whose_meta_does_not_decode_closes_unmatched_error_with_no_handler() {
+    let dispatcher = dispatcher();
+
+    // The meta did not decode, so the span has the header fields alone,
+    // nothing was routed, and no handler failed it: no tier, handler or
+    // registration site.
+    let not_json = Envelope::new(
+        WebhookMeta::new("delivery", EventKind::PullRequest),
+        b"not json",
+    );
+    let (recording, outcome) = common::traced(dispatcher.dispatch(not_json));
+    assert!(outcome.result.is_err());
+
+    let span = recording.span("octoevents.dispatch");
+    for (when, fields) in [("open", &span.at_open), ("close", &span.at_close)] {
+        assert_eq!(fields.str("delivery_id"), Some("delivery"), "at {when}");
+        assert_eq!(fields.str("event"), Some("pull_request"), "at {when}");
+        assert_eq!(fields.get("action"), None, "at {when}: {fields:?}");
+        assert_eq!(fields.get("installation_id"), None, "at {when}: {fields:?}");
+    }
+    assert_eq!(span.at_close.str("outcome"), Some("unmatched_error"));
+    for field in ["tier", "handler", "registration_site"] {
+        assert_eq!(
+            span.at_close.get(field),
+            None,
+            "{field}: {:?}",
+            span.at_close
+        );
     }
 }
 
@@ -808,10 +840,11 @@ fn a_malformed_signature_header_is_refused_before_any_verify_span_opens() {
 #[cfg(feature = "http-body")]
 #[test]
 fn an_unknown_target_is_unauthorized_with_its_own_error_and_no_verify_span() {
-    let receiver = octoevents::WebhookReceiverBuilder::from_source(|_: &octoevents::WebhookMeta| {
-        None::<Verifier>
-    })
-    .build(dispatcher());
+    let receiver =
+        octoevents::WebhookReceiverBuilder::from_source(|_: &octoevents::WebhookMeta| {
+            None::<Verifier>
+        })
+        .build(dispatcher());
 
     let (recording, response) = common::traced(receiver.receive(receiving::signed_request()));
 

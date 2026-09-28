@@ -7,7 +7,7 @@
 
 **Receive and verify GitHub webhooks in Rust.**
 
-A receiver turns an untrusted HTTP request into an `Envelope`: exact payload bytes and routing metadata.
+A receiver turns an untrusted HTTP request into an `Envelope`: exact payload bytes and the metadata from its headers.
 An optional `Dispatcher` routes envelopes to handlers by event kind and action.
 Handlers can read metadata, decode a small serde view, or use octocrab's payload types.
 
@@ -50,10 +50,10 @@ It prints a thank-you when an issue is opened; it does not post a comment to Git
 
 ```rust,no_run
 use axum::{Router, routing::post_service};
-use octoevents::{Action, BoxError, Dispatcher, Envelope, EventKind, Verifier, WebhookReceiverBuilder, WebhookSecret};
+use octoevents::{Action, BoxError, Dispatcher, EventKind, EventMeta, Verifier, WebhookReceiverBuilder, WebhookSecret};
 
-async fn thank(envelope: Envelope) -> Result<(), BoxError> {
-    let sender = envelope.meta.sender.map(|s| s.login).unwrap_or_default();
+async fn thank(meta: EventMeta) -> Result<(), BoxError> {
+    let sender = meta.sender.map(|s| s.login).unwrap_or_default();
     println!("Thank you for your contribution, @{sender}! :)");
     Ok(())
 }
@@ -79,7 +79,7 @@ GITHUB_WEBHOOK_SECRET=development-secret cargo run
 ```
 
 The verifier authenticates the exact body bytes.
-The dispatcher selects `issues.opened`; `Envelope` gives the handler the metadata and those bytes.
+The dispatcher decodes the delivery's `EventMeta` from those bytes, selects `issues.opened`, and hands the handler the meta.
 `BoxError` lets the handler return any compatible error with `?`.
 
 Successful, unmatched and default `ping` deliveries receive 204.

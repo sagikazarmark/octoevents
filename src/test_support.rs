@@ -17,30 +17,33 @@ use std::fmt;
 use http::{HeaderMap, HeaderValue};
 
 use crate::{
-    Action, BoxError, DecodeError, DispatchError, Envelope, EventKind, WebhookMeta, Verifier,
-    WebhookSecret, header,
+    Action, BoxError, DecodeError, DispatchError, Envelope, EventKind, EventMeta, FromEnvelope,
+    Verifier, WebhookMeta, WebhookSecret, header,
 };
 
 /// A synthetic envelope of `kind` over `payload`, with `"delivery"` as its
-/// delivery ID and the meta the receiver would have read from `payload`.
+/// delivery ID.
 pub(crate) fn envelope(kind: EventKind, payload: impl AsRef<[u8]>) -> Envelope {
     Envelope::new(WebhookMeta::new("delivery", kind), payload)
 }
 
-/// [`envelope`] delivered under `action`, whatever the payload says.
+/// `I` decoded from `envelope` as the dispatcher decodes it: the meta first,
+/// then the input, handed that meta.
+pub(crate) fn input<I: FromEnvelope>(envelope: &Envelope) -> Result<I, DecodeError> {
+    I::from_envelope(envelope, &EventMeta::decode(envelope)?)
+}
+
+/// [`envelope`] over the JSON object `payload` with its top-level `action`
+/// set to `action`, whatever the payload said.
 ///
-/// The override for a payload that carries no action (a non-JSON payload
-/// reaching a handler over `EventMeta`) or carries another one (a fixture
-/// delivered under an action the corpus does not cover). A payload that
-/// carries `action` already needs only [`envelope`].
-pub(crate) fn envelope_with_action(
-    kind: EventKind,
-    action: Action,
-    payload: &'static [u8],
-) -> Envelope {
-    let mut envelope = envelope(kind, payload);
-    envelope.meta.action = Some(action);
-    envelope
+/// For a payload that carries another action (a fixture delivered under an
+/// action the corpus does not cover): the dispatcher routes by the action it
+/// decodes from the bytes, so the bytes are what is rewritten. A payload
+/// that carries `action` already needs only [`envelope`].
+pub(crate) fn envelope_with_action(kind: EventKind, action: &Action, payload: &[u8]) -> Envelope {
+    let mut object: serde_json::Value = serde_json::from_slice(payload).unwrap();
+    object["action"] = action.as_str().into();
+    envelope(kind, serde_json::to_vec(&object).unwrap())
 }
 
 /// The `pull_request.opened` fixture, its action read from the payload.
@@ -52,9 +55,9 @@ pub(crate) fn pull_request_opened() -> Envelope {
 }
 
 /// The `pull_request.opened` fixture delivered under `action`, so a route
-/// table can be tried with actions the corpus does not cover. The payload
-/// still says `opened`; only the meta is under `action`.
-pub(crate) fn pull_request(action: Action) -> Envelope {
+/// table can be tried with actions the corpus does not cover. Only the
+/// payload's `action` is rewritten.
+pub(crate) fn pull_request(action: &Action) -> Envelope {
     envelope_with_action(
         EventKind::PullRequest,
         action,
@@ -164,7 +167,8 @@ impl fmt::Display for AppError {
 impl std::error::Error for AppError {}
 
 /// The payload of the signed requests the authenticating path and the
-/// envelope are tested over: an `opened` delivery carrying every probed field.
+/// envelope are tested over: an `opened` delivery carrying every field the
+/// meta decodes.
 pub(crate) const BODY: &[u8] = br#"{
     "action":"opened",
     "installation":{"id":42},

@@ -9,8 +9,9 @@ use std::{
 };
 
 use crate::{
-    Action, BoxError, Envelope, EventKind, EventMeta, FromEnvelope, Handler, IntoMatcher,
-    MaybeSend, MaybeSync, Payload, matcher::Slot, runtime::BoxFuture, trace,
+    Action, BoxError, DecodeError, Envelope, EventKind, EventMeta, FromEnvelope, Handler,
+    IntoMatcher, MaybeSend, MaybeSync, Payload, WebhookMeta, matcher::Slot, runtime::BoxFuture,
+    trace,
 };
 
 /// The erased handler: every handler is registered as one of these, its
@@ -25,8 +26,8 @@ use crate::{
 /// `MaybeSend`, a bound `on` does not place. And the platform split is the
 /// supertraits, as on `Handler`, rather than a hand-written pair of aliases.
 trait ErasedHandler: MaybeSend + MaybeSync {
-    /// Decodes the handler's input from the envelope and starts the handler
-    /// on it.
+    /// Decodes the handler's input from the envelope and the delivery's
+    /// meta, decoded once by the dispatcher, and starts the handler on it.
     ///
     /// The envelope is borrowed for the decode alone: nothing is cloned for
     /// a route whose input is not the envelope, and a route over the
@@ -37,6 +38,7 @@ trait ErasedHandler: MaybeSend + MaybeSync {
     fn call<'a>(
         &'a self,
         envelope: &Envelope,
+        meta: &EventMeta,
     ) -> Result<BoxFuture<'a, Result<(), BoxError>>, BoxError>;
 }
 
@@ -58,8 +60,9 @@ where
     fn call<'a>(
         &'a self,
         envelope: &Envelope,
+        meta: &EventMeta,
     ) -> Result<BoxFuture<'a, Result<(), BoxError>>, BoxError> {
-        let input = I::from_envelope(envelope).map_err(BoxError::from)?;
+        let input = I::from_envelope(envelope, meta).map_err(BoxError::from)?;
         let future = self.handler.handle(input);
         Ok(Box::pin(async move { future.await.map_err(Into::into) }))
     }
@@ -112,20 +115,27 @@ where
 ///
 /// A failure is reported as a [`DispatchError`]: the handler's error, boxed
 /// as a [`BoxError`], wrapped with the tier the failing handler ran in,
-/// the delivery's ID, kind and action, the handler's name, and the source
-/// location of the registration that put the handler there. Every
-/// registration method records its handler's name and its caller's location,
-/// so an operator reading "delivery X failed" knows which handler and can go
-/// to the line of code that registered it.
+/// the delivery's ID, kind, action and installation ID, the handler's name,
+/// and the source location of the registration that put the handler there.
+/// Every registration method records its handler's name and its caller's
+/// location, so an operator reading "delivery X failed" knows which handler
+/// and can go to the line of code that registered it.
 ///
-/// Nothing is decoded until a handler needs it. Routing reads the kind and
-/// action off the [`EventMeta`], where they were put when the envelope was
-/// built, the kind from the header and the action from the payload's top
-/// level. `always` and `fallback` receive the bytes as they were verified,
-/// and nothing is decoded on their behalf. A routed handler decodes its own
-/// input, through [`FromEnvelope`], when its route runs, and only then: a
-/// handler registered for some actions decodes nothing for a delivery
-/// carrying another. So a payload one handler's input cannot represent
+/// The dispatcher reads the payload once before any handler: it decodes the
+/// delivery's [`EventMeta`] with [`EventMeta::decode`], the kind from the
+/// envelope's header meta and the action, installation, repository,
+/// organization and sender from the payload's top level, and routes on
+/// `meta.action`. Every input it builds for the delivery is handed that
+/// meta, so none decodes it again. A payload whose meta does not decode (not
+/// JSON, or a field outside GitHub's shape) fails the delivery before the
+/// first tier: no handler runs, and the [`DispatchError`] names no handler.
+///
+/// Beyond the meta, nothing is decoded until a handler needs it. `always`
+/// and `fallback` receive the bytes as they were verified, and no view is
+/// decoded on their behalf. A routed handler decodes its own input, through
+/// [`FromEnvelope`], when its route runs, and only then: a handler
+/// registered for some actions decodes nothing for a delivery carrying
+/// another. So a payload one handler's input cannot represent
 /// (octocrab's `WebhookEvent`, say, on a payload its model has drifted from)
 /// fails the delivery at that handler and nowhere else, and the
 /// [`DispatchError`] names its registration: `always` and every routed
@@ -133,7 +143,7 @@ where
 /// or the `EventMeta` alone among them, and the handlers behind it do not,
 /// since the first error ends the dispatch. When no route matches such a
 /// payload, a strict `fallback` rejects it with its own error, not a decode
-/// error, since nothing decoded it.
+/// error, since nothing decoded a view of it.
 ///
 #[cfg_attr(feature = "derive", doc = "```")]
 #[cfg_attr(not(feature = "derive"), doc = "```ignore")]
@@ -161,7 +171,7 @@ where
 /// }
 ///
 /// async fn log_unrouted(envelope: Envelope) -> Result<(), BoxError> {
-///     println!("unrouted {} {} {:?}", envelope.meta.delivery_id, envelope.meta.kind, envelope.meta.action);
+///     println!("unrouted {} {}", envelope.meta.delivery_id, envelope.meta.kind);
 ///     Ok(())
 /// }
 ///
@@ -188,8 +198,9 @@ where
 /// [`DecodeError`]: crate::DecodeError
 ///
 /// `on` routes a handler over any [`FromEnvelope`] input for the kinds and
-/// actions a matcher selects. [`EventMeta`] decodes nothing, so a handler
-/// over it is routed by kind and action and receives only the meta;
+/// actions a matcher selects. [`EventMeta`] decodes nothing beyond the meta
+/// the dispatcher decoded already, so a handler over it is routed by kind
+/// and action and receives only the meta;
 /// [`Envelope`](crate::Envelope) hands over the bytes for one kind, as
 /// `always` does for every kind; a consumer type implementing `FromEnvelope`
 /// itself is a view over fields several kinds share. None of them needs
@@ -204,7 +215,7 @@ where
 /// struct Login { login: String }
 ///
 /// impl FromEnvelope for Sender {
-///     fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError> {
+///     fn from_envelope(envelope: &Envelope, _meta: &EventMeta) -> Result<Self, DecodeError> {
 ///         envelope.decode()
 ///     }
 /// }
@@ -274,8 +285,38 @@ where
 /// tolerating an added action. What the wrapper answers before `dispatch`
 /// reaches no tier, `always` included. The dispatcher only routes.
 /// [`Outcome`]'s docs show a wrapper that dead-letters an unknown kind; the
-/// `policy_seam` example shows one that also persists and deduplicates. A
-/// tier that could succeed and stop routing was considered for this and
+/// `policy_seam` example shows one that also persists and deduplicates.
+///
+/// A wrapper that decides by a payload field, the installation say, decodes
+/// the meta itself with [`EventMeta::decode`] before calling `dispatch`,
+/// which decodes it again for its handlers. The second decode is paid only by
+/// a seam that reads payload fields, and costs what a second handler's view
+/// would:
+///
+/// ```
+/// use octoevents::{Dispatcher, Envelope, EventMeta, Handler};
+///
+/// /// Refuses the deliveries of a suspended installation before routing.
+/// struct Suspensions {
+///     suspended: Vec<u64>,
+///     dispatcher: Dispatcher,
+/// }
+///
+/// impl Handler<Envelope> for Suspensions {
+///     type Error = octoevents::BoxError;
+///
+///     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
+///         let meta = EventMeta::decode(&envelope)?;
+///         if meta.installation_id.is_some_and(|id| self.suspended.contains(&id)) {
+///             return Ok(());
+///         }
+///         Ok(self.dispatcher.dispatch(envelope).await.result?)
+///     }
+/// }
+/// # let _ = Suspensions { suspended: vec![], dispatcher: Dispatcher::builder().build() };
+/// ```
+///
+/// A tier that could succeed and stop routing was considered for this and
 /// declined: it would make "matched" one handler's run-time decision rather
 /// than a property of the route table, so the outcome could no longer be
 /// trusted and a strict `fallback` could no longer say what it rejects.
@@ -297,9 +338,19 @@ impl Dispatcher {
         DispatcherBuilder::default()
     }
 
-    /// Runs the `always` chain, the matching routed chains, and the fallback
-    /// chain when nothing matched, in that order, and reports the
-    /// [`Outcome`].
+    /// Decodes the delivery's [`EventMeta`], runs the `always` chain, the
+    /// matching routed chains, and the fallback chain when nothing matched,
+    /// in that order, and reports the [`Outcome`].
+    ///
+    /// The meta is decoded once, before the first tier, and every handler's
+    /// input is built with it. When it does not decode, the payload being
+    /// invalid JSON or outside GitHub's shape, no handler runs: the result is
+    /// a [`DispatchError`] with no handler and the [`DecodeError`] as its
+    /// source, and `matched` is decided by the kind alone, since there is no
+    /// action to route by ([`Match::UnmatchedKind`] when no route names the
+    /// kind, [`Match::UnmatchedAction`] otherwise). As the receiver's
+    /// handler, that is a 500, so GitHub records the delivery as failed and
+    /// it can be redelivered.
     ///
     /// The outcome carries the match the route table decided and the result
     /// of the handlers that ran: the first handler error, or the decode error
@@ -366,24 +417,30 @@ impl Dispatcher {
     /// ```
     ///
     /// With the `tracing` feature, the call runs in an `octoevents.dispatch`
-    /// span that records `delivery_id`, `event`, and, when the delivery has
-    /// them, `action` and `installation_id`, all on open. On the way out it
+    /// span that records `delivery_id`, `event`, and, when the decoded meta
+    /// has them, `action` and `installation_id`, all on open. On the way out it
     /// records `outcome` as one of four labels: `ok` (matched, every handler
     /// succeeded), `handler_error` (matched, a handler failed),
     /// `unmatched_ok` (nothing routed matched, no fallback failed) and
     /// `unmatched_error` (nothing routed matched, a handler failed, in
-    /// whichever tier). On failure it also records `tier`, `handler` and
+    /// whichever tier, or the meta did not decode). On failure it also records `tier`, `handler` and
     /// `registration_site`, the [`DispatchError`]'s, so the span alone says
-    /// which handler failed the delivery. The crate's tracing contract as a
+    /// which handler failed the delivery; a delivery whose meta did not
+    /// decode records none of the three. The crate's tracing contract as a
     /// whole is under [Tracing](crate#tracing).
     pub async fn dispatch(&self, envelope: Envelope) -> Outcome {
+        let meta = EventMeta::decode(&envelope);
+        #[cfg(feature = "tracing")]
+        let decoded = meta.as_ref().ok();
         #[cfg(feature = "tracing")]
         let span = tracing::info_span!(
             "octoevents.dispatch",
             delivery_id = envelope.meta.delivery_id.as_str(),
             event = envelope.meta.kind.as_str(),
-            action = envelope.meta.action.as_ref().map(Action::as_str),
-            installation_id = envelope.meta.installation_id,
+            action = decoded
+                .and_then(|meta| meta.action.as_ref())
+                .map(Action::as_str),
+            installation_id = decoded.and_then(|meta| meta.installation_id),
             outcome = tracing::field::Empty,
             tier = tracing::field::Empty,
             handler = tracing::field::Empty,
@@ -393,14 +450,31 @@ impl Dispatcher {
         let span = trace::Span;
 
         let dispatch = async {
-            let (matched, routed) = self.routes.lookup(&envelope.meta);
-            let result = self.run_tiers(&envelope, matched, routed).await;
-            let outcome = Outcome { matched, result };
+            let outcome = match meta {
+                Ok(meta) => {
+                    let (matched, routed) = self.routes.lookup(&meta);
+                    let result = self
+                        .run_tiers(&envelope, &meta, matched, routed)
+                        .await
+                        .map_err(|failed| failed.route.failed(failed.tier, &meta, failed.source));
+                    Outcome { matched, result }
+                }
+                Err(error) => Outcome {
+                    matched: self.routes.lookup_kind(&envelope.meta.kind),
+                    result: Err(DispatchError::undecoded(&envelope.meta, error)),
+                },
+            };
             span.record("outcome", outcome.label());
             if let Err(error) = &outcome.result {
-                span.record("tier", error.tier.as_str());
-                span.record("handler", error.handler);
-                trace::record_display(&span, "registration_site", error.registration_site);
+                if let Some(tier) = error.tier {
+                    span.record("tier", tier.as_str());
+                }
+                if let Some(handler) = error.handler {
+                    span.record("handler", handler);
+                }
+                if let Some(site) = error.registration_site {
+                    trace::record_display(&span, "registration_site", site);
+                }
             }
             outcome
         };
@@ -411,41 +485,52 @@ impl Dispatcher {
 
     /// Runs the `always` chain, then either the routed chains or the fallback
     /// chain, stopping at the first error.
-    async fn run_tiers(
-        &self,
+    async fn run_tiers<'a>(
+        &'a self,
         envelope: &Envelope,
+        meta: &EventMeta,
         matched: Match,
-        routed: impl Iterator<Item = &Route>,
-    ) -> Result<(), DispatchError> {
-        run_chain(envelope, Tier::Always, &self.routes.always).await?;
+        routed: impl Iterator<Item = &'a Route>,
+    ) -> Result<(), Failed<'a>> {
+        run_chain(envelope, meta, Tier::Always, &self.routes.always).await?;
 
         match matched {
-            Match::Matched => run_chain(envelope, Tier::Route, routed).await,
+            Match::Matched => run_chain(envelope, meta, Tier::Route, routed).await,
             Match::UnmatchedAction | Match::UnmatchedKind => {
-                run_chain(envelope, Tier::Fallback, &self.routes.fallback).await
+                run_chain(envelope, meta, Tier::Fallback, &self.routes.fallback).await
             }
         }
     }
 }
 
-/// Runs one chain in order, stopping at the first error and wrapping it with
-/// the tier, the delivery, and the failing route's handler name and
-/// registration site. The clones for the error happen only on that path.
+/// A chain's first error, with the tier and the route it came from: what
+/// `dispatch` wraps into a [`DispatchError`] once, on the way out, so the
+/// clones for the error happen only on that path and the chains pass a small
+/// value up.
+struct Failed<'a> {
+    tier: Tier,
+    route: &'a Route,
+    source: BoxError,
+}
+
+/// Runs one chain in order, stopping at the first error, returned with the
+/// tier and the failing route.
 async fn run_chain<'a>(
     envelope: &Envelope,
+    meta: &EventMeta,
     tier: Tier,
     chain: impl IntoIterator<Item = &'a Route>,
-) -> Result<(), DispatchError> {
+) -> Result<(), Failed<'a>> {
     for route in chain {
+        let failed = |source| Failed {
+            tier,
+            route,
+            source,
+        };
         // Two failure points, one shape: a decode failure before the future
         // exists, the handler's after it ran.
-        let future = route
-            .handler
-            .call(envelope)
-            .map_err(|decode| route.failed(tier, envelope, decode))?;
-        future
-            .await
-            .map_err(|source| route.failed(tier, envelope, source))?;
+        let future = route.handler.call(envelope, meta).map_err(failed)?;
+        future.await.map_err(failed)?;
     }
     Ok(())
 }
@@ -493,7 +578,8 @@ impl Handler<Envelope> for Dispatcher {
 /// wrapped in a [`DispatchError`] that names the tier, the delivery, the
 /// failing handler and where it was registered. A matched delivery can fail;
 /// an unmatched one succeeds unless an `always` or `fallback` handler fails
-/// it.
+/// it. A delivery whose meta did not decode is unmatched, by its kind alone,
+/// and fails with no handler named, as [`Dispatcher::dispatch`] describes.
 ///
 /// A handler wrapping a [`Dispatcher`] reads both to set the policy the
 /// tiers cannot, as [The policy seam](Dispatcher#the-policy-seam) describes;
@@ -634,14 +720,21 @@ impl fmt::Display for Match {
 ///
 /// The dispatcher wraps the error of the handler that failed the delivery
 /// with what it knew and the handler did not: the tier the handler ran
-/// in, the delivery's ID, kind and action, the handler's name, and the
-/// source location of the registration (`always`, `on` or `fallback`) that
-/// put the handler there. Every registration method records its caller's
-/// location and its handler's name at compile time, so each costs two static
-/// references per registration, on `wasm32` as anywhere. A decode failure is
-/// reported at the handler that needed the decode: its tier, its name, its
-/// registration site, and the [`DecodeError`](crate::DecodeError) as the
-/// source.
+/// in, the delivery's ID, kind, action and installation ID, the handler's
+/// name, and the source location of the registration (`always`, `on` or
+/// `fallback`) that put the handler there. Every registration method records
+/// its caller's location and its handler's name at compile time, so each
+/// costs two static references per registration, on `wasm32` as anywhere. A
+/// decode failure is reported at the handler that needed the decode: its
+/// tier, its name, its registration site, and the
+/// [`DecodeError`](crate::DecodeError) as the source.
+///
+/// The one failure no handler owns is a delivery whose [`EventMeta`] did not
+/// decode: the dispatcher decodes it before the first tier, so none has run.
+/// Then `handler` and `registration_site` are `None`, the action and
+/// installation ID are `None` for want of a meta, the source is the
+/// `DecodeError`, and `Display` says the delivery failed before any handler
+/// ran.
 ///
 /// The handler name is [`type_name`]'s output for the type the registration
 /// method received: the function's path for an `async fn` item
@@ -712,30 +805,64 @@ impl fmt::Display for Match {
 /// delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (pull_request.opened) failed in the route tier at the handler `app::label` registered at src/main.rs:42:10
 ///   caused by: database is down
 /// ```
+///
+/// and for a delivery whose meta did not decode:
+///
+/// ```text
+/// delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (pull_request) failed before any handler ran: its meta did not decode
+///   caused by: payload could not be decoded
+///   caused by: invalid type: integer `42`, expected a string at line 1 column 12
+/// ```
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct DispatchError {
-    /// The tier the failing handler ran in.
-    tier: Tier,
+    /// The tier the failing handler ran in; `None` when the meta did not
+    /// decode and no handler ran.
+    tier: Option<Tier>,
     /// The failing handler's name: [`type_name`] of the handler the
     /// registration method received, as the docs on this type describe.
-    pub handler: &'static str,
+    /// `None` when the delivery's meta did not decode, so no handler ran.
+    pub handler: Option<&'static str>,
     /// Where the failing handler was registered: the call to the registration
-    /// method in the consumer's source.
-    pub registration_site: &'static Location<'static>,
+    /// method in the consumer's source. `None` when the delivery's meta did
+    /// not decode, so no handler ran.
+    pub registration_site: Option<&'static Location<'static>>,
     /// The `X-GitHub-Delivery` value of the delivery that failed.
     pub delivery_id: String,
     /// The kind of the delivery that failed.
     pub kind: EventKind,
-    /// The action of the delivery that failed, when it had one.
+    /// The action of the delivery that failed, when it had one; `None` too
+    /// when its meta did not decode.
     pub action: Option<Action>,
+    /// The installation ID of the delivery that failed, when it had one;
+    /// `None` too when its meta did not decode.
+    pub installation_id: Option<u64>,
     /// The application error, boxed: the handler's own, or the
-    /// [`DecodeError`](crate::DecodeError) when the handler's input could not
-    /// be decoded. What [`source`](Error::source) returns, by value.
+    /// [`DecodeError`](crate::DecodeError) when the delivery's meta or the
+    /// handler's input could not be decoded. What [`source`](Error::source)
+    /// returns, by value.
     pub source: BoxError,
 }
 
 impl DispatchError {
+    /// The failure of a delivery whose meta did not decode: the header meta,
+    /// no handler, and the decode error as the source.
+    fn undecoded(meta: &WebhookMeta, error: DecodeError) -> Self {
+        let WebhookMeta {
+            delivery_id, kind, ..
+        } = meta.clone();
+        Self {
+            tier: None,
+            handler: None,
+            registration_site: None,
+            delivery_id,
+            kind,
+            action: None,
+            installation_id: None,
+            source: error.into(),
+        }
+    }
+
     /// Drops the wrapping and returns the application error.
     ///
     /// The one-call path from a dispatch result to the boxed application
@@ -756,11 +883,13 @@ impl fmt::Display for DispatchError {
         if let Some(action) = &self.action {
             write!(formatter, ".{action}")?;
         }
-        write!(
-            formatter,
-            ") failed in the {} tier at the handler `{}` registered at {}",
-            self.tier, self.handler, self.registration_site
-        )
+        match (self.tier, self.handler, self.registration_site) {
+            (Some(tier), Some(handler), Some(site)) => write!(
+                formatter,
+                ") failed in the {tier} tier at the handler `{handler}` registered at {site}"
+            ),
+            _ => formatter.write_str(") failed before any handler ran: its meta did not decode"),
+        }
     }
 }
 
@@ -828,12 +957,16 @@ impl Default for DispatcherBuilder {
 }
 
 impl DispatcherBuilder {
-    /// Registers a handler over the [`Envelope`] that runs for every delivery
-    /// the dispatcher receives, before routing.
+    /// Registers a handler that runs for every delivery the dispatcher
+    /// receives, before routing.
     ///
-    /// It receives the verified envelope, bytes included, and nothing is
-    /// decoded on its behalf, so it runs even for a payload no routed handler
-    /// can decode: the tier for audit, metrics, and forwarding. Its failure
+    /// The handler is over any [`FromEnvelope`] input, as a routed one is.
+    /// The usual ones decode no view: the [`Envelope`], bytes included; the
+    /// [`EventMeta`] the dispatcher decoded; or both, as
+    /// `Event<Envelope>`. Such a handler runs even for a payload no routed
+    /// handler can decode: the tier for audit, metrics, and forwarding. A
+    /// forwarder keyed by the installation takes `Event<Envelope>`, the
+    /// installation ID on the meta beside the bytes. Its failure
     /// fails the delivery, and it never counts as a match, so a strict
     /// fallback still rejects kinds nothing else handles. It can continue or
     /// fail but never skip; a handler that decides whether a delivery is
@@ -845,9 +978,10 @@ impl DispatcherBuilder {
     /// `ping` itself, before the dispatcher, unless built with
     /// `WebhookReceiverBuilder::handle_ping(true)`. A wrapper that answers a
     /// redelivery of a stored delivery ID with success before calling
-    /// `dispatch` keeps that redelivery from this tier too. So a metric that
-    /// must count every verified delivery belongs at the top of the wrapper,
-    /// not here, with the receiver built to `handle_ping(true)`.
+    /// `dispatch` keeps that redelivery from this tier too. And a delivery
+    /// whose meta does not decode fails before this tier runs. So a metric
+    /// that must count every verified delivery belongs at the top of the
+    /// wrapper, not here, with the receiver built to `handle_ping(true)`.
     ///
     /// Like every registration method, this records the handler's name and
     /// where it was called so a [`DispatchError`] can point back at the
@@ -856,26 +990,30 @@ impl DispatcherBuilder {
     /// `wasm32`):
     ///
     /// ```
-    /// use octoevents::{Dispatcher, Envelope};
+    /// use octoevents::{Dispatcher, Envelope, Event};
     ///
     /// async fn audit(envelope: Envelope) -> Result<(), std::io::Error> {
     ///     println!("{} {} ({} bytes)", envelope.meta.delivery_id, envelope.meta.kind, envelope.raw_payload.len());
     ///     Ok(())
     /// }
     ///
-    /// let dispatcher = Dispatcher::builder().always(audit).build();
+    /// async fn forward(Event { meta, payload: envelope }: Event<Envelope>) -> Result<(), std::io::Error> {
+    ///     println!("forward {} bytes for installation {:?}", envelope.raw_payload.len(), meta.installation_id);
+    ///     Ok(())
+    /// }
+    ///
+    /// let dispatcher = Dispatcher::builder().always(audit).always(forward).build();
     /// # let _ = dispatcher;
     /// ```
     #[must_use]
     #[track_caller]
-    pub fn always<H>(mut self, handler: H) -> Self
+    pub fn always<I, H>(mut self, handler: H) -> Self
     where
-        H: Handler<Envelope> + MaybeSend + MaybeSync + 'static,
+        I: FromEnvelope + 'static,
+        H: Handler<I> + MaybeSend + MaybeSync + 'static,
         H::Error: Into<BoxError>,
     {
-        self.routes
-            .always
-            .push(Route::routed::<Envelope, H>(handler));
+        self.routes.always.push(Route::routed::<I, H>(handler));
         self
     }
 
@@ -1018,7 +1156,7 @@ impl DispatcherBuilder {
     /// and is registered under those kinds:
     ///
     /// ```
-    /// use octoevents::{Action, BoxError, DecodeError, Dispatcher, Envelope, EventKind, FromEnvelope};
+    /// use octoevents::{Action, BoxError, DecodeError, Dispatcher, Envelope, EventKind, EventMeta, FromEnvelope};
     ///
     /// #[derive(serde::Deserialize)]
     /// struct Sender { sender: Login }
@@ -1026,7 +1164,7 @@ impl DispatcherBuilder {
     /// struct Login { login: String }
     ///
     /// impl FromEnvelope for Sender {
-    ///     fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError> {
+    ///     fn from_envelope(envelope: &Envelope, _meta: &EventMeta) -> Result<Self, DecodeError> {
     ///         envelope.decode()
     ///     }
     /// }
@@ -1203,9 +1341,9 @@ impl DispatcherBuilder {
     /// routed chain matched.
     ///
     /// Several may be registered; they run in order and stop at the first
-    /// error. Like `always`, the chain receives the envelope and nothing is
-    /// decoded on its behalf, so a strict fallback reports its own error for
-    /// an unmatched payload nothing can decode, not a decode error. The chain
+    /// error. The chain receives the envelope and no view is decoded on its
+    /// behalf, so a strict fallback reports its own error for an unmatched
+    /// payload no view can decode, not a decode error. The chain
     /// cannot see the match: it runs alike for a kind the route table never
     /// registered and for an action GitHub added to a kind it did
     /// ([`Match::UnmatchedKind`] and [`Match::UnmatchedAction`]), and the
@@ -1222,7 +1360,7 @@ impl DispatcherBuilder {
     ///
     /// async fn log_unrouted(envelope: Envelope) -> Result<(), BoxError> {
     ///     let meta = &envelope.meta;
-    ///     println!("unrouted {} {} {:?}", meta.delivery_id, meta.kind, meta.action);
+    ///     println!("unrouted {} {}", meta.delivery_id, meta.kind);
     ///     Ok(())
     /// }
     ///
@@ -1360,15 +1498,15 @@ impl Route {
 
     /// Wraps this route's failure with the tier it ran in, the delivery, and
     /// the handler name and registration site the route carries.
-    fn failed(&self, tier: Tier, envelope: &Envelope, source: BoxError) -> DispatchError {
-        let meta = &envelope.meta;
+    fn failed(&self, tier: Tier, meta: &EventMeta, source: BoxError) -> DispatchError {
         DispatchError {
-            tier,
-            handler: self.handler_name,
-            registration_site: self.registration_site,
+            tier: Some(tier),
+            handler: Some(self.handler_name),
+            registration_site: Some(self.registration_site),
             delivery_id: meta.delivery_id.clone(),
             kind: meta.kind.clone(),
             action: meta.action.clone(),
+            installation_id: meta.installation_id,
             source,
         }
     }
@@ -1445,6 +1583,16 @@ impl Routes {
 
     /// Prints the route table under the name of the type that owns it, so
     /// the dispatcher and its builder read alike.
+    /// What the table decides for a delivery of `kind` whose action it
+    /// cannot read: nothing matched, by the kind alone.
+    fn lookup_kind(&self, kind: &EventKind) -> Match {
+        if self.by_kind.contains_key(kind) {
+            Match::UnmatchedAction
+        } else {
+            Match::UnmatchedKind
+        }
+    }
+
     fn fmt_as(&self, name: &str, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct(name)

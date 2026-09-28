@@ -48,10 +48,10 @@
 //! as a closure, each with the error type it has; the dispatcher boxes every
 //! one at its registration, so no enum joins them:
 //!
-//! - [`Auditor`] is a `Handler<Envelope>` in the `always` tier: it runs for
-//!   every delivery the dispatcher is handed, reads the metadata off the
-//!   envelope, and, with nothing decoded on its behalf, runs even for a
-//!   payload octocrab cannot represent. It cannot fail, and says so with
+//! - [`Auditor`] is a `Handler<EventMeta>` in the `always` tier: it runs for
+//!   every delivery the dispatcher is handed, reads the meta the dispatcher
+//!   decoded once to route by, and, with no view decoded on its behalf, runs
+//!   even for a payload octocrab cannot represent. It cannot fail, and says so with
 //!   `Infallible`. It does not see what the seam answers before calling
 //!   `dispatch`, a redelivery, nor the `ping` the receiver answered itself; a
 //!   count of every delivery the receiver hands over belongs at the top of
@@ -95,8 +95,8 @@ use std::{
 use axum::{Router, routing::post_service};
 use octocrab::models::webhook_events::{WebhookEvent, payload::PullRequestWebhookEventPayload};
 use octoevents::{
-    Action, BoxError, DecodeError, DispatchError, Dispatcher, Envelope, Event, EventKind, Handler,
-    Match, Verifier, WebhookReceiverBuilder, WebhookSecret,
+    Action, BoxError, DecodeError, DispatchError, Dispatcher, Envelope, Event, EventKind,
+    EventMeta, Handler, Match, Verifier, WebhookReceiverBuilder, WebhookSecret,
 };
 
 /// A stand-in for a database: every envelope stored, by delivery ID, and the
@@ -181,6 +181,10 @@ impl Handler<Envelope> for Inbox {
 }
 
 impl Inbox {
+    // `DispatchError` is returned once per failed delivery, on a path that
+    // already awaited a handler; boxing it to save a copy would cost an
+    // allocation for nothing.
+    #[expect(clippy::result_large_err)]
     async fn process(&self, envelope: Envelope) -> Result<(), InboxError> {
         // Stored first, so a delivery whose envelope could not be stored is
         // never routed, and a redelivery is recognized before any handler
@@ -218,16 +222,15 @@ impl Inbox {
     }
 }
 
-/// Runs for every delivery the dispatcher is handed, reading only what
-/// `EventMeta` carries off the envelope. Printing cannot fail, and the error
+/// Runs for every delivery the dispatcher is handed, reading only the
+/// `EventMeta` the dispatcher decoded. Printing cannot fail, and the error
 /// type says so.
 struct Auditor;
 
-impl Handler<Envelope> for Auditor {
+impl Handler<EventMeta> for Auditor {
     type Error = Infallible;
 
-    async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
-        let meta = &envelope.meta;
+    async fn handle(&self, meta: EventMeta) -> Result<(), Self::Error> {
         println!(
             "audit {} {} {:?} from {}",
             meta.delivery_id,
@@ -314,8 +317,9 @@ fn dispatcher() -> Dispatcher {
 /// The receiver's response is GitHub's delivery record, not a log. The
 /// handler calls this so an operator without a `tracing` subscriber learns
 /// why a delivery failed. A dispatch error names the tier, the delivery, the
-/// failing handler and the line that registered it; its source is the
-/// handler's error, boxed, which a downcast gets back.
+/// failing handler and the line that registered it, or no handler when the
+/// delivery's meta did not decode; its source is the handler's error, or the
+/// decode error, boxed, which a downcast gets back.
 fn report(error: &InboxError) {
     eprintln!("{error}");
     let mut cause = error.source();
@@ -326,7 +330,13 @@ fn report(error: &InboxError) {
     if let InboxError::Dispatch(dispatch) = error
         && dispatch.source.is::<DecodeError>()
     {
-        eprintln!("  (octocrab's model no longer fits GitHub's payload: a deploy, not a page)");
+        if dispatch.handler.is_some() {
+            eprintln!("  (octocrab's model no longer fits GitHub's payload: a deploy, not a page)");
+        } else {
+            eprintln!(
+                "  (the payload is outside GitHub's schema: stored, redeliver it once fixed)"
+            );
+        }
     }
 }
 

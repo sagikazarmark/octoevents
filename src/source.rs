@@ -1,6 +1,6 @@
 use std::{future::Future, sync::Arc};
 
-use crate::{WebhookMeta, MaybeSend, MaybeSync, Verifier};
+use crate::{MaybeSend, MaybeSync, Verifier, WebhookMeta};
 
 /// What a receiver asks, per request and before verifying it, for the
 /// [`Verifier`] of that request: one webhook URL serving several GitHub Apps,
@@ -86,7 +86,8 @@ use crate::{WebhookMeta, MaybeSend, MaybeSync, Verifier};
 pub trait VerifierSource: MaybeSync {
     /// The verifier to authenticate the request whose headers read as
     /// `headers`, or `None` to refuse it.
-    fn verifier(&self, headers: &WebhookMeta) -> impl Future<Output = Option<Verifier>> + MaybeSend;
+    fn verifier(&self, headers: &WebhookMeta)
+    -> impl Future<Output = Option<Verifier>> + MaybeSend;
 }
 
 /// The one verifier for every request: a receiver with one secret, or one
@@ -110,7 +111,10 @@ impl<F> VerifierSource for F
 where
     F: Fn(&WebhookMeta) -> Option<Verifier> + MaybeSync,
 {
-    fn verifier(&self, headers: &WebhookMeta) -> impl Future<Output = Option<Verifier>> + MaybeSend {
+    fn verifier(
+        &self,
+        headers: &WebhookMeta,
+    ) -> impl Future<Output = Option<Verifier>> + MaybeSend {
         std::future::ready(self(headers))
     }
 }
@@ -119,7 +123,10 @@ where
 // supplies `MaybeSync`, and `MaybeSend` is what the builder requires of `S`
 // anyway.
 impl<S: VerifierSource + MaybeSend> VerifierSource for Arc<S> {
-    fn verifier(&self, headers: &WebhookMeta) -> impl Future<Output = Option<Verifier>> + MaybeSend {
+    fn verifier(
+        &self,
+        headers: &WebhookMeta,
+    ) -> impl Future<Output = Option<Verifier>> + MaybeSend {
         S::verifier(self, headers)
     }
 }

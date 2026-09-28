@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt, marker::PhantomData};
+use std::{borrow::Cow, fmt};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bytes::Bytes;
@@ -6,83 +6,59 @@ use http::{HeaderName, StatusCode};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 
-use crate::{
-    AccountMeta, Action, BoxError, EventKind, EventMeta, WebhookMeta, RepositoryMeta,
-    SignatureError, TargetType,
-};
+use crate::{BoxError, EventKind, SignatureError, TargetType, WebhookMeta};
 
-/// The unit of receipt: the exact payload bytes and their metadata.
+/// The unit of receipt: the header meta and the exact payload bytes.
 ///
-/// An envelope is the composition of its routing metadata and the exact
-/// payload bytes: `meta` is what a handler routes and deduplicates by, and
-/// what a GitHub App acts on the API with (the `installation_id` it mints its
-/// token for); `raw_payload` is the payload as it arrived, undecoded. A
-/// handler over a decoded payload receives [`EventMeta`] beside it, as
-/// [`Event<P>`](crate::Event), so the metadata has one home rather than
-/// being duplicated onto every decoded view; the two types hold the same
-/// document in its two states, `raw_payload` here and `payload` there.
+/// An envelope is what arrived, and nothing read out of it: `meta` is the
+/// [`WebhookMeta`] read from the request's headers (the delivery ID, the kind
+/// and the target), and `raw_payload` is the payload as it arrived,
+/// undecoded. Building one reads nothing of the payload and cannot fail, so a
+/// transport that verifies and forwards pays for the verification alone.
+///
+/// What the payload says is decoded later, and only where it is asked for.
+/// The [`Dispatcher`](crate::Dispatcher) decodes the delivery's
+/// [`EventMeta`](crate::EventMeta) once, for the action it routes by, and hands it to every
+/// input it builds: a handler over a decoded payload receives it as
+/// [`Event<P>`](crate::Event), so the installation ID a GitHub App mints its
+/// token for travels beside the view. Code outside the dispatcher decodes
+/// it with [`EventMeta::decode`](crate::EventMeta::decode).
 ///
 /// An envelope is data, and makes no claim that it was authenticated. What
 /// makes a received one trustworthy is the path it came from:
 /// [`authenticate`](crate::authenticate), which verifies an untrusted request
 /// before it builds the envelope, and the receiver, which is built on it.
-/// Outside the crate an envelope comes from there, from [`Envelope::new`],
-/// which builds one from a [`WebhookMeta`] and the payload bytes and
-/// authenticates nothing, or from the serde `Deserialize` impl for one a
-/// trusted internal transport forwarded (see the wire format below). The
-/// struct is `#[non_exhaustive]` so that a struct literal cannot pair a meta
-/// with a payload that says something else; the fields stay public, so
-/// reading them and destructuring with `..` work:
+/// Otherwise an envelope comes from [`Envelope::new`] or a struct literal,
+/// which pair a [`WebhookMeta`] with bytes and authenticate nothing, or from
+/// the serde `Deserialize` impl for one a trusted internal transport
+/// forwarded (see the wire format below). The struct is plain data, so the
+/// three build the same value:
 ///
 /// ```
-/// use octoevents::{Action, Envelope, EventKind, WebhookMeta};
+/// use octoevents::{Bytes, Envelope, EventKind, WebhookMeta};
 ///
 /// let meta = WebhookMeta::new("delivery-1", EventKind::Issues);
-/// let envelope = Envelope::new(meta, br#"{"action":"opened"}"#);
-///
-/// let Envelope { meta, .. } = &envelope;
-/// assert_eq!(meta.action, Some(Action::Opened));
-/// assert_eq!(envelope.raw_payload.len(), 19);
-/// ```
-///
-/// The literal is rejected outside the crate, where it could otherwise
-/// disagree with the payload:
-///
-/// ```compile_fail,E0639
-/// use octoevents::{Bytes, Envelope, EventKind, EventMeta};
-///
-/// let envelope = Envelope {
-///     meta: EventMeta::new("delivery-1", EventKind::Issues),
+/// let literal = Envelope {
+///     meta: meta.clone(),
 ///     raw_payload: Bytes::from_static(br#"{"action":"opened"}"#),
 /// };
-/// ```
 ///
-/// [`EventMeta`] is `#[non_exhaustive]` too, for the other reason: GitHub can
-/// add a stable routing field without that being a breaking change here.
+/// assert_eq!(literal, Envelope::new(meta, br#"{"action":"opened"}"#));
+/// ```
 ///
 /// # Wire format
 ///
-/// A serialized envelope is one flat JSON object: the metadata sits at the
-/// top level beside `raw_payload`, with no `meta` nesting, so a consumer in
-/// another language reads it without knowing the Rust-side split. This is
+/// A serialized envelope is one flat JSON object: the header meta sits at
+/// the top level beside `raw_payload`, with no `meta` nesting, so a consumer
+/// in another language reads it without knowing the Rust-side split. This is
 /// the envelope of a `pull_request` delivery with every field present:
 ///
 /// ```
-/// use octoevents::{Action, Bytes, Envelope, EventKind, TargetType};
+/// use octoevents::{Bytes, Envelope, EventKind, TargetType};
 ///
 /// let document = r#"{
 ///   "delivery_id": "72d3162e-cc78-11e3-81ab-4c9367dc0958",
 ///   "kind": "pull_request",
-///   "action": "opened",
-///   "installation_id": 42,
-///   "repository": {
-///     "id": 1296269,
-///     "name": "Hello-World",
-///     "full_name": "octocat/Hello-World",
-///     "owner": "octocat"
-///   },
-///   "organization": { "id": 9919, "login": "github" },
-///   "sender": { "id": 583231, "login": "octocat" },
 ///   "target_type": "integration",
 ///   "target_id": 12345,
 ///   "raw_payload": "eyJhY3Rpb24iOiJvcGVuZWQifQ=="
@@ -90,7 +66,6 @@ use crate::{
 ///
 /// let envelope: Envelope = serde_json::from_str(document).unwrap();
 /// assert_eq!(envelope.meta.kind, EventKind::PullRequest);
-/// assert_eq!(envelope.meta.action, Some(Action::Opened));
 /// assert_eq!(envelope.meta.target_type, Some(TargetType::Integration));
 /// assert_eq!(envelope.raw_payload, Bytes::from_static(br#"{"action":"opened"}"#));
 ///
@@ -103,25 +78,26 @@ use crate::{
 ///   padding (RFC 4648 section 4), a string and not a nested object, so the
 ///   payload survives the hop without being re-encoded and still verifies
 ///   against GitHub's signature. The cost is size: `raw_payload` is 4/3 of
-///   the payload, and the meta beside it, some 300 bytes with every field
-///   present, repeats values the payload already carries (the action, the
-///   installation, the repository, the sender). The document therefore
-///   roughly doubles a small payload of a few hundred bytes, and settles
-///   toward 4/3 of the several-kilobyte payloads GitHub usually sends.
-/// - `kind`, `action` and `target_type` are GitHub's wire strings
-///   (`"pull_request"`, `"opened"`, `"integration"`); a value this version
-///   of the crate does not know reads back as the `Unknown` variant carrying
-///   the string, never as an error.
-/// - `repository` is an object with `id`, `name`, `full_name` and `owner`,
-///   where `owner` is the login; `organization` and `sender` are objects
-///   with `id` and `login`, the subset of GitHub's own account object that
-///   the meta keeps.
+///   the payload, and the header meta beside it adds some 100 bytes.
+/// - `kind` and `target_type` are GitHub's wire strings (`"pull_request"`,
+///   `"integration"`); a value this version of the crate does not know reads
+///   back as the `Unknown` variant carrying the string, never as an error.
 ///
 /// On deserialize, `delivery_id`, `kind` and `raw_payload` are required;
-/// every other field is optional, and a field that is absent reads the same
-/// as one that is `null`. On serialize, an optional field with no value is
-/// omitted rather than written as `null`. Unknown fields are ignored, so a
-/// producer may annotate the document for its own transport.
+/// `target_type` and `target_id` are optional, and a field that is absent
+/// reads the same as one that is `null`. On serialize, an optional field
+/// with no value is omitted rather than written as `null`. Unknown fields
+/// are ignored, so a producer may annotate the document for its own
+/// transport.
+///
+/// The payload meta is not on the wire: the consumer's dispatcher decodes it
+/// from `raw_payload`, as it does for an envelope from the receiver, so a
+/// forwarded envelope cannot carry meta that disagrees with its bytes. A
+/// document written by 0.3, which carried `action`, `installation_id`,
+/// `repository`, `organization` and `sender` beside the header fields, reads
+/// back with those fields ignored and dispatches by the bytes. A 0.3
+/// consumer reading a document written now routes every delivery as having
+/// no action, so consumers upgrade before producers.
 ///
 /// The wire format follows the crate's versioning, with no separate version
 /// field. Adding optional fields is wire-compatible. Removing or renaming
@@ -132,92 +108,53 @@ use crate::{
 /// changes; producers and consumers crossing that boundary must migrate
 /// together or use a transport adapter.
 ///
-/// The meta is read back as forwarded: nothing is verified, and the payload
-/// is not probed again, so a document whose `action` disagrees with the
-/// `action` inside its `raw_payload` reads back disagreeing. The producer is
-/// trusted to have built the envelope through
-/// [`authenticate`](crate::authenticate) or [`Envelope::new`], so that its
-/// meta agrees with its payload, and to have authenticated what it forwards,
-/// which is what the wire format is for: a hop between services of one
-/// deployment, not an input from outside it.
+/// The header meta is read back as forwarded, and nothing is verified. The
+/// producer is trusted to have authenticated what it forwards, through
+/// [`authenticate`](crate::authenticate) or by its own means, which is what
+/// the wire format is for: a hop between services of one deployment, not an
+/// input from outside it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
-#[non_exhaustive]
 pub struct Envelope {
-    /// The routing metadata extracted from the headers and the payload probe.
+    /// The meta read from the request's headers.
     #[serde(flatten)]
-    pub meta: EventMeta,
+    pub meta: WebhookMeta,
     /// The payload as it arrived: the exact bytes, undecoded and never
     /// re-encoded.
     ///
     /// From [`authenticate`](crate::authenticate) these are the bytes the
     /// signature was verified over; [`Envelope::new`] and the `Deserialize`
     /// impl hold whatever they were given, with no such claim. Either way
-    /// they are the bytes every decode reads. Serialized as standard base64
-    /// so an envelope survives a JSON hop to an internal service without the
-    /// payload being re-encoded; the encoded field is 4/3 of the payload's
-    /// size.
+    /// they are the bytes every decode reads, [`EventMeta::decode`](crate::EventMeta::decode)
+    /// included. Serialized as standard base64 so an envelope survives a JSON
+    /// hop to an internal service without the payload being re-encoded; the
+    /// encoded field is 4/3 of the payload's size.
     #[serde(serialize_with = "serialize_bytes")]
     pub raw_payload: Bytes,
 }
 
 // Keep this flat: serde's `flatten` buffers unknown values before ignoring
 // them, imposing numeric, string and nesting limits on transport annotations.
-// Listing the fields here lets derived deserialization skip them instead.
-// Keep the metadata fields in sync with EventMeta; the round-trip tests cover
-// every current field. Conversion preserves forwarded meta without probing.
+// Listing the fields here lets derived deserialization skip them instead,
+// the payload meta fields a 0.3 producer wrote among them. Keep the header
+// fields in sync with WebhookMeta; the round-trip tests cover every current
+// field.
 #[derive(Deserialize)]
 struct EnvelopeWire {
     delivery_id: String,
     kind: EventKind,
-    action: Option<Action>,
-    installation_id: Option<u64>,
-    repository: Option<WireObject<RepositoryMeta>>,
-    organization: Option<WireObject<AccountMeta>>,
-    sender: Option<WireObject<AccountMeta>>,
     target_type: Option<TargetType>,
     target_id: Option<u64>,
     #[serde(deserialize_with = "deserialize_bytes")]
     raw_payload: Bytes,
 }
 
-// A derived metadata struct accepts positional sequences too. The wire
-// format commits only to named fields, including inside optional objects.
-struct WireObject<T>(T);
-
-impl<'de, T: Deserialize<'de>> Deserialize<'de> for WireObject<T> {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct ObjectVisitor<T>(PhantomData<T>);
-
-        impl<'de, T: Deserialize<'de>> de::Visitor<'de> for ObjectVisitor<T> {
-            type Value = WireObject<T>;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a metadata object")
-            }
-
-            fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
-                T::deserialize(de::value::MapAccessDeserializer::new(map)).map(WireObject)
-            }
-        }
-
-        deserializer.deserialize_map(ObjectVisitor(PhantomData))
-    }
-}
-
 impl From<EnvelopeWire> for Envelope {
     fn from(wire: EnvelopeWire) -> Self {
+        let mut meta = WebhookMeta::new(wire.delivery_id, wire.kind);
+        meta.target_type = wire.target_type;
+        meta.target_id = wire.target_id;
         Self {
-            meta: EventMeta {
-                delivery_id: wire.delivery_id,
-                kind: wire.kind,
-                action: wire.action,
-                installation_id: wire.installation_id,
-                repository: wire.repository.map(|object| object.0),
-                organization: wire.organization.map(|object| object.0),
-                sender: wire.sender.map(|object| object.0),
-                target_type: wire.target_type,
-                target_id: wire.target_id,
-            },
+            meta,
             raw_payload: wire.raw_payload,
         }
     }
@@ -248,80 +185,45 @@ impl<'de> Deserialize<'de> for Envelope {
 
 impl Envelope {
     /// Builds an envelope from the header meta and the payload bytes,
-    /// verifying nothing.
+    /// verifying nothing and reading nothing.
     ///
-    /// A data constructor: the envelope it returns makes no claim that the
-    /// bytes were authenticated. The path that authenticates a request and
-    /// builds its envelope is [`authenticate`](crate::authenticate), which
-    /// the receiver is built on. This is the path for everything else: a
-    /// test, which dispatches an envelope built here through
+    /// A data constructor, the struct literal with the bytes copied: the
+    /// envelope it returns makes no claim that the bytes were authenticated,
+    /// and nothing of the payload is read, so any bytes build one, JSON or
+    /// not. The path that authenticates a request and builds its envelope is
+    /// [`authenticate`](crate::authenticate), which the receiver is built on.
+    /// This is the path for everything else: a test, which dispatches an
+    /// envelope built here through
     /// [`Dispatcher::dispatch`](crate::Dispatcher::dispatch) with nothing
     /// signed and no [`Verifier`](crate::Verifier) needed; and a transport
     /// that authenticated the request by its own means, which builds the
     /// envelope `authenticate` would have from the [`WebhookMeta`] it read,
     /// target included, and the bytes.
     ///
-    /// The meta is the header meta as given, and what the receiver would have
-    /// read from the same payload: the action, the installation ID, the
-    /// repository, the organization and the sender, so a handler over
-    /// [`Event<P>`](crate::Event) sees the `installation_id` the payload
-    /// carries rather than whatever a test remembered to assign.
-    ///
-    /// The read of the payload is best-effort and never fails the
-    /// construction. Invalid UTF-8 anywhere in the payload, malformed JSON
-    /// syntax, or a top level that is not an object (`[]`, `42`), leaves every
-    /// payload-derived field empty; one malformed field (a `repository`
-    /// object missing `full_name`, say)
-    /// clears only that field and leaves its siblings intact. Installation,
-    /// repository, repository owner, organization and sender must be objects,
-    /// never positional arrays; a malformed owner clears the repository.
-    /// A duplicated top-level metadata key clears that field, even if the
-    /// values agree or one is null. A duplicate required key inside a metadata
-    /// object invalidates that object, clearing its top-level metadata field.
-    /// Unknown keys are ignored. Skipped string values must have valid escape
-    /// syntax (`\q` and incomplete `\uXXXX` escapes clear every payload-derived
-    /// field), but escaped surrogates need not be paired there: `\uD800` in a
-    /// skipped value leaves the metadata intact. Strings retained as metadata
-    /// must decode to Unicode scalar values; an unpaired escaped surrogate
-    /// clears only the metadata field that reads it. Valid surrogate pairs
-    /// decode normally. A handler's decode can therefore fail on a string the
-    /// probe skipped. In every case [`Envelope::raw_payload`] holds the bytes
-    /// as given.
-    ///
     /// The payload is anything that views as bytes, a byte-string literal
     /// included, and is copied into [`Envelope::raw_payload`]: one
     /// allocation, which a test's small payload does not notice and a
-    /// transport pays once per delivery, beside the probe's pass over the
-    /// same bytes.
+    /// transport pays once per delivery. The action, installation ID and the
+    /// rest of the payload meta are the dispatcher's to decode, or
+    /// [`EventMeta::decode`](crate::EventMeta::decode)'s.
     ///
     /// ```
-    /// use octoevents::{Action, Envelope, EventKind, WebhookMeta, TargetType};
+    /// use octoevents::{Envelope, EventKind, TargetType, WebhookMeta};
     ///
     /// let mut meta = WebhookMeta::new("72d3162e-cc78-11e3-81ab-4c9367dc0958", EventKind::Issues);
     /// meta.target_type = Some(TargetType::Integration);
     /// meta.target_id = Some(12345);
     ///
-    /// let envelope = Envelope::new(
-    ///     meta,
-    ///     br#"{"action":"opened","installation":{"id":42},"issue":{"number":7}}"#,
-    /// );
+    /// let envelope = Envelope::new(meta, br#"{"action":"opened","issue":{"number":7}}"#);
     ///
-    /// assert_eq!(envelope.meta.action, Some(Action::Opened));
-    /// assert_eq!(envelope.meta.installation_id, Some(42));
+    /// assert_eq!(envelope.meta.kind, EventKind::Issues);
     /// assert_eq!(envelope.meta.target_id, Some(12345));
     /// ```
     #[must_use]
     pub fn new(meta: WebhookMeta, payload: impl AsRef<[u8]>) -> Self {
-        Self::from_bytes(meta, Bytes::copy_from_slice(payload.as_ref()))
-    }
-
-    /// [`Envelope::new`] over bytes already owned, which become
-    /// [`Envelope::raw_payload`] without a copy: what
-    /// [`authenticate`](crate::authenticate) builds with.
-    pub(crate) fn from_bytes(meta: WebhookMeta, payload: Bytes) -> Self {
         Self {
-            meta: EventMeta::probe(meta, &payload),
-            raw_payload: payload,
+            meta,
+            raw_payload: Bytes::copy_from_slice(payload.as_ref()),
         }
     }
 
@@ -630,7 +532,7 @@ impl DecodeError {
     /// carries as text and parses it further, the parse error is the source:
     ///
     /// ```
-    /// use octoevents::{DecodeError, Envelope, FromEnvelope};
+    /// use octoevents::{DecodeError, Envelope, EventMeta, FromEnvelope};
     ///
     /// #[derive(serde::Deserialize)]
     /// struct Tagged { release: Release }
@@ -641,7 +543,7 @@ impl DecodeError {
     /// struct Major(u64);
     ///
     /// impl FromEnvelope for Major {
-    ///     fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError> {
+    ///     fn from_envelope(envelope: &Envelope, _meta: &EventMeta) -> Result<Self, DecodeError> {
     ///         let Tagged { release } = envelope.decode()?;
     ///         let tag = release.tag_name;
     ///         let major = tag.trim_start_matches('v').split('.').next().unwrap_or_default();

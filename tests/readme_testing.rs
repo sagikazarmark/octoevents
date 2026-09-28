@@ -4,8 +4,8 @@
 //! without GitHub" continue the quickstart and are marked `ignore`, so
 //! nothing else compiles them. This file is those tests as written, with the
 //! quickstart's `BoxError` and `thank` beside them, and holds the README's
-//! prose to what it claims: `Envelope::new` reads the action out of the bytes
-//! while `EventMeta::new` on its own reads none, an `http::Request<String>` is
+//! prose to what it claims: `EventMeta::decode` reads the action out of the
+//! bytes while `EventMeta::new` on its own reads none, an `http::Request<String>` is
 //! a request `receive` accepts with no axum in sight, a receiver over another
 //! secret answers the signed request 401, a verifier that also accepts a
 //! previous secret signs under its first, a delivery nothing routes reports
@@ -19,12 +19,12 @@ use std::error::Error as _;
 
 use octoevents::{
     AccountMeta, Action, BoxError, DispatchError, Dispatcher, Envelope, EventKind, EventMeta,
-    WebhookMeta, Match, Verifier, WebhookReceiverBuilder, WebhookSecret, header,
+    Match, Verifier, WebhookMeta, WebhookReceiverBuilder, WebhookSecret, header,
 };
 
 /// The quickstart's handler, verbatim.
-async fn thank(envelope: Envelope) -> Result<(), BoxError> {
-    let sender = envelope.meta.sender.map(|s| s.login).unwrap_or_default();
+async fn thank(meta: EventMeta) -> Result<(), BoxError> {
+    let sender = meta.sender.map(|s| s.login).unwrap_or_default();
     println!("Thank you for your contribution, @{sender}! :)");
     Ok(())
 }
@@ -134,23 +134,24 @@ async fn a_verifier_with_a_previous_secret_signs_under_its_first() {
     assert_eq!(refused.status(), 401);
 }
 
-/// The prose's claim: `Envelope::new` reads the action and the sender out of
-/// the bytes the way the receiver does, where `EventMeta::new` on its own
-/// reads none.
+/// The prose's claim: `EventMeta::decode` reads the action and the sender
+/// out of an envelope's bytes the way the dispatcher does, where
+/// `EventMeta::new` on its own reads none.
 #[test]
-fn an_envelope_reads_its_meta_from_the_bytes() {
+fn the_meta_is_decoded_from_the_bytes() {
     let payload =
         br#"{"action":"opened","installation":{"id":42},"sender":{"id":1,"login":"octocat"}}"#;
+    let envelope = Envelope::new(WebhookMeta::new("delivery-1", EventKind::Issues), payload);
 
     let meta = EventMeta::new("delivery-1", EventKind::Issues);
-    let probed = Envelope::new(WebhookMeta::new("delivery-1", EventKind::Issues), payload);
+    let decoded = EventMeta::decode(&envelope).unwrap();
 
     assert_eq!(meta.action, None);
     assert_eq!(meta.installation_id, None);
     assert_eq!(meta.sender, None);
-    assert_eq!(probed.meta.action, Some(Action::Opened));
-    assert_eq!(probed.meta.installation_id, Some(42));
-    assert_eq!(probed.meta.sender, Some(AccountMeta::new(1, "octocat")));
+    assert_eq!(decoded.action, Some(Action::Opened));
+    assert_eq!(decoded.installation_id, Some(42));
+    assert_eq!(decoded.sender, Some(AccountMeta::new(1, "octocat")));
 }
 
 /// The Outcome table's first unmatched row: the kind is registered, the

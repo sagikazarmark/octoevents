@@ -1,37 +1,36 @@
-use std::{fmt, marker::PhantomData};
+use std::fmt;
 
 use http::HeaderMap;
-use serde::{Deserialize, Deserializer, Serialize, de};
-use serde_json::value::RawValue;
+use serde::{Deserialize, Serialize};
 
-use crate::{Action, EventKind, ReceiveError, events::string_enum, header};
+use crate::{Action, DecodeError, Envelope, EventKind, ReceiveError, events::string_enum, header};
 
-/// The routing metadata of a webhook: everything in an
-/// [`Envelope`](crate::Envelope) except the payload bytes.
+/// The routing metadata of a delivery: the [`WebhookMeta`] read from its
+/// headers, and the fields its payload names every delivery by.
 ///
 /// A handler's input on its own, for one routed by kind and action that
-/// decodes nothing, and the first half of [`Event<P>`](crate::Event), so the
-/// delivery ID and installation ID travel beside a decoded payload without
-/// going back to the envelope.
+/// decodes no view of its own, and the first half of
+/// [`Event<P>`](crate::Event), so the delivery ID and installation ID travel
+/// beside a decoded payload without going back to the envelope.
 ///
 /// # Where the fields come from
 ///
-/// Four fields are read from the headers, the [`WebhookMeta`] the receiver
-/// reads before the body: the delivery ID and the kind, which every delivery
-/// carries, and the target type and ID. The other five,
-/// the action, installation ID, repository, organization and sender, are read
-/// from the payload when the envelope is built, by
-/// [`authenticate`](crate::authenticate) once the body is authenticated and
-/// by [`Envelope::new`](crate::Envelope::new) alike. That
-/// read, the *probe*, first validates UTF-8 across the bytes, then scans the
-/// JSON to keep those five top-level values and skip everything else. The
-/// retained values are decoded separately. The validation adds an
-/// allocation-free pass; the total cost stays linear in the body, as the
-/// signature check over the same bytes is, with no model built of the rest of
-/// the document. It runs for every envelope whatever the handler's input will
-/// be, because the dispatcher routes by the action, and the action is in the
-/// payload, not in a header. It is best-effort and cannot fail; the rules are
-/// on `Envelope::new`.
+/// Four fields are the [`WebhookMeta`]'s, read from the headers before the
+/// body: the delivery ID and the kind, which every delivery carries, and the
+/// target type and ID. The other five, the action, installation ID,
+/// repository, organization and sender, are read from the payload by
+/// [`EventMeta::decode`]. The envelope holds neither: it is what arrived,
+/// the header meta and the bytes, and building one reads nothing.
+///
+/// The [`Dispatcher`](crate::Dispatcher) decodes the meta once per delivery,
+/// before its first tier, because it routes by the action and the action is
+/// in the payload, not in a header. Every input it builds for that delivery
+/// is handed the same meta. The decode is strict: GitHub's payloads always
+/// carry these fields in one shape (the action a string; the installation,
+/// repository, organization and sender objects with the fields read here),
+/// so a payload that does not fit it, or is not JSON at all, is a
+/// [`DecodeError`] and fails the delivery at dispatch, visibly and
+/// redeliverably, rather than being routed as if it had no action.
 ///
 /// On the receiving path, verification authenticates the payload bytes, not
 /// the delivery ID, event name, or target headers. Header-derived fields
@@ -47,19 +46,14 @@ use crate::{Action, EventKind, ReceiveError, events::string_enum, header};
 /// With a single [`Verifier`](crate::Verifier), which ignores the target, the
 /// target headers stay claims like the rest.
 ///
-/// So "decodes nothing", said of a handler over this type, means no decode on
-/// the handler's behalf, not that the payload went unread. A decode is the
-/// fallible turn of the bytes into an input that asks for it, and it happens
-/// only for a routed handler whose route matched.
-///
 /// The crate produces this view and consumers only read it, so it is
 /// `#[non_exhaustive]`: GitHub can add a stable routing field (an enterprise
 /// reference, for example) without that becoming a breaking change here.
-/// In a test, an envelope from [`Envelope::new`](crate::Envelope::new)
-/// carries the meta the receiver would have extracted from the same header
-/// meta and bytes;
-/// build a meta by itself with [`EventMeta::new`], for a handler over
-/// `EventMeta` alone, and assign the optional fields it reads.
+/// In a test, [`EventMeta::decode`] over an envelope from
+/// [`Envelope::new`](crate::Envelope::new) is the meta the dispatcher would
+/// hand its handlers for the same header meta and bytes; build a meta by
+/// itself with [`EventMeta::new`], for a handler over `EventMeta` alone, and
+/// assign the optional fields it reads.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct EventMeta {
@@ -67,14 +61,13 @@ pub struct EventMeta {
     pub delivery_id: String,
     /// The event kind parsed from `X-GitHub-Event`.
     pub kind: EventKind,
-    /// The payload's top-level action, when available.
+    /// The payload's top-level action, when it has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<Action>,
     /// The GitHub App installation ID, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installation_id: Option<u64>,
-    /// The repository's meta, when the payload carries a complete
-    /// `repository` object.
+    /// The repository's meta, when the payload carries a `repository`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repository: Option<RepositoryMeta>,
     /// The organization the webhook fired in, when present: an organization
@@ -98,10 +91,9 @@ impl EventMeta {
     ///
     /// This reads no bytes: the action, installation ID, repository,
     /// organization and sender are whatever the caller assigns. For a meta
-    /// that agrees with a payload, build the envelope with
-    /// [`Envelope::new`](crate::Envelope::new), which reads those fields from
-    /// the payload the way the receiver does. This constructor is for a
-    /// handler over `EventMeta` alone, or a test that wants the meta and
+    /// that agrees with a payload, decode it from the envelope with
+    /// [`EventMeta::decode`], as the dispatcher does. This constructor is for
+    /// a handler over `EventMeta` alone, or a test that wants the meta and
     /// nothing else.
     ///
     /// ```
@@ -127,68 +119,83 @@ impl EventMeta {
         }
     }
 
-    /// The probe: the metadata with its header-derived fields taken from
-    /// `headers` and its payload-derived fields (action, installation ID,
-    /// repository, organization, sender) read from `raw_payload`. Both
-    /// `authenticate` and `Envelope::new` come through here, so an envelope
-    /// reads a payload alike whichever path built it.
+    /// Decodes the meta of the delivery in `envelope`: its [`WebhookMeta`]
+    /// as it is, beside the action, installation ID, repository,
+    /// organization and sender read from its payload.
     ///
-    /// Best-effort and never fatal: after validating UTF-8, the top level is
-    /// read as a map of raw values, so invalid UTF-8, malformed JSON syntax,
-    /// or JSON whose top level is not an object, leaves every probed field
-    /// empty, and one malformed field (a
-    /// `repository` missing `full_name`, say) clears only itself. A duplicated
-    /// metadata key also clears only itself; a duplicate required key inside
-    /// an object invalidates that object. Skipped string values are checked
-    /// for escape syntax, not surrogate pairing; see `Envelope::new` for the
-    /// policy. The rest of the document is not decoded.
-    pub(crate) fn probe(headers: WebhookMeta, raw_payload: &[u8]) -> Self {
-        // Skipped JSON strings do not get UTF-8 validation from serde_json.
-        // Validate the entire payload before any field can supply metadata.
-        let probe = std::str::from_utf8(raw_payload)
-            .ok()
-            .and_then(|payload| serde_json::from_str::<Probe<'_>>(payload).ok())
-            .unwrap_or_default();
-
+    /// What the [`Dispatcher`](crate::Dispatcher) runs once per delivery
+    /// before any handler, and hands every input it builds. Public for code
+    /// outside it: a policy seam that reads a payload field before calling
+    /// [`dispatch`](crate::Dispatcher::dispatch) (to refuse a suspended
+    /// installation, say), which then decodes again inside `dispatch`, and a
+    /// test that calls
+    /// [`FromEnvelope::from_envelope`](crate::FromEnvelope::from_envelope)
+    /// with the meta the dispatcher would have passed.
+    ///
+    /// One scan of the document, keeping those five top-level values and
+    /// skipping the rest.
+    ///
+    /// ```
+    /// use octoevents::{Action, Envelope, EventKind, EventMeta, WebhookMeta};
+    ///
+    /// let envelope = Envelope::new(
+    ///     WebhookMeta::new("72d3162e-cc78-11e3-81ab-4c9367dc0958", EventKind::Issues),
+    ///     br#"{"action":"opened","installation":{"id":42},"issue":{"number":7}}"#,
+    /// );
+    ///
+    /// let meta = EventMeta::decode(&envelope)?;
+    ///
+    /// assert_eq!(meta.delivery_id, "72d3162e-cc78-11e3-81ab-4c9367dc0958");
+    /// assert_eq!(meta.action, Some(Action::Opened));
+    /// assert_eq!(meta.installation_id, Some(42));
+    /// # Ok::<(), octoevents::DecodeError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecodeError::Json`] when the payload is not a JSON object,
+    /// or one of the five fields it names is not in GitHub's shape: an
+    /// `action` that is not a string, or an `installation`, `repository`,
+    /// `organization` or `sender` that is not an object with the fields
+    /// read here. A field that is absent or `null` is `None`, not an error.
+    pub fn decode(envelope: &Envelope) -> Result<Self, DecodeError> {
+        let PayloadMeta {
+            action,
+            installation,
+            repository,
+            organization,
+            sender,
+        } = envelope.decode()?;
         let WebhookMeta {
             delivery_id,
             kind,
             target_type,
             target_id,
-        } = headers;
+        } = envelope.meta.clone();
 
-        Self {
+        Ok(Self {
             delivery_id,
             kind,
-            action: probe
-                .action
-                .and_then(parse_probe::<String>)
-                .map(Action::from),
-            installation_id: probe
-                .installation
-                .and_then(parse_object::<IdOnly>)
-                .map(|installation| installation.id),
-            repository: probe
-                .repository
-                .and_then(parse_object::<RepoProbe>)
-                .map(RepositoryMeta::from),
-            organization: probe.organization.and_then(parse_object::<AccountMeta>),
-            sender: probe.sender.and_then(parse_object::<AccountMeta>),
+            action,
+            installation_id: installation.map(|installation| installation.id),
+            repository: repository.map(RepositoryMeta::from),
+            organization,
+            sender,
             target_type,
             target_id,
-        }
+        })
     }
 }
 
-/// The values the receiver reads from a request's headers before the body:
-/// the delivery ID, the kind, and the target type and ID.
+/// The meta of the request GitHub sends, read from its headers alone: the
+/// delivery ID, the kind, and the target type and ID.
 ///
-/// What a [`VerifierSource`](crate::VerifierSource) is handed to choose the
+/// What an [`Envelope`](crate::Envelope) carries beside the payload bytes,
+/// what a [`VerifierSource`](crate::VerifierSource) is handed to choose the
 /// [`Verifier`](crate::Verifier) for a request, and the header half of the
-/// [`EventMeta`] the envelope ends up with, which is built from it and the
-/// probe; the fields are `EventMeta`'s, under the same names. The signature
-/// is not here: it is parsed on its own into a
-/// [`Signature`](crate::Signature).
+/// [`EventMeta`] decoded from the envelope; the fields are `EventMeta`'s,
+/// under the same names. The signature is not here: it is parsed on its own
+/// into a [`Signature`](crate::Signature).
 ///
 /// Nothing here is signed. GitHub's signature covers the body alone, so these
 /// values are claims when the source reads them and still claims after the
@@ -209,7 +216,7 @@ impl EventMeta {
 /// headers.target_id = Some(12345);
 /// # let _ = headers;
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct WebhookMeta {
     /// The `X-GitHub-Delivery` value.
@@ -218,8 +225,10 @@ pub struct WebhookMeta {
     pub kind: EventKind,
     /// The webhook installation target type: for a GitHub App,
     /// [`TargetType::Integration`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_type: Option<TargetType>,
     /// The webhook installation target ID: for a GitHub App, the App ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_id: Option<u64>,
 }
 
@@ -293,10 +302,9 @@ impl WebhookMeta {
     }
 }
 
-/// The repository's meta: the fields the probe (the read of the payload
-/// described under [Where the fields come
-/// from](EventMeta#where-the-fields-come-from)) keeps of the payload's
-/// `repository` object, read without decoding a full payload model.
+/// The repository's meta: the fields [`EventMeta::decode`] keeps of the
+/// payload's `repository` object, read without decoding a full payload
+/// model.
 ///
 /// What [`EventMeta::repository`] holds. Named as the meta of the repository,
 /// not as the repository: it is the four fields that routing and a policy read,
@@ -360,8 +368,8 @@ impl RepositoryMeta {
     }
 }
 
-/// An account's meta, the numeric ID and the login: the two fields the probe
-/// keeps of the payload's account objects, a user's, an organization's or an
+/// An account's meta, the numeric ID and the login: the two fields
+/// [`EventMeta::decode`] keeps of the payload's account objects, a user's, an organization's or an
 /// app's, read without decoding a full payload model.
 ///
 /// What [`EventMeta::organization`] and [`EventMeta::sender`] hold. The ID
@@ -448,127 +456,44 @@ string_enum! {
     }
 }
 
-fn parse_probe<T: serde::de::DeserializeOwned>(value: &RawValue) -> Option<T> {
-    serde_json::from_str(value.get()).ok()
-}
-
-fn parse_object<T: de::DeserializeOwned>(value: &RawValue) -> Option<T> {
-    parse_probe::<Object<T>>(value).map(|object| object.0)
-}
-
-/// Restricts an internal probe value to a JSON object without changing the
-/// serde behavior of the type it wraps (derived structs also accept arrays).
-#[derive(Debug)]
-struct Object<T>(T);
-
-impl<'de, T: Deserialize<'de>> Deserialize<'de> for Object<T> {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct ObjectVisitor<T>(PhantomData<T>);
-
-        impl<'de, T: Deserialize<'de>> de::Visitor<'de> for ObjectVisitor<T> {
-            type Value = Object<T>;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("an object")
-            }
-
-            fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
-                T::deserialize(de::value::MapAccessDeserializer::new(map)).map(Object)
-            }
-        }
-
-        deserializer.deserialize_map(ObjectVisitor(PhantomData))
-    }
-}
-
-/// The top level of a payload as raw values, one per field the probe reads,
-/// so each is parsed on its own and a malformed one does not take its
-/// siblings with it. Only objects are accepted, and a repeated metadata key
-/// clears its field, even if its first value was null. Unknown keys are skipped.
-#[derive(Debug, Default)]
-struct Probe<'a> {
-    action: Option<&'a RawValue>,
-    installation: Option<&'a RawValue>,
-    repository: Option<&'a RawValue>,
-    organization: Option<&'a RawValue>,
-    sender: Option<&'a RawValue>,
-}
-
-impl<'de> Deserialize<'de> for Probe<'de> {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(field_identifier, rename_all = "snake_case")]
-        enum Field {
-            Action,
-            Installation,
-            Repository,
-            Organization,
-            Sender,
-            #[serde(other)]
-            Unknown,
-        }
-
-        struct ProbeVisitor;
-
-        impl<'de> de::Visitor<'de> for ProbeVisitor {
-            type Value = Probe<'de>;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a payload object")
-            }
-
-            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
-                let mut probe = Probe::default();
-                let mut seen = [false; 5];
-                while let Some(key) = map.next_key::<Field>()? {
-                    let (field, seen) = match key {
-                        Field::Action => (&mut probe.action, &mut seen[0]),
-                        Field::Installation => (&mut probe.installation, &mut seen[1]),
-                        Field::Repository => (&mut probe.repository, &mut seen[2]),
-                        Field::Organization => (&mut probe.organization, &mut seen[3]),
-                        Field::Sender => (&mut probe.sender, &mut seen[4]),
-                        Field::Unknown => {
-                            map.next_value::<de::IgnoredAny>()?;
-                            continue;
-                        }
-                    };
-                    let value = map.next_value::<&RawValue>()?;
-                    *field = if *seen { None } else { Some(value) };
-                    *seen = true;
-                }
-                Ok(probe)
-            }
-        }
-
-        deserializer.deserialize_map(ProbeVisitor)
-    }
+/// The payload half of an [`EventMeta`], in GitHub's shape: what
+/// [`EventMeta::decode`] reads of a payload, and nothing more. A plain
+/// derive, so it is as strict as serde is: a field of another type, a
+/// missing required field or a repeated key is an error.
+#[derive(Debug, Deserialize)]
+struct PayloadMeta {
+    action: Option<Action>,
+    installation: Option<Installation>,
+    repository: Option<Repository>,
+    organization: Option<AccountMeta>,
+    sender: Option<AccountMeta>,
 }
 
 #[derive(Debug, Deserialize)]
-struct IdOnly {
+struct Installation {
     id: u64,
 }
 
 #[derive(Debug, Deserialize)]
-struct RepoProbe {
+struct Repository {
     id: u64,
     name: String,
     full_name: String,
-    owner: Object<LoginOnly>,
+    owner: Owner,
 }
 
-impl From<RepoProbe> for RepositoryMeta {
-    fn from(repository: RepoProbe) -> Self {
+impl From<Repository> for RepositoryMeta {
+    fn from(repository: Repository) -> Self {
         Self {
             id: repository.id,
             name: repository.name,
             full_name: repository.full_name,
-            owner: repository.owner.0.login,
+            owner: repository.owner.login,
         }
     }
 }
 
 #[derive(Debug, Deserialize)]
-struct LoginOnly {
+struct Owner {
     login: String,
 }

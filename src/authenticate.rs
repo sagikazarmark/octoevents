@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use http::HeaderMap;
 
-use crate::{Envelope, WebhookMeta, ReceiveError, Verifier, header};
+use crate::{Envelope, ReceiveError, Verifier, WebhookMeta, header};
 
 /// Authenticates a request and builds its envelope: the one path from an
 /// untrusted request to an [`Envelope`] that can be trusted.
@@ -42,8 +42,10 @@ use crate::{Envelope, WebhookMeta, ReceiveError, Verifier, header};
 ///
 /// Once the body is authenticated, the headers are read into a
 /// [`WebhookMeta`], as [`WebhookMeta::from_headers`] reads them, and the
-/// envelope is built from it and the body as [`Envelope::new`] builds one,
-/// the payload probed by the same rules. A target type this crate does not
+/// envelope is built from it and the body as [`Envelope::new`] builds one.
+/// Nothing of the payload is read: any bytes that verify build an envelope,
+/// JSON or not, and what they say is decoded later, by the dispatcher or
+/// [`EventMeta::decode`](crate::EventMeta::decode). A target type this crate does not
 /// know is [`TargetType::Unknown`](crate::TargetType::Unknown) with the value
 /// intact; a target ID that is present but not a number reads as `None`,
 /// since the header is optional and refusing an authenticated delivery over
@@ -69,7 +71,7 @@ use crate::{Envelope, WebhookMeta, ReceiveError, Verifier, header};
 ///
 /// ```
 /// use http::HeaderMap;
-/// use octoevents::{Action, Bytes, EventKind, Verifier, WebhookSecret, authenticate, header};
+/// use octoevents::{Bytes, EventKind, Verifier, WebhookSecret, authenticate, header};
 ///
 /// let verifier = Verifier::new(WebhookSecret::new("test-secret"));
 /// let body = Bytes::from_static(br#"{"action":"opened","installation":{"id":42}}"#);
@@ -80,12 +82,11 @@ use crate::{Envelope, WebhookMeta, ReceiveError, Verifier, header};
 /// headers.insert(header::EVENT_NAME, "issues".parse()?);
 /// headers.insert(header::SIGNATURE, verifier.sign(&body).into());
 ///
-/// let envelope = authenticate(&verifier, &headers, body)?;
+/// let envelope = authenticate(&verifier, &headers, body.clone())?;
 ///
 /// assert_eq!(envelope.meta.delivery_id, "delivery-1");
 /// assert_eq!(envelope.meta.kind, EventKind::Issues);
-/// assert_eq!(envelope.meta.action, Some(Action::Opened));
-/// assert_eq!(envelope.meta.installation_id, Some(42));
+/// assert_eq!(envelope.raw_payload, body);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 ///
@@ -164,7 +165,10 @@ pub fn authenticate(
     }
 
     let meta = WebhookMeta::from_headers(headers)?;
-    Ok(Envelope::from_bytes(meta, body))
+    Ok(Envelope {
+        meta,
+        raw_payload: body,
+    })
 }
 
 #[cfg(test)]

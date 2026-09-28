@@ -1,6 +1,6 @@
 //! The envelope's tests, beside the production code so they share the
 //! crate's fixtures. Grouped by concern: the receive errors, the data
-//! constructor, the probe, the meta as a value, the wire format, and
+//! constructor, the meta decode, the meta as a value, the wire format, and
 //! `decode`. The authenticating path's own tests are beside it, in
 //! `authenticate`.
 //!
@@ -80,44 +80,27 @@ mod status {
     }
 }
 
-/// The data constructor, `Envelope::new`: the header meta as given, the
-/// probe of the payload, and nothing verified.
+/// The data constructor, `Envelope::new`: the header meta and the bytes as
+/// given, nothing read and nothing verified.
 mod new {
     use bytes::Bytes;
 
     use crate::test_support::{BODY, headers, verifier};
-    use crate::{
-        AccountMeta, Action, Envelope, EventKind, WebhookMeta, RepositoryMeta, TargetType,
-        authenticate,
-    };
+    use crate::{Envelope, EventKind, TargetType, WebhookMeta, authenticate};
 
     #[test]
-    fn carries_the_header_meta_it_was_given_and_the_probe_of_the_payload() {
+    fn carries_the_webhook_meta_and_the_bytes_it_was_given_untouched() {
         let mut meta = WebhookMeta::new("delivery", EventKind::PullRequest);
         meta.target_type = Some(TargetType::Integration);
         meta.target_id = Some(12345);
 
-        let envelope = Envelope::new(meta, BODY);
+        // Any bytes: a payload GitHub sends, and bytes no decode would read.
+        for payload in [BODY, b"not json", b"[]", b"", b"\xff\xfe"] {
+            let envelope = Envelope::new(meta.clone(), payload);
 
-        // The header half, target included, as given.
-        assert_eq!(envelope.meta.delivery_id, "delivery");
-        assert_eq!(envelope.meta.kind, EventKind::PullRequest);
-        assert_eq!(envelope.meta.target_type, Some(TargetType::Integration));
-        assert_eq!(envelope.meta.target_id, Some(12345));
-
-        // The payload half, read from the bytes, not hand-assigned.
-        assert_eq!(envelope.meta.action, Some(Action::Opened));
-        assert_eq!(envelope.meta.installation_id, Some(42));
-        assert_eq!(
-            envelope.meta.repository,
-            Some(RepositoryMeta::new(1, "repo", "octo/repo", "octo"))
-        );
-        assert_eq!(
-            envelope.meta.organization,
-            Some(AccountMeta::new(9919, "github"))
-        );
-        assert_eq!(envelope.meta.sender, Some(AccountMeta::new(2, "monalisa")));
-        assert_eq!(envelope.raw_payload, Bytes::from_static(BODY));
+            assert_eq!(envelope.meta, meta);
+            assert_eq!(envelope.raw_payload, Bytes::copy_from_slice(payload));
+        }
     }
 
     #[test]
@@ -139,355 +122,187 @@ mod new {
     fn verifies_nothing() {
         // Nothing is signed and nothing is checked: bytes no verifier would
         // accept still build an envelope, which is why one proves nothing.
-        let envelope = Envelope::new(WebhookMeta::new("delivery", EventKind::Push), b"not json");
+        let envelope = Envelope::new(WebhookMeta::new("delivery", EventKind::Push), BODY);
 
         assert_eq!(envelope.meta.kind, EventKind::Push);
-        assert_eq!(envelope.raw_payload, Bytes::from_static(b"not json"));
+        assert_eq!(envelope.raw_payload, Bytes::from_static(BODY));
     }
 }
 
-/// The probe: best-effort and never fatal, the same through `authenticate`
-/// and `Envelope::new`, and reading what the corpus fixtures carry.
-mod probe {
-    use std::fmt::Write as _;
-
-    use bytes::Bytes;
-
-    use crate::test_support::{BODY, headers, verifier};
+/// `EventMeta::decode`: the header meta beside what the payload says, decoded
+/// strictly to GitHub's shape, reading what the corpus fixtures carry.
+mod meta_decode {
+    use crate::test_support::{self, BODY};
     use crate::{
-        AccountMeta, Action, EventKind, EventMeta, RepositoryMeta, TargetType, authenticate,
-        test_support,
+        AccountMeta, Action, DecodeError, Envelope, EventKind, EventMeta, RepositoryMeta,
+        TargetType, WebhookMeta,
     };
 
-    #[test]
-    fn invalid_utf8_in_skipped_values_clears_all_payload_meta_and_preserves_the_envelope() {
-        for extra in [
-            &b",\"extra\":\"\xff\"}"[..],
-            &b",\"extra\":{\"nested\":[\"\x80\"]}}"[..],
-            &b",\"extra\":\"\xc0\xaf\"}"[..],
-            &b",\"extra\":\"\xed\xa0\x80\"}"[..],
-            &b",\"extra\":\"\xf0\x9f\"}"[..],
-        ] {
-            let payload = [&BODY[..BODY.len() - 1], extra].concat();
-            let mut expected = EventMeta::new("delivery", EventKind::PullRequest);
-            let synthetic = test_support::envelope(EventKind::PullRequest, &payload);
-            assert_eq!(synthetic.meta, expected);
-            assert_eq!(synthetic.raw_payload.as_ref(), payload);
-
-            let signature = verifier().sign(&payload).to_string();
-            let signed = authenticate(
-                &verifier(),
-                &headers(&signature),
-                Bytes::copy_from_slice(&payload),
-            )
-            .unwrap();
-            expected.target_type = Some(TargetType::Repository);
-            expected.target_id = Some(7);
-            assert_eq!(signed.meta, expected);
-            assert_eq!(signed.raw_payload.as_ref(), payload);
-        }
+    fn decode(payload: &[u8]) -> Result<EventMeta, DecodeError> {
+        EventMeta::decode(&test_support::envelope(EventKind::PullRequest, payload))
     }
 
     #[test]
-    fn non_object_payloads_have_no_probed_metadata() {
-        for payload in [
-            r#"["opened",{"id":42},null,null,{"id":2,"login":"monalisa"}]"#,
-            "[]",
-            "null",
-            "true",
-            "42",
-            r#""opened""#,
-        ] {
-            assert_probed_meta(payload, &EventMeta::new("delivery", EventKind::PullRequest));
-        }
-    }
+    fn carries_the_webhook_meta_beside_the_payloads_fields() {
+        let mut webhook = WebhookMeta::new("delivery", EventKind::PullRequest);
+        webhook.target_type = Some(TargetType::Integration);
+        webhook.target_id = Some(12345);
 
-    fn assert_probed_meta(payload: &str, expected: &EventMeta) {
-        let signature = verifier().sign(payload.as_bytes()).to_string();
-        let mut signed_headers = headers(&signature);
-        signed_headers.remove("x-github-hook-installation-target-type");
-        signed_headers.remove("x-github-hook-installation-target-id");
-        let signed = authenticate(
-            &verifier(),
-            &signed_headers,
-            Bytes::copy_from_slice(payload.as_bytes()),
-        )
-        .unwrap();
-        let synthetic = test_support::envelope(EventKind::PullRequest, payload.as_bytes());
+        let meta = EventMeta::decode(&Envelope::new(webhook, BODY)).unwrap();
 
-        for envelope in [synthetic, signed] {
-            assert_eq!(&envelope.meta, expected, "{payload}");
-            assert_eq!(
-                envelope.raw_payload.as_ref(),
-                payload.as_bytes(),
-                "{payload}"
-            );
-        }
-    }
-
-    fn complete_meta() -> EventMeta {
-        let mut meta = EventMeta::new("delivery", EventKind::PullRequest);
-        meta.action = Some(Action::Opened);
-        meta.installation_id = Some(42);
-        meta.repository = Some(RepositoryMeta::new(1, "repo", "octo/repo", "octo"));
-        meta.organization = Some(AccountMeta::new(9919, "github"));
-        meta.sender = Some(AccountMeta::new(2, "monalisa"));
-        meta
-    }
-
-    #[test]
-    fn malformed_escapes_in_skipped_values_clear_all_payload_meta() {
-        let fields = std::str::from_utf8(BODY).unwrap().trim_end_matches('}');
-        let empty = EventMeta::new("delivery", EventKind::PullRequest);
-        for value in [r#""\q""#, r#""\u12""#, r#""\uZZZZ""#, "\"line\nbreak\""] {
-            for extra in [value.to_owned(), format!("{{\"nested\":[{value}]}}")] {
-                assert_probed_meta(&format!("{fields},\"extra\":{extra}}}"), &empty);
-            }
-        }
-    }
-
-    #[test]
-    fn escaped_surrogates_in_skipped_values_leave_metadata_intact() {
-        let fields = std::str::from_utf8(BODY).unwrap().trim_end_matches('}');
-        for value in [r#""\uD83D\uDE00""#, r#""\uD800""#, r#""\uDC00""#] {
-            // Escape syntax is checked, but skipped strings need not decode
-            // into Unicode scalar values, unlike strings the meta keeps.
-            assert_probed_meta(
-                &format!("{fields},\"extra\":{{\"nested\":[{value}]}}}}"),
-                &complete_meta(),
-            );
-        }
-    }
-
-    #[test]
-    fn unpaired_escaped_surrogates_clear_only_the_metadata_field_that_reads_them() {
-        let fields = std::str::from_utf8(BODY).unwrap();
-        for escape in [r"\uD800", r"\uDC00"] {
-            let mut expected = complete_meta();
-            expected.sender = None;
-            assert_probed_meta(&fields.replace("monalisa", escape), &expected);
-
-            let mut expected = complete_meta();
-            expected.action = None;
-            assert_probed_meta(&fields.replace("opened", escape), &expected);
-        }
-
-        let mut expected = complete_meta();
-        expected.sender = Some(AccountMeta::new(2, "😀"));
-        assert_probed_meta(&fields.replace("monalisa", r"\uD83D\uDE00"), &expected);
-    }
-
-    #[test]
-    fn wrong_shaped_metadata_objects_clear_only_their_top_level_field() {
-        for (field, array) in [
-            ("installation", "[42]"),
-            ("repository", r#"[1,"repo","octo/repo",{"login":"octo"}]"#),
-            ("owner", r#"["octo"]"#),
-            ("organization", r#"[9919,"github"]"#),
-            ("sender", r#"[2,"monalisa"]"#),
-        ] {
-            for shape in [array, "null", "true", "42", r#""object""#] {
-                let mut payload: serde_json::Value = serde_json::from_slice(BODY).unwrap();
-                let mut expected = complete_meta();
-                let value = serde_json::from_str(shape).unwrap();
-                match field {
-                    "installation" => expected.installation_id = None,
-                    "repository" | "owner" => expected.repository = None,
-                    "organization" => expected.organization = None,
-                    "sender" => expected.sender = None,
-                    _ => unreachable!(),
-                }
-                if field == "owner" {
-                    payload["repository"]["owner"] = value;
-                } else {
-                    payload[field] = value;
-                }
-                assert_probed_meta(&payload.to_string(), &expected);
-            }
-        }
-    }
-
-    #[test]
-    fn duplicate_metadata_keys_clear_only_that_field_even_after_null_or_a_third_value() {
-        let fields: serde_json::Value = serde_json::from_slice(BODY).unwrap();
-        for field in [
-            "action",
-            "installation",
-            "repository",
-            "organization",
-            "sender",
-        ] {
-            let mut expected = complete_meta();
-            match field {
-                "action" => expected.action = None,
-                "installation" => expected.installation_id = None,
-                "repository" => expected.repository = None,
-                "organization" => expected.organization = None,
-                "sender" => expected.sender = None,
-                _ => unreachable!(),
-            }
-            let valid = fields[field].to_string();
-            let mut siblings = fields.clone();
-            siblings.as_object_mut().unwrap().remove(field);
-            let siblings = siblings.to_string();
-            let siblings = siblings.trim_start_matches('{');
-            for values in [
-                vec![valid.as_str(), valid.as_str()],
-                vec!["null", valid.as_str()],
-                vec![valid.as_str(), "null"],
-                vec![valid.as_str(), "null", valid.as_str()],
-            ] {
-                // Raw JSON keeps duplicate keys that a Value would collapse.
-                let mut entries = String::new();
-                for value in values {
-                    write!(entries, "{field:?}:{value},").unwrap();
-                }
-                assert_probed_meta(&format!("{{{entries}{siblings}"), &expected);
-            }
-        }
-    }
-
-    #[test]
-    fn duplicate_required_keys_in_metadata_objects_clear_only_their_top_level_field() {
-        for (field, object) in [
-            ("installation", r#"{"id":42,"id":43}"#),
-            (
-                "repository",
-                r#"{"id":1,"id":2,"name":"repo","full_name":"octo/repo","owner":{"login":"octo"}}"#,
-            ),
-            (
-                "repository",
-                r#"{"id":1,"name":"repo","name":"other","full_name":"octo/repo","owner":{"login":"octo"}}"#,
-            ),
-            (
-                "repository",
-                r#"{"id":1,"name":"repo","full_name":"octo/repo","full_name":"octo/other","owner":{"login":"octo"}}"#,
-            ),
-            (
-                "repository",
-                r#"{"id":1,"name":"repo","full_name":"octo/repo","owner":{"login":"octo"},"owner":{"login":"other"}}"#,
-            ),
-            (
-                "repository",
-                r#"{"id":1,"name":"repo","full_name":"octo/repo","owner":{"login":"octo","login":"other"}}"#,
-            ),
-            ("organization", r#"{"id":9919,"id":9920,"login":"github"}"#),
-            (
-                "organization",
-                r#"{"id":9919,"login":"github","login":"other"}"#,
-            ),
-            ("sender", r#"{"id":2,"id":3,"login":"monalisa"}"#),
-            ("sender", r#"{"id":2,"login":"monalisa","login":"other"}"#),
-        ] {
-            let mut siblings: serde_json::Value = serde_json::from_slice(BODY).unwrap();
-            siblings.as_object_mut().unwrap().remove(field);
-            let siblings = siblings.to_string();
-            let mut expected = complete_meta();
-            match field {
-                "installation" => expected.installation_id = None,
-                "repository" => expected.repository = None,
-                "organization" => expected.organization = None,
-                "sender" => expected.sender = None,
-                _ => unreachable!(),
-            }
-            let payload = format!("{{{field:?}:{object},{}", siblings.trim_start_matches('{'));
-            assert_probed_meta(&payload, &expected);
-        }
-    }
-
-    #[test]
-    fn unknown_duplicate_keys_are_ignored_but_invalid_json_clears_every_field() {
         let mut expected = EventMeta::new("delivery", EventKind::PullRequest);
         expected.action = Some(Action::Opened);
+        expected.installation_id = Some(42);
+        expected.repository = Some(RepositoryMeta::new(1, "repo", "octo/repo", "octo"));
+        expected.organization = Some(AccountMeta::new(9919, "github"));
         expected.sender = Some(AccountMeta::new(2, "monalisa"));
-        assert_probed_meta(
-            r#"{"action":"opened","extra":[],"extra":{},"sender":{"id":2,"login":"monalisa","extra":0,"extra":1}}"#,
-            &expected,
-        );
-
-        let empty = EventMeta::new("delivery", EventKind::PullRequest);
-        for payload in [
-            r#"{"action":"opened","extra":[}"#,
-            r#"{"action":"opened","sender":{},"sender":[}"#,
-            r#"{"action":"opened"} trailing"#,
-        ] {
-            assert_probed_meta(payload, &empty);
-        }
+        expected.target_type = Some(TargetType::Integration);
+        expected.target_id = Some(12345);
+        assert_eq!(meta, expected);
     }
 
     #[test]
-    fn invalid_json_is_preserved_without_failing_the_envelope() {
-        let envelope = test_support::envelope(EventKind::PullRequest, b"not json");
-
-        assert_eq!(
-            envelope.meta,
-            EventMeta::new("delivery", EventKind::PullRequest)
-        );
-        assert_eq!(envelope.raw_payload, Bytes::from_static(b"not json"));
-    }
-
-    #[test]
-    fn the_probe_reads_the_action_installation_and_sender_of_every_corpus_fixture() {
+    fn every_corpus_fixture_decodes_to_the_meta_it_carries() {
         // Real payloads, not the synthetic `BODY`: what GitHub sends is what
-        // the probe must read, the sender out of GitHub's full account object
-        // with the fields the meta does not keep ignored. The ping carries
-        // none of the three.
+        // the decode must read, the accounts out of GitHub's full account
+        // objects with the fields the meta does not keep ignored. The
+        // expectations are what the probe this decode replaced read.
+        let gagbo = || Some(AccountMeta::new(10_496_163, "gagbo"));
         let corpus = [
             (
                 test_support::pull_request_opened(),
                 Some(Action::Opened),
                 Some(7_777_777),
-                Some(AccountMeta::new(10_496_163, "gagbo")),
+                Some(RepositoryMeta::new(
+                    537_482_687,
+                    "ouro-closures",
+                    "gagbo/ouro-closures",
+                    "gagbo",
+                )),
+                gagbo(),
             ),
             (
                 test_support::check_run_completed(),
                 Some(Action::Completed),
                 None,
+                Some(RepositoryMeta::new(
+                    186_853_002,
+                    "Hello-World",
+                    "Codertocat/Hello-World",
+                    "Codertocat",
+                )),
                 Some(AccountMeta::new(21_031_067, "Codertocat")),
             ),
             (
                 test_support::installation_created(),
                 Some(Action::Created),
                 Some(39_593_433),
-                Some(AccountMeta::new(10_496_163, "gagbo")),
+                None,
+                gagbo(),
             ),
             (
                 test_support::installation_repositories_removed(),
                 Some(Action::Removed),
                 Some(7_777_777),
-                Some(AccountMeta::new(10_496_163, "gagbo")),
+                None,
+                gagbo(),
             ),
-            (test_support::ping(), None, None, None),
+            (test_support::ping(), None, None, None, None),
+            (test_support::unknown(), None, None, None, None),
+            (test_support::unrepresentable(), None, None, None, None),
         ];
 
-        for (envelope, action, installation_id, sender) in corpus {
-            let meta = &envelope.meta;
-            assert_eq!(meta.action, action, "{}", meta.kind);
-            assert_eq!(meta.installation_id, installation_id, "{}", meta.kind);
-            assert_eq!(meta.sender, sender, "{}", meta.kind);
+        for (envelope, action, installation_id, repository, sender) in corpus {
+            let meta = EventMeta::decode(&envelope).unwrap();
+
+            let mut expected = EventMeta::new("delivery", envelope.meta.kind.clone());
+            expected.action = action;
+            expected.installation_id = installation_id;
+            expected.repository = repository;
+            expected.sender = sender;
+            assert_eq!(meta, expected, "{}", envelope.meta.kind);
         }
     }
 
     #[test]
-    fn malformed_probe_fields_do_not_discard_valid_siblings() {
-        // `repository` lacks `full_name` and `organization` lacks `id`, so
-        // each alone reads as absent.
-        let envelope = test_support::envelope(
-            EventKind::PullRequest,
-            br#"{
-                "action":"opened",
-                "installation":{"id":42},
-                "repository":{"id":1,"name":"repo","owner":{"login":"octo"}},
-                "organization":{"login":"github"},
-                "sender":{"id":2,"login":"monalisa"}
-            }"#,
-        );
+    fn null_fields_decode_as_absent() {
+        let meta = decode(
+            br#"{"action":null,"installation":null,"repository":null,"organization":null,"sender":null}"#,
+        )
+        .unwrap();
 
-        assert_eq!(envelope.meta.action, Some(Action::Opened));
-        assert_eq!(envelope.meta.installation_id, Some(42));
-        assert_eq!(envelope.meta.sender, Some(AccountMeta::new(2, "monalisa")));
-        assert_eq!(envelope.meta.repository, None);
-        assert_eq!(envelope.meta.organization, None);
+        assert_eq!(meta, EventMeta::new("delivery", EventKind::PullRequest));
+    }
+
+    #[test]
+    fn a_payload_missing_a_required_field_is_an_error() {
+        let complete: serde_json::Value = serde_json::from_slice(BODY).unwrap();
+        for pointer in [
+            "/installation/id",
+            "/repository/id",
+            "/repository/name",
+            "/repository/full_name",
+            "/repository/owner",
+            "/repository/owner/login",
+            "/organization/id",
+            "/organization/login",
+            "/sender/id",
+            "/sender/login",
+        ] {
+            let mut payload = complete.clone();
+            let (parent, field) = pointer.rsplit_once('/').unwrap();
+            payload
+                .pointer_mut(parent)
+                .and_then(serde_json::Value::as_object_mut)
+                .unwrap()
+                .remove(field)
+                .unwrap();
+
+            let error = decode(payload.to_string().as_bytes()).unwrap_err();
+
+            assert!(
+                matches!(error, DecodeError::Json(_)),
+                "{pointer}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_field_outside_githubs_shape_is_an_error() {
+        for (field, value) in [
+            ("action", "42"),
+            ("installation", r#"{"id":"42"}"#),
+            ("repository", r#""octo/repo""#),
+            ("sender", r#"{"id":2,"login":null}"#),
+        ] {
+            let mut payload: serde_json::Value = serde_json::from_slice(BODY).unwrap();
+            payload[field] = serde_json::from_str(value).unwrap();
+
+            let error = decode(payload.to_string().as_bytes()).unwrap_err();
+
+            assert!(matches!(error, DecodeError::Json(_)), "{field}: {error:?}");
+        }
+    }
+
+    #[test]
+    fn invalid_json_is_an_error() {
+        for payload in [&b"not json"[..], b"{", b"", b"{\"action\":\"\xff\"}"] {
+            assert!(
+                matches!(decode(payload), Err(DecodeError::Json(_))),
+                "{}",
+                String::from_utf8_lossy(payload)
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_object_top_level_is_an_error() {
+        for payload in ["[]", "null", "true", "42", r#""opened""#] {
+            assert!(
+                matches!(decode(payload.as_bytes()), Err(DecodeError::Json(_))),
+                "{payload}"
+            );
+        }
     }
 }
 
@@ -498,7 +313,7 @@ mod meta {
 
     use crate::test_support::BODY;
     use crate::{
-        AccountMeta, Envelope, EventKind, EventMeta, WebhookMeta, RepositoryMeta, test_support,
+        AccountMeta, Envelope, EventKind, EventMeta, RepositoryMeta, WebhookMeta, test_support,
     };
 
     #[test]
@@ -522,17 +337,24 @@ mod meta {
 
     #[test]
     fn a_meta_is_a_set_member_by_value() {
-        // `Hash` agrees with `Eq`: two metas read from the same payload are
-        // one key, so a policy that remembers what it saw needs no key of
-        // its own.
-        let first = test_support::envelope(EventKind::PullRequest, BODY).meta;
-        let again = test_support::envelope(EventKind::PullRequest, BODY).meta;
-        let other = Envelope::new(WebhookMeta::new("other", EventKind::PullRequest), BODY).meta;
+        // `Hash` agrees with `Eq`: two metas decoded from the same delivery
+        // are one key, so a policy that remembers what it saw needs no key
+        // of its own.
+        let decode = |envelope: &Envelope| EventMeta::decode(envelope).unwrap();
+        let first = decode(&test_support::envelope(EventKind::PullRequest, BODY));
+        let again = decode(&test_support::envelope(EventKind::PullRequest, BODY));
+        let other = decode(&Envelope::new(
+            WebhookMeta::new("other", EventKind::PullRequest),
+            BODY,
+        ));
 
         let seen: HashSet<EventMeta> = [first, again, other].into_iter().collect();
 
         assert_eq!(seen.len(), 2);
-        assert!(seen.contains(&test_support::envelope(EventKind::PullRequest, BODY).meta));
+        assert!(seen.contains(&decode(&test_support::envelope(
+            EventKind::PullRequest,
+            BODY
+        ))));
     }
 }
 
@@ -543,7 +365,7 @@ mod wire_format {
     use bytes::Bytes;
 
     use crate::test_support::{BODY, headers, verifier};
-    use crate::{Envelope, EventKind, EventMeta, TargetType, authenticate, test_support};
+    use crate::{Envelope, EventKind, TargetType, WebhookMeta, authenticate, test_support};
 
     /// The top-level keys of a serialized envelope, sorted for comparison.
     fn sorted_keys(value: &serde_json::Value) -> Vec<&str> {
@@ -558,7 +380,7 @@ mod wire_format {
     }
 
     #[test]
-    fn serializes_the_metadata_flat_beside_the_raw_payload() {
+    fn serializes_the_header_meta_flat_beside_the_raw_payload() {
         let signature = verifier().sign(BODY).to_string();
         let envelope =
             authenticate(&verifier(), &headers(&signature), Bytes::from_static(BODY)).unwrap();
@@ -566,26 +388,22 @@ mod wire_format {
         let value = serde_json::to_value(envelope).unwrap();
 
         // The meta/raw_payload split is a Rust-side composition only: on the
-        // wire the metadata sits at the top level with no `meta` nesting.
+        // wire the header meta sits at the top level with no `meta` nesting,
+        // and the payload meta is not written at all, though `BODY` carries
+        // every field of it.
         assert_eq!(
             sorted_keys(&value),
             [
-                "action",
                 "delivery_id",
-                "installation_id",
                 "kind",
-                "organization",
                 "raw_payload",
-                "repository",
-                "sender",
                 "target_id",
                 "target_type",
             ]
         );
         assert_eq!(value["delivery_id"], "delivery");
         assert_eq!(value["kind"], "pull_request");
-        assert_eq!(value["installation_id"], 42);
-        assert_eq!(value["repository"]["full_name"], "octo/repo");
+        assert_eq!(value["target_id"], 7);
     }
 
     #[test]
@@ -636,11 +454,6 @@ mod wire_format {
         let with_nulls = r#"{
             "delivery_id": "delivery",
             "kind": "push",
-            "action": null,
-            "installation_id": null,
-            "repository": null,
-            "organization": null,
-            "sender": null,
             "target_type": null,
             "target_id": null,
             "raw_payload": "e30="
@@ -685,7 +498,7 @@ mod wire_format {
 
         let envelope: Envelope = serde_json::from_str(document).unwrap();
 
-        assert_eq!(envelope.meta, EventMeta::new("delivery", EventKind::Push));
+        assert_eq!(envelope.meta, WebhookMeta::new("delivery", EventKind::Push));
         assert_eq!(envelope.raw_payload, Bytes::from_static(b"{}"));
     }
 
@@ -705,30 +518,39 @@ mod wire_format {
     }
 
     #[test]
-    fn preserves_forwarded_meta_without_probing_the_payload() {
+    fn reads_an_older_document_ignoring_its_payload_meta() {
+        // A document from a producer on 0.3 carries the payload meta beside
+        // the header fields, here disagreeing with its bytes. The fields are
+        // ignored, malformed or not, and the bytes are kept for the
+        // dispatcher to decode.
         let document = r#"{
-            "delivery_id":"delivery", "kind":"issues", "action":"closed",
-            "raw_payload":"eyJhY3Rpb24iOiJvcGVuZWQifQ=="
+            "delivery_id": "delivery",
+            "kind": "issues",
+            "action": "closed",
+            "installation_id": -1,
+            "repository": {"id": 1, "name": "repo", "full_name": "octo/repo", "owner": "octo"},
+            "organization": [9919, "github"],
+            "sender": {"id": 2, "login": "monalisa"},
+            "target_type": "integration",
+            "target_id": 12345,
+            "raw_payload": "eyJhY3Rpb24iOiJvcGVuZWQifQ=="
         }"#;
+
         let received: Envelope = serde_json::from_str(document).unwrap();
-        assert_eq!(received.meta.action, Some(crate::Action::Closed));
+
+        let mut expected = WebhookMeta::new("delivery", EventKind::Issues);
+        expected.target_type = Some(TargetType::Integration);
+        expected.target_id = Some(12345);
+        assert_eq!(received.meta, expected);
         assert_eq!(received.raw_payload.as_ref(), br#"{"action":"opened"}"#);
     }
 
     #[test]
     fn refuses_malformed_and_duplicate_known_wire_fields() {
         for field in [
-            r#""action": 42"#,
-            r#""installation_id": -1"#,
-            r#""repository": {}"#,
-            r#""repository": [1, "repo", "octo/repo", "octo"]"#,
-            r#""sender": false"#,
-            r#""sender": [2, "monalisa"]"#,
-            r#""organization": []"#,
-            r#""organization": [9919, "github"]"#,
             r#""target_type": 1"#,
             r#""target_id": "1"#,
-            r#""action": null, "action": "opened""#,
+            r#""target_id": null, "target_id": 1"#,
             r#""delivery_id": "second""#,
             r#""raw_payload": "e30=""#,
             r#""annotation": [1,]"#,
