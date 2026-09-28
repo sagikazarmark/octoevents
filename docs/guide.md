@@ -217,7 +217,7 @@ async fn notify(Event { meta, payload }: Event<IssueOpened>) -> Result<(), BoxEr
 }
 
 let dispatcher = Dispatcher::builder()
-    .always(audit)                                          // every delivery
+    .always(audit)                                          // every delivery whose metadata decodes
     .on((EventKind::Installation, Action::Deleted), record_installation)
     .on(Action::Opened, label)                              // kind from `IssueOpened`
     .on(Action::Opened, notify)

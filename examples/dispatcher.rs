@@ -19,7 +19,8 @@
 //! - **always**: [`audit`], a handler over the meta beside the [`Envelope`]
 //!   (`Event<Envelope>`), runs first for every delivery the dispatcher is
 //!   handed, bytes included and no view decoded on its behalf. The meta is
-//!   the one the dispatcher decoded once, before any tier, to route by.
+//!   the one the dispatcher decoded once, before any tier, to route by; a
+//!   delivery whose meta does not decode fails before this tier runs.
 //! - **route**: the handlers registered with `on` whose kind and action match.
 //!   [`label`] takes the payload alone, decoded as the [`IssueView`] view; its
 //!   kind comes from the view's type, so its matcher says only the action (a

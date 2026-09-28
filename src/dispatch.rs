@@ -177,7 +177,7 @@ where
 /// }
 ///
 /// let dispatcher = Dispatcher::builder()
-///     .always(forward)                                // every delivery, bytes included
+///     .always(forward)                                // every delivery whose meta decoded
 ///     .on(AnyAction, notify)                          // every `pull_request` action
 ///     .on([Action::Opened, Action::Reopened], label)  // these two, `pull_request` from the type
 ///     .fallback(log_unrouted)                         // whatever no route matched

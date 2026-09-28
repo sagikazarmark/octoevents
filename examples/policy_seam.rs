@@ -53,7 +53,8 @@
 //!   decoded once to route by, and, with no view decoded on its behalf, runs
 //!   even for a payload octocrab cannot represent. It cannot fail, and says so with
 //!   `Infallible`. It does not see what the seam answers before calling
-//!   `dispatch`, a redelivery, nor the `ping` the receiver answered itself; a
+//!   `dispatch`, a redelivery, nor the `ping` the receiver answered itself,
+//!   nor a delivery whose meta did not decode, which fails first; a
 //!   count of every delivery the receiver hands over belongs at the top of
 //!   [`Inbox`], and one that must include the `ping` needs the receiver
 //!   built with `handle_ping(true)` as well.
@@ -222,8 +223,8 @@ impl Inbox {
     }
 }
 
-/// Runs for every delivery the dispatcher is handed, reading only the
-/// `EventMeta` the dispatcher decoded. Printing cannot fail, and the error
+/// Runs for every delivery the dispatcher is handed whose meta decoded,
+/// reading only the `EventMeta` the dispatcher decoded. Printing cannot fail, and the error
 /// type says so.
 struct Auditor;
 
