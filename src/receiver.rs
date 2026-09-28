@@ -20,16 +20,15 @@ use http_body_util::{BodyExt as _, Empty};
 #[cfg(feature = "tower")]
 use tower_service::Service;
 
-#[cfg(feature = "tracing")]
-use crate::Action;
 #[cfg(feature = "http-body")]
 use crate::BodyError;
 #[cfg(feature = "tower")]
 use crate::runtime::BoxFuture;
+#[cfg(feature = "tracing")]
+use crate::{Action, DispatchError};
 use crate::{
-    BoxError, DEFAULT_BODY_LIMIT, Envelope, EventKind, EventMeta, Handler, HeaderMeta, MaybeSend,
-    MaybeSync, ReceiveError, Verifier, VerifierSource, authenticate, envelope::Refusal, header,
-    trace,
+    BoxError, DEFAULT_BODY_LIMIT, Envelope, EventKind, Handler, MaybeSend, MaybeSync, ReceiveError,
+    Verifier, VerifierSource, WebhookMeta, authenticate, envelope::Refusal, header, trace,
 };
 
 #[cfg(feature = "http-body")]
@@ -83,7 +82,7 @@ where
     /// [`new`](WebhookReceiverBuilder::new) has.
     ///
     /// For one webhook URL serving several GitHub Apps: the source chooses
-    /// the secret by the request's [`HeaderMeta`], typically by its target,
+    /// the secret by the request's [`WebhookMeta`], typically by its target,
     /// and a request it has no verifier for is refused as
     /// [`ReceiveError::UnknownTarget`](crate::ReceiveError::UnknownTarget)
     /// (401) before verification: on `receive`, before the body is read.
@@ -93,13 +92,13 @@ where
     ///
     /// ```
     /// use octoevents::{
-    ///     Dispatcher, HeaderMeta, TargetType, Verifier, WebhookReceiverBuilder, WebhookSecret,
+    ///     Dispatcher, WebhookMeta, TargetType, Verifier, WebhookReceiverBuilder, WebhookSecret,
     /// };
     ///
     /// let first = Verifier::new(WebhookSecret::new("first app's secret"));
     /// let second = Verifier::new(WebhookSecret::new("second app's secret"));
     ///
-    /// let webhook = WebhookReceiverBuilder::from_source(move |headers: &HeaderMeta| {
+    /// let webhook = WebhookReceiverBuilder::from_source(move |headers: &WebhookMeta| {
     ///     match (headers.target_type.as_ref(), headers.target_id) {
     ///         (Some(TargetType::Integration), Some(1)) => Some(first.clone()),
     ///         (Some(TargetType::Integration), Some(2)) => Some(second.clone()),
@@ -369,7 +368,7 @@ where
     ///
     /// 1. A request whose signature header is absent (401) or not a signature
     ///    (400) is refused from the headers, before the body is looked at.
-    /// 2. The [`HeaderMeta`] is read from the headers; a missing delivery ID
+    /// 2. The [`WebhookMeta`] is read from the headers; a missing delivery ID
     ///    or event name is 400.
     /// 3. The [`VerifierSource`] is asked for the request's verifier; a
     ///    request it has none for is 401,
@@ -530,7 +529,7 @@ where
         // what the source was asked with and refuses nothing this did not;
         // the second read is a few short strings, the price of one
         // authenticating path shared with every transport.
-        let meta = match HeaderMeta::from_headers(headers) {
+        let meta = match WebhookMeta::from_headers(headers) {
             Ok(meta) => meta,
             Err(error) => return refuse(span, &error),
         };
@@ -764,6 +763,17 @@ fn record_refusal(_span: &trace::Span, _error: &ReceiveError) {}
 /// The one `tracing::error!` for a failed delivery, so the event's fields
 /// are declared in one place.
 ///
+/// The envelope holds the header meta alone, so `delivery_id` and `event`
+/// come from there; `action` and `installation_id` come from the
+/// [`DispatchError`] the handler failed with, the first in the error's
+/// source chain, which carries the meta its dispatcher decoded. A handler
+/// that is not a dispatcher, or a delivery whose meta did not decode,
+/// records the header fields alone. So does a wrapping handler whose error
+/// forwards the dispatch error with `#[error(transparent)]`: that forwards
+/// `source()` past it too, so the chain never reaches it. A wrapper keeps
+/// the fields by holding the dispatch error as its `source()`, as the
+/// `policy_seam` example does.
+///
 /// Takes the handler's error by value and boxes it here, so the conversion
 /// happens only with the feature. `error` is recorded as an error value: the
 /// subscriber renders its text and walks its `source()` chain itself (the
@@ -777,13 +787,20 @@ fn record_refusal(_span: &trace::Span, _error: &ReceiveError) {}
 /// would say what the event's name already does, and the code is on the
 /// receive span the event is emitted inside, beside `outcome`.
 #[cfg(feature = "tracing")]
-fn handler_failed<E: Into<BoxError>>(meta: &EventMeta, error: E) {
+fn handler_failed<E: Into<BoxError>>(meta: &WebhookMeta, error: E) {
     let error: BoxError = error.into();
+    let dispatch = std::iter::successors(
+        Some(&*error as &(dyn std::error::Error + 'static)),
+        |error| error.source(),
+    )
+    .find_map(|error| error.downcast_ref::<DispatchError>());
     tracing::error!(
         delivery_id = meta.delivery_id.as_str(),
         event = meta.kind.as_str(),
-        action = meta.action.as_ref().map(Action::as_str),
-        installation_id = meta.installation_id,
+        action = dispatch
+            .and_then(|error| error.action.as_ref())
+            .map(Action::as_str),
+        installation_id = dispatch.and_then(|error| error.installation_id),
         error = &*error as &(dyn std::error::Error + 'static),
         "handler failed"
     );
@@ -792,7 +809,7 @@ fn handler_failed<E: Into<BoxError>>(meta: &EventMeta, error: E) {
 /// Emits nothing: the `tracing` feature is disabled, and the error is
 /// dropped unboxed.
 #[cfg(not(feature = "tracing"))]
-fn handler_failed<E: Into<BoxError>>(_meta: &EventMeta, _error: E) {}
+fn handler_failed<E: Into<BoxError>>(_meta: &WebhookMeta, _error: E) {}
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;

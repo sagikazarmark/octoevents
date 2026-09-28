@@ -35,8 +35,8 @@ use http_body::Frame;
 use http_body_util::Full;
 
 #[cfg(feature = "http-body")]
-use crate::{DecodeError, EventKind, FromEnvelope, Payload};
-use crate::{Envelope, Handler, HeaderMeta, TargetType, Verifier, VerifierSource, WebhookSecret};
+use crate::{DecodeError, EventKind, Payload, test_support::input};
+use crate::{Envelope, Handler, TargetType, Verifier, VerifierSource, WebhookMeta, WebhookSecret};
 
 /// A production-shaped handler: dependencies as fields, borrowed through
 /// `&self`, and deliberately not `Clone`.
@@ -90,7 +90,7 @@ impl Handler<Envelope> for IssueRecorder {
 
     #[expect(clippy::unused_async_trait_impl)]
     async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
-        let payload = IssueView::from_envelope(&envelope)?;
+        let payload = input::<IssueView>(&envelope)?;
         self.seen.lock().unwrap().push((
             envelope.meta.delivery_id,
             payload.action,
@@ -273,7 +273,7 @@ struct Apps(HashMap<u64, Verifier>);
 impl VerifierSource for Apps {
     // A real source awaits its store; this one reads a map.
     #[expect(clippy::unused_async_trait_impl)]
-    async fn verifier(&self, headers: &HeaderMeta) -> Option<Verifier> {
+    async fn verifier(&self, headers: &WebhookMeta) -> Option<Verifier> {
         match (headers.target_type.as_ref(), headers.target_id) {
             (Some(TargetType::Integration), Some(id)) => self.0.get(&id).cloned(),
             _ => None,
@@ -695,7 +695,7 @@ mod receive_bytes {
 
     use super::{Recorder, WRONG_SIGNATURE, app, apps, verifier};
     use crate::{
-        Action, Dispatcher, Envelope, EventKind, EventMeta, WebhookReceiverBuilder, header,
+        Dispatcher, Envelope, EventKind, EventMeta, WebhookReceiverBuilder, header,
         test_support::AppError,
     };
 
@@ -735,50 +735,57 @@ mod receive_bytes {
     }
 
     #[tokio::test]
-    async fn signed_invalid_utf8_reaches_fallback_instead_of_the_action_route_and_is_204() {
-        let seen: Arc<std::sync::Mutex<Vec<Envelope>>> = Arc::default();
-        let fallback_seen = Arc::clone(&seen);
+    async fn a_signed_delivery_whose_meta_does_not_decode_runs_no_handler_and_is_answered_500() {
+        // Verified bytes the dispatcher cannot decode the meta of: not JSON,
+        // not an object, and an action outside GitHub's shape. None is refused by the receiver, which reads
+        // nothing of the payload; each fails at dispatch, so GitHub records
+        // the delivery as failed and it can be redelivered.
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (always, route, fallback) =
+            (Arc::clone(&calls), Arc::clone(&calls), Arc::clone(&calls));
         let dispatcher = Dispatcher::builder()
-            .on((EventKind::Issues, Action::Opened), |_: EventMeta| async {
-                Err::<(), _>(AppError::Handler("opened route"))
+            .always(move |_: Envelope| {
+                always.fetch_add(1, Ordering::Relaxed);
+                async { Ok::<(), AppError>(()) }
             })
-            .fallback(move |envelope: Envelope| {
-                let seen = Arc::clone(&fallback_seen);
-                async move {
-                    seen.lock().unwrap().push(envelope);
-                    Ok::<(), AppError>(())
-                }
+            .on(EventKind::Issues, move |_: EventMeta| {
+                route.fetch_add(1, Ordering::Relaxed);
+                async { Ok::<(), AppError>(()) }
+            })
+            .fallback(move |_: Envelope| {
+                fallback.fetch_add(1, Ordering::Relaxed);
+                async { Ok::<(), AppError>(()) }
             })
             .build();
         let receiver = WebhookReceiverBuilder::new(verifier()).build(dispatcher);
 
-        for body in [
-            &b"{\"action\":\"opened\",\"extra\":\"\xff\"}"[..],
-            &b"{\"action\":\"opened\",\"extra\":{\"nested\":[\"\xff\"]}}"[..],
-        ] {
+        for body in [&b"not json"[..], &b"[]"[..], &b"{\"action\":42}"[..]] {
             let status = receiver
                 .receive_bytes(&headers(body, "issues"), Bytes::copy_from_slice(body))
                 .await;
 
-            assert_eq!(status, StatusCode::NO_CONTENT);
-            let envelope = seen.lock().unwrap().pop().unwrap();
-            assert_eq!(envelope.meta, EventMeta::new("delivery", EventKind::Issues));
-            assert_eq!(envelope.raw_payload.as_ref(), body);
+            assert_eq!(
+                status,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "{}",
+                String::from_utf8_lossy(body)
+            );
         }
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
 
-        // A valid document still selects that same action-specific handler.
+        // A valid document reaches every tier it routes to.
         let body = br#"{"action":"opened","extra":"valid"}"#;
         let status = receiver
             .receive_bytes(&headers(body, "issues"), Bytes::from_static(body))
             .await;
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(seen.lock().unwrap().is_empty());
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
 
     #[tokio::test]
     async fn the_handler_is_handed_the_envelope_the_receiver_read() {
         // The bytes path builds the same envelope the request path does:
-        // the meta from the headers and the probe, the payload verbatim.
+        // the meta from the headers, the payload verbatim.
         let seen: Arc<std::sync::Mutex<Option<Envelope>>> = Arc::default();
         let handler_seen = Arc::clone(&seen);
         let receiver = WebhookReceiverBuilder::new(verifier()).build(move |envelope: Envelope| {
@@ -797,7 +804,7 @@ mod receive_bytes {
         assert_eq!(status, StatusCode::NO_CONTENT);
         let envelope = seen.lock().unwrap().take().unwrap();
         assert_eq!(envelope.meta.delivery_id, "delivery");
-        assert_eq!(envelope.meta.installation_id, Some(42));
+        assert_eq!(envelope.meta.kind, EventKind::Issues);
         assert_eq!(envelope.raw_payload, Bytes::from_static(body));
     }
 
@@ -981,7 +988,7 @@ mod source {
     use http_body_util::Full;
 
     use super::{Frames, Recorder, app, apps, verifier};
-    use crate::{Envelope, HeaderMeta, TargetType, Verifier, WebhookReceiverBuilder};
+    use crate::{Envelope, TargetType, Verifier, WebhookMeta, WebhookReceiverBuilder};
 
     const BODY: &[u8] = br#"{"action":"opened"}"#;
 
@@ -1071,7 +1078,7 @@ mod source {
         // A lookup in memory is a closure over the header meta; a registry
         // the application shares is an `Arc` of its source.
         let first = app(1);
-        let closure = WebhookReceiverBuilder::from_source(move |headers: &HeaderMeta| {
+        let closure = WebhookReceiverBuilder::from_source(move |headers: &WebhookMeta| {
             (headers.target_type == Some(TargetType::Integration) && headers.target_id == Some(1))
                 .then(|| first.clone())
         })

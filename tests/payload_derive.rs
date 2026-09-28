@@ -19,9 +19,15 @@
 use std::convert::Infallible;
 
 use octoevents::{
-    AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind, FromEnvelope as _, HeaderMeta,
-    Payload,
+    AnyAction, DecodeError, Dispatcher, Envelope, Event, EventKind, EventMeta, FromEnvelope,
+    Payload, WebhookMeta,
 };
+
+/// `I` decoded from `envelope` as the dispatcher decodes it: the meta first,
+/// then the input, handed that meta.
+fn input<I: FromEnvelope>(envelope: &Envelope) -> Result<I, DecodeError> {
+    I::from_envelope(envelope, &EventMeta::decode(envelope)?)
+}
 
 #[derive(serde::Deserialize, Payload)]
 #[payload(EventKind::Issues)]
@@ -44,20 +50,20 @@ struct KnownFromStatic {
 #[test]
 fn static_kinds_decode_both_unknown_and_recognized_names() {
     let future = Envelope::new(
-        HeaderMeta::new("future", EventKind::from("future_event")),
+        WebhookMeta::new("future", EventKind::from("future_event")),
         br#"{"number":7}"#,
     );
-    assert_eq!(FutureEvent::from_envelope(&future).unwrap().number, 7);
+    assert_eq!(input::<FutureEvent>(&future).unwrap().number, 7);
     assert_eq!(<Event<FutureEvent>>::KIND, future.meta.kind);
 
     let known = Envelope::new(
-        HeaderMeta::new("known", EventKind::Issues),
+        WebhookMeta::new("known", EventKind::Issues),
         br#"{"number":8}"#,
     );
     assert_eq!(KnownFromStatic::KIND, EventKind::Issues);
-    assert_eq!(KnownFromStatic::from_envelope(&known).unwrap().number, 8);
+    assert_eq!(input::<KnownFromStatic>(&known).unwrap().number, 8);
     assert!(matches!(
-        FutureEvent::from_envelope(&known),
+        input::<FutureEvent>(&known),
         Err(DecodeError::KindMismatch { .. })
     ));
 }
@@ -107,7 +113,7 @@ async fn static_kinds_and_actions_route_like_runtime_wire_values() {
     ] {
         let outcome = dispatcher
             .dispatch(Envelope::new(
-                HeaderMeta::new("delivery", EventKind::from(kind)),
+                WebhookMeta::new("delivery", EventKind::from(kind)),
                 bytes,
             ))
             .await;
@@ -157,14 +163,14 @@ fn the_declared_kind_is_the_payloads_kind() {
 #[test]
 fn an_envelope_of_the_kind_decodes_into_the_view() {
     let envelope = Envelope::new(
-        HeaderMeta::new("delivery", EventKind::Issues),
+        WebhookMeta::new("delivery", EventKind::Issues),
         br#"{"action":"opened","issue":{"number":7,"title":"unread"}}"#,
     );
 
-    let view = IssueNumber::from_envelope(&envelope).unwrap();
+    let view = input::<IssueNumber>(&envelope).unwrap();
     assert_eq!(view.issue.number, 7);
 
-    let event = Event::<IssueNumber>::from_envelope(&envelope).unwrap();
+    let event = input::<Event<IssueNumber>>(&envelope).unwrap();
     assert_eq!(event.meta.delivery_id, "delivery");
     assert_eq!(event.payload.issue.number, 7);
 }
@@ -172,11 +178,11 @@ fn an_envelope_of_the_kind_decodes_into_the_view() {
 #[test]
 fn an_envelope_of_another_kind_is_a_kind_mismatch() {
     let envelope = Envelope::new(
-        HeaderMeta::new("delivery", EventKind::PullRequest),
+        WebhookMeta::new("delivery", EventKind::PullRequest),
         br#"{"issue":{"number":7}}"#,
     );
 
-    let Err(error) = IssueNumber::from_envelope(&envelope) else {
+    let Err(error) = input::<IssueNumber>(&envelope) else {
         panic!("a pull_request envelope decoded as an issues view");
     };
     assert!(
@@ -192,21 +198,21 @@ fn an_envelope_of_another_kind_is_a_kind_mismatch() {
 #[test]
 fn a_generic_view_decodes_as_each_type_its_field_deserializes_as() {
     let envelope = Envelope::new(
-        HeaderMeta::new("delivery", EventKind::PullRequest),
+        WebhookMeta::new("delivery", EventKind::PullRequest),
         br#"{"action":"opened","pull_request":{"number":7}}"#,
     );
 
-    let numbered = PullRequest::<Number>::from_envelope(&envelope).unwrap();
+    let numbered = input::<PullRequest<Number>>(&envelope).unwrap();
     assert_eq!(numbered.pull_request, Number { number: 7 });
 
-    let untyped = PullRequest::<serde_json::Value>::from_envelope(&envelope).unwrap();
+    let untyped = input::<PullRequest<serde_json::Value>>(&envelope).unwrap();
     assert_eq!(untyped.pull_request["number"], 7);
 
     let push = Envelope::new(
-        HeaderMeta::new("delivery", EventKind::Push),
+        WebhookMeta::new("delivery", EventKind::Push),
         br#"{"ref":"refs/heads/main"}"#,
     );
-    let named = Ref::<String>::from_envelope(&push).unwrap();
+    let named = input::<Ref<String>>(&push).unwrap();
     assert_eq!(named.r#ref, "refs/heads/main");
 }
 

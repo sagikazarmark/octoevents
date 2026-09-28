@@ -219,7 +219,7 @@ fn the_dispatcher_accepts_single_threaded_handlers_over_the_meta_the_envelope_a_
         login: String,
     }
     impl FromEnvelope for Sender {
-        fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError> {
+        fn from_envelope(envelope: &Envelope, _meta: &EventMeta) -> Result<Self, DecodeError> {
             envelope.decode()
         }
     }

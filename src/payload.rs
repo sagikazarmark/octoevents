@@ -2,29 +2,37 @@ use serde::de::DeserializeOwned;
 
 use crate::{DecodeError, Envelope, EventKind, EventMeta};
 
-/// A handler's input, decoded from an [`Envelope`].
+/// A handler's input, decoded from an [`Envelope`] and its [`EventMeta`].
 ///
 /// This is the bound on what a [`Handler`](crate::Handler) receives, and what
 /// [`DispatcherBuilder::on`](crate::DispatcherBuilder::on) accepts a handler
-/// over. The decode sees the whole envelope, kind included, so an input can
-/// check the kind, read the payload, copy the meta, or take the envelope
-/// whole. The shipped impls:
+/// over. The decode sees the whole envelope and the delivery's meta, so an
+/// input can check the kind, read the payload, copy the meta, or take the
+/// envelope whole.
 ///
-/// - [`Envelope`] is its own input: a clone, the meta plus a refcount bump on
-///   the bytes. The receiver takes a handler over it and moves the envelope
-///   in; the dispatcher clones it once for each handler that receives it,
-///   without decoding the payload.
-/// - [`EventMeta`] is a clone of the meta the envelope was built with, read
-///   from the headers and the payload at receipt, so its decode does nothing
-///   and cannot fail: a handler over it is routed by kind and action and
-///   receives only the meta. Recording an installation ID needs no view of
-///   the payload. A sensitive operation still needs independent authorization:
-///   the event kind comes from an unsigned header, as [`EventMeta`] explains.
+/// The contract: `meta` is [`EventMeta::decode`] of `envelope`, computed once
+/// by the caller. The [`Dispatcher`](crate::Dispatcher) decodes it once per
+/// delivery and passes the same meta to every input it builds, so an input
+/// reads the routing fields (the kind, the action, the installation ID) from
+/// `meta`, not from `envelope.meta`, and never decodes them again. The
+/// shipped impls:
+///
+/// - [`Envelope`] is its own input: a clone, the header meta plus a refcount
+///   bump on the bytes. The receiver takes a handler over it and moves the
+///   envelope in; the dispatcher clones it once for each handler that
+///   receives it, without decoding the payload for it.
+/// - [`EventMeta`] is a clone of the meta it is handed, so its decode does
+///   nothing more and cannot fail: a handler over it is routed by kind and
+///   action and receives only the meta. Recording an installation ID needs no
+///   view of the payload. A sensitive operation still needs independent
+///   authorization: the event kind comes from an unsigned header, as
+///   [`EventMeta`] explains.
 /// - Every serde [`Payload`] decodes in two steps: the kind check first, then
 ///   the bytes with [`Envelope::decode`]. A payload registered with `on`
 ///   under a matcher that disagrees with its kind fails the delivery at the
 ///   kind, as [`DecodeError::KindMismatch`], not at a missing field.
-/// - [`Event<P>`] pairs the meta with any other input's decode.
+/// - [`Event<P>`] pairs the meta with any other input's decode, so
+///   `Event<Envelope>` is the meta beside the bytes.
 /// - octocrab's `WebhookEvent`, with the `octocrab` feature, decodes the
 ///   payload of any kind into octocrab's model, through its own impl of this
 ///   trait like every other input.
@@ -35,7 +43,7 @@ use crate::{DecodeError, Envelope, EventKind, EventMeta};
 /// is needed for cross-kind logic:
 ///
 /// ```
-/// use octoevents::{BoxError, DecodeError, Dispatcher, Envelope, EventKind, FromEnvelope};
+/// use octoevents::{BoxError, DecodeError, Dispatcher, Envelope, EventKind, EventMeta, FromEnvelope};
 ///
 /// /// The sender's login, which every kind carries.
 /// #[derive(serde::Deserialize)]
@@ -44,7 +52,7 @@ use crate::{DecodeError, Envelope, EventKind, EventMeta};
 /// struct Login { login: String }
 ///
 /// impl FromEnvelope for Sender {
-///     fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError> {
+///     fn from_envelope(envelope: &Envelope, _meta: &EventMeta) -> Result<Self, DecodeError> {
 ///         envelope.decode()
 ///     }
 /// }
@@ -66,20 +74,39 @@ use crate::{DecodeError, Envelope, EventKind, EventMeta};
 /// [`DecodeError::Input`], whose `Display` is the message verbatim:
 ///
 /// ```
-/// use octoevents::{DecodeError, Envelope, FromEnvelope};
+/// use octoevents::{DecodeError, Envelope, EventMeta, FromEnvelope};
 ///
 /// /// The installation ID, required rather than optional.
 /// struct InstallationId(u64);
 ///
 /// impl FromEnvelope for InstallationId {
-///     fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError> {
-///         envelope
-///             .meta
+///     fn from_envelope(_envelope: &Envelope, meta: &EventMeta) -> Result<Self, DecodeError> {
+///         meta
 ///             .installation_id
 ///             .map(Self)
 ///             .ok_or_else(|| DecodeError::input("payload has no installation"))
 ///     }
 /// }
+/// ```
+///
+/// A test decodes an input the way the dispatcher does, with the meta
+/// decoded first:
+///
+/// ```
+/// # use octoevents::{DecodeError, Envelope, EventMeta, FromEnvelope};
+/// # struct InstallationId(u64);
+/// # impl FromEnvelope for InstallationId {
+/// #     fn from_envelope(_envelope: &Envelope, meta: &EventMeta) -> Result<Self, DecodeError> {
+/// #         meta.installation_id.map(Self).ok_or_else(|| DecodeError::input("payload has no installation"))
+/// #     }
+/// # }
+/// use octoevents::{EventKind, WebhookMeta};
+///
+/// let envelope = Envelope::new(WebhookMeta::new("delivery-1", EventKind::Issues), br#"{"installation":{"id":42}}"#);
+///
+/// let InstallationId(id) = InstallationId::from_envelope(&envelope, &EventMeta::decode(&envelope)?)?;
+/// assert_eq!(id, 42);
+/// # Ok::<(), DecodeError>(())
 /// ```
 ///
 /// A serde type that implements neither `Payload` nor `FromEnvelope` is
@@ -95,13 +122,19 @@ use crate::{DecodeError, Envelope, EventKind, EventMeta};
 /// assert_input::<Sender>();
 /// ```
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` cannot be decoded from an `Envelope`",
+    message = "`{Self}` cannot be used as a handler input",
     label = "expected `Envelope`, `EventMeta`, a `Payload`, `Event<P>`, or a type that implements `FromEnvelope` itself",
     note = "for a serde view over one kind, declare the kind on the type with `#[derive(Payload)] #[payload(EventKind::..)]`: every serde `Payload` is a `FromEnvelope`",
-    note = "for a view over several kinds, implement `FromEnvelope` for `{Self}` directly, decoding with `Envelope::decode`"
+    note = "for a view over several kinds, implement `FromEnvelope` for `{Self}` directly, decoding with `Envelope::decode`",
+    note = "`FromEnvelope` is implemented with `fn from_envelope(envelope: &Envelope, meta: &EventMeta) -> Result<Self, DecodeError>`"
 )]
 pub trait FromEnvelope: Sized {
-    /// Decodes the handler's input from the envelope.
+    /// Decodes the handler's input from the envelope, given the delivery's
+    /// meta.
+    ///
+    /// `meta` is [`EventMeta::decode`] of `envelope`, which the caller
+    /// decoded once: read the routing fields from it, not from
+    /// `envelope.meta`.
     ///
     /// # Errors
     ///
@@ -112,7 +145,7 @@ pub trait FromEnvelope: Sized {
     /// [`Envelope::decode`], which that decode runs after the kind check,
     /// produces the JSON error; and [`DecodeError::input`] produces a reason
     /// of the input's own.
-    fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError>;
+    fn from_envelope(envelope: &Envelope, meta: &EventMeta) -> Result<Self, DecodeError>;
 }
 
 /// Every serde [`Payload`] decodes in two steps: the kind check, then the
@@ -125,7 +158,7 @@ pub trait FromEnvelope: Sized {
 ///
 #[cfg_attr(feature = "derive", doc = "```")]
 #[cfg_attr(not(feature = "derive"), doc = "```ignore")]
-/// use octoevents::{DecodeError, Envelope, EventKind, FromEnvelope, HeaderMeta};
+/// use octoevents::{DecodeError, Envelope, EventKind, EventMeta, FromEnvelope, WebhookMeta};
 ///
 /// #[derive(serde::Deserialize, octoevents::Payload)]
 /// #[payload(EventKind::Issues)]
@@ -133,21 +166,23 @@ pub trait FromEnvelope: Sized {
 /// #[derive(serde::Deserialize)]
 /// struct Numbered { number: u64 }
 ///
-/// let envelope = Envelope::new(HeaderMeta::new("delivery", EventKind::PullRequest), br#"{"issue":{"number":7}}"#);
+/// let envelope = Envelope::new(WebhookMeta::new("delivery", EventKind::PullRequest), br#"{"issue":{"number":7}}"#);
 ///
 /// // The bytes would fit the view; the kind is what is wrong.
 /// assert!(matches!(
-///     IssueNumber::from_envelope(&envelope),
+///     IssueNumber::from_envelope(&envelope, &EventMeta::decode(&envelope)?),
 ///     Err(DecodeError::KindMismatch {
 ///         expected: EventKind::Issues,
 ///         actual: EventKind::PullRequest,
 ///     })
 /// ));
+/// # Ok::<(), DecodeError>(())
 /// ```
 ///
 /// This is also the decode of a single-purpose receiver: a handler over the
-/// [`Envelope`] whose webhook delivers one kind calls `P::from_envelope`
-/// instead of matching on [`EventMeta::kind`] itself. When the webhook
+/// [`Envelope`] whose webhook delivers one kind decodes with
+/// [`Envelope::decode`] after checking [`WebhookMeta::kind`](crate::WebhookMeta::kind),
+/// or calls `P::from_envelope` with the meta [`EventMeta::decode`] returns. When the webhook
 /// delivers several kinds, a handler that sees every envelope guards on
 /// `meta.kind` (and the action) first, or every other kind fails the
 /// delivery with a kind mismatch.
@@ -161,11 +196,11 @@ pub trait FromEnvelope: Sized {
 // trait's own message names both routes to becoming one.
 #[diagnostic::do_not_recommend]
 impl<T: Payload + DeserializeOwned> FromEnvelope for T {
-    fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError> {
-        if envelope.meta.kind != T::KIND {
+    fn from_envelope(envelope: &Envelope, meta: &EventMeta) -> Result<Self, DecodeError> {
+        if meta.kind != T::KIND {
             return Err(DecodeError::KindMismatch {
                 expected: T::KIND,
-                actual: envelope.meta.kind.clone(),
+                actual: meta.kind.clone(),
             });
         }
         envelope.decode()
@@ -173,13 +208,13 @@ impl<T: Payload + DeserializeOwned> FromEnvelope for T {
 }
 
 impl FromEnvelope for EventMeta {
-    fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError> {
-        Ok(envelope.meta.clone())
+    fn from_envelope(_envelope: &Envelope, meta: &EventMeta) -> Result<Self, DecodeError> {
+        Ok(meta.clone())
     }
 }
 
 impl FromEnvelope for Envelope {
-    fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError> {
+    fn from_envelope(envelope: &Envelope, _meta: &EventMeta) -> Result<Self, DecodeError> {
         Ok(envelope.clone())
     }
 }
@@ -188,10 +223,13 @@ impl FromEnvelope for Envelope {
 /// decoded as `P`.
 ///
 /// Distinct from [`Envelope`], whose payload is bytes: here the payload is
-/// already decoded, and the handler has one source of truth for it. `P` is
-/// any [`FromEnvelope`]; the usual one is a [`Payload`] view, and
-/// `Event<P>` is then a `Payload` of the same kind, so `on` takes a handler
-/// over it under actions alone exactly as it takes one over `P`.
+/// already decoded, and the handler has one source of truth for it. The meta
+/// is the one the dispatcher decoded for the delivery, handed to `P`'s decode
+/// as well. `P` is any [`FromEnvelope`]; the usual one is a [`Payload`] view,
+/// and `Event<P>` is then a `Payload` of the same kind, so `on` takes a
+/// handler over it under actions alone exactly as it takes one over `P`.
+/// `Event<Envelope>` is the meta beside the bytes, for a handler in the
+/// `always` tier that forwards by the installation.
 ///
 /// A parameter destructures it in place, giving the two halves names without
 /// a second statement; taking it whole and reading `event.meta` and
@@ -236,10 +274,10 @@ pub struct Event<P> {
 }
 
 impl<P: FromEnvelope> FromEnvelope for Event<P> {
-    fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError> {
+    fn from_envelope(envelope: &Envelope, meta: &EventMeta) -> Result<Self, DecodeError> {
         Ok(Self {
-            meta: envelope.meta.clone(),
-            payload: P::from_envelope(envelope)?,
+            meta: meta.clone(),
+            payload: P::from_envelope(envelope, meta)?,
         })
     }
 }
@@ -302,14 +340,16 @@ impl<P: Payload> Payload for Event<P> {
 ///
 #[cfg_attr(feature = "derive", doc = "```")]
 #[cfg_attr(not(feature = "derive"), doc = "```ignore")]
-/// use octoevents::{Envelope, EventKind, FromEnvelope as _, HeaderMeta, Payload};
+/// use octoevents::{Envelope, EventKind, EventMeta, FromEnvelope as _, Payload, WebhookMeta};
 ///
 /// #[derive(serde::Deserialize, Payload)]
 /// #[payload(EventKind::from_static("future_event"))]
 /// struct FutureEvent { number: u64 }
 ///
-/// let envelope = Envelope::new(HeaderMeta::new("delivery", EventKind::from("future_event")), br#"{"number":7}"#);
-/// assert_eq!(FutureEvent::from_envelope(&envelope).unwrap().number, 7);
+/// let envelope = Envelope::new(WebhookMeta::new("delivery", EventKind::from("future_event")), br#"{"number":7}"#);
+/// let meta = EventMeta::decode(&envelope)?;
+/// assert_eq!(FutureEvent::from_envelope(&envelope, &meta)?.number, 7);
+/// # Ok::<(), octoevents::DecodeError>(())
 /// ```
 ///
 /// The derive expands to the impl below, with `Self: DeserializeOwned` as
@@ -410,7 +450,8 @@ pub trait Payload: FromEnvelope {
 
 #[cfg(test)]
 mod tests {
-    use crate::{DecodeError, EventKind, FromEnvelope, test_support};
+    use crate::test_support::{self, input};
+    use crate::{DecodeError, EventKind};
 
     /// A view over an `issues` payload, bound to its kind by its `Payload`
     /// impl: what its decode checks before it reads the bytes.
@@ -434,7 +475,7 @@ mod tests {
         // that is what the error names rather than a missing field.
         let envelope = test_support::envelope(EventKind::PullRequest, br#"{"issue":{"number":7}}"#);
 
-        let error = IssueNumber::from_envelope(&envelope).unwrap_err();
+        let error = input::<IssueNumber>(&envelope).unwrap_err();
 
         assert!(matches!(
             error,
@@ -449,7 +490,7 @@ mod tests {
     fn a_payload_decodes_an_envelope_of_its_kind() {
         let envelope = test_support::envelope(EventKind::Issues, br#"{"issue":{"number":7}}"#);
 
-        let payload = IssueNumber::from_envelope(&envelope).unwrap();
+        let payload = input::<IssueNumber>(&envelope).unwrap();
 
         assert_eq!(payload.issue.number, 7);
     }
@@ -459,7 +500,7 @@ mod tests {
         // Right kind, wrong shape: the kind check passed, serde did not.
         let envelope = test_support::envelope(EventKind::Issues, br#"{"issue":{}}"#);
 
-        let error = IssueNumber::from_envelope(&envelope).unwrap_err();
+        let error = input::<IssueNumber>(&envelope).unwrap_err();
 
         assert!(matches!(error, DecodeError::Json(_)));
     }

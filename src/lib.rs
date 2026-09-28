@@ -9,18 +9,18 @@
 //!
 //! ```
 //! use octoevents::{
-//!     Action, BoxError, Dispatcher, Envelope, EventKind, Verifier, WebhookReceiverBuilder,
+//!     Action, BoxError, Dispatcher, EventKind, EventMeta, Verifier, WebhookReceiverBuilder,
 //!     WebhookSecret,
 //! };
 //!
-//! // Runs for `issues.opened`. The envelope is the unit of receipt, which the
-//! // receiver authenticated before handing it over: its meta (delivery ID,
-//! // kind, action, repository, sender, ...) and the raw payload bytes.
+//! // Runs for `issues.opened`, handed the delivery's meta (delivery ID, kind,
+//! // action, repository, sender, ...), which the dispatcher decoded from the
+//! // payload the receiver authenticated.
 //! // `BoxError` is the crate's erased error; any
 //! // `Error + Send + Sync + 'static` converts into it with `?`, and a
 //! // handler with an error type of its own keeps it.
-//! async fn thank(envelope: Envelope) -> Result<(), BoxError> {
-//!     let sender = envelope.meta.sender.map(|s| s.login).unwrap_or_default();
+//! async fn thank(meta: EventMeta) -> Result<(), BoxError> {
+//!     let sender = meta.sender.map(|s| s.login).unwrap_or_default();
 //!     println!("Thank you for your contribution, @{sender}! :)");
 //!     Ok(())
 //! }
@@ -62,29 +62,28 @@
 //!
 //! # Concepts
 //!
-//! - [`Envelope`]: the unit of receipt, an [`EventMeta`] beside the exact
-//!   payload bytes. It is data and makes no claim that it was authenticated:
-//!   [`Envelope::new`] builds one from a [`HeaderMeta`] and the bytes, never
-//!   a struct literal, so the meta and the bytes cannot disagree at birth. An
-//!   envelope a trusted transport forwarded is read back through serde, meta
-//!   as forwarded.
+//! - [`Envelope`]: the unit of receipt, what arrived: the [`WebhookMeta`]
+//!   read from the headers beside the exact payload bytes. Building one reads
+//!   nothing of the payload and cannot fail. It is data and makes no claim
+//!   that it was authenticated: [`Envelope::new`] builds one from a
+//!   `WebhookMeta` and the bytes, and an envelope a trusted transport
+//!   forwarded is read back through serde.
 //! - [`authenticate`]: the one path from an untrusted request to an envelope
 //!   that can be trusted. It verifies the signature over the body, then
 //!   builds the envelope; the receiver is built on it, and a received
 //!   envelope is trustworthy because it came from there.
 //! - [`EventMeta`]: the delivery ID, [`EventKind`], [`Action`], installation
 //!   ID, repository, organization, sender and target. The first two and the
-//!   target come from the headers; the rest come from the *probe*, a
-//!   best-effort read of the payload that runs when the envelope is built,
-//!   keeps five top-level values, skips the rest, and never fails. It runs
-//!   for every envelope, whatever the handler's input will be, because the
-//!   dispatcher routes by the action and the action is in the payload. Its
-//!   UTF-8 validation pass and JSON scan precede a handler's decode; the cost
-//!   is stated on `EventMeta`.
+//!   target are the `WebhookMeta`'s; the rest are decoded from the payload by
+//!   [`EventMeta::decode`], strictly, in GitHub's shape. The dispatcher
+//!   decodes it once per delivery, since it routes by the action and the
+//!   action is in the payload, and hands it to every input it builds; a
+//!   payload whose meta does not decode fails the delivery there.
 //! - [`Handler<I>`](Handler): consumer code over one input `I`, any
-//!   [`FromEnvelope`]: the `Envelope`, the `EventMeta`, a [`Payload`] view
-//!   (a serde type declaring its kind with `#[derive(Payload)]`), or
-//!   [`Event<P>`](Event) for the meta beside the payload. An `async fn`, a
+//!   [`FromEnvelope`], built from the envelope and its `EventMeta`: the
+//!   `Envelope`, the `EventMeta`, a [`Payload`] view (a serde type declaring
+//!   its kind with `#[derive(Payload)]`), or [`Event<P>`](Event) for the meta
+//!   beside the payload. An `async fn`, a
 //!   struct, a closure, or an `Arc` of any of them, with any error that
 //!   converts into [`BoxError`]: an `Error + Send + Sync + 'static` type of
 //!   its own (any `Error + 'static` on `wasm32`), `BoxError` itself,
@@ -96,15 +95,16 @@
 //!   its kinds, or, for a handler over a payload, actions alone or
 //!   [`AnyAction`]. Each handler's error is boxed where it is registered,
 //!   so handlers share no error enum. A failure is a [`DispatchError`]
-//!   naming the tier, the handler and its registration site, the boxed
-//!   error its source. The policy the tiers cannot express lives in a
-//!   handler wrapping `dispatch`, [the policy seam](Dispatcher#the-policy-seam).
+//!   naming the handler and its registration site, the boxed
+//!   error its source, or naming no handler when the meta did not decode.
+//!   The policy the tiers cannot express lives in a handler wrapping
+//!   `dispatch`, [the policy seam](Dispatcher#the-policy-seam).
 //! - [`WebhookReceiver`]: authenticates, bounds and dispatches one request,
 //!   through [`WebhookReceiver::receive`] over an `http::Request` (`http-body`
 //!   feature) or [`WebhookReceiver::receive_bytes`] over the `http::HeaderMap`
 //!   and the body already read, answered as the `http::StatusCode`. Built
 //!   with [`WebhookReceiverBuilder`], which takes the [`Verifier`] (or a
-//!   [`VerifierSource`] choosing one per request from the [`HeaderMeta`], for
+//!   [`VerifierSource`] choosing one per request from the [`WebhookMeta`], for
 //!   several GitHub Apps at one URL), the body limit and `ping` handling.
 //! - [`Verifier`] and [`WebhookSecret`]: the configured secrets and the HMAC
 //!   comparison; [`Verifier::also`] opens a rotation window, and
@@ -168,11 +168,11 @@
 //!   as [`ReceiveError::UnknownTarget`].
 //! - `octoevents.dispatch`, at INFO, around [`Dispatcher::dispatch`], inside
 //!   the receive span when the dispatcher is the receiver's handler. It
-//!   records `delivery_id`, `event` and, when the delivery has them, `action`
-//!   and `installation_id` on open; on the way out `outcome`, one of `ok`,
+//!   records `delivery_id`, `event` and, when the decoded meta has them,
+//!   `action` and `installation_id` on open; on the way out `outcome`, one of `ok`,
 //!   `handler_error`, `unmatched_ok` and `unmatched_error`, and when a
-//!   handler failed the tier it ran in as `tier`, its name as `handler`
-//!   and its registration site as `registration_site`.
+//!   handler failed its name as `handler` and its registration site as
+//!   `registration_site`.
 //!
 //! A field recorded in more than one place is recorded in one form
 //! everywhere: `delivery_id`, `event` and `action` as strings,
@@ -194,12 +194,13 @@
 //! `unmatched_error`.
 //!
 //! A failed delivery also emits one event at ERROR, `handler failed`, with
-//! `delivery_id`, `event`, and `action` and `installation_id` when the
-//! delivery has them, and the handler's error, boxed, as `error`: an error
+//! `delivery_id` and `event` from the headers, `action` and
+//! `installation_id` when the handler failed with a [`DispatchError`] whose
+//! decoded meta has them, and the handler's error, boxed, as `error`: an error
 //! value, so the subscriber renders its text and the chain of sources beneath
 //! it (the `fmt` subscriber prints `error=<text> error.sources=[<cause>,
-//! ..]`). With a dispatcher the text says where (the tier, the handler and
-//! its registration site) and the chain why (the application error, and its
+//! ..]`). With a dispatcher the text says where (the handler and its
+//! registration site) and the chain why (the application error, and its
 //! own sources). A subscriber filtering at ERROR sees every failed delivery
 //! and why; the 500 it is answered with is
 //! the receive span's `status`, since a handler failure is answered nothing
@@ -294,7 +295,9 @@ pub use envelope::{BodyError, DecodeError, Envelope, ReceiveError};
 pub use events::{Action, EventKind, UnknownAction, UnknownEventKind};
 pub use handler::Handler;
 pub use matcher::{AnyAction, EventMatcher, IntoMatcher};
-pub use meta::{AccountMeta, EventMeta, HeaderMeta, RepositoryMeta, TargetType, UnknownTargetType};
+pub use meta::{
+    AccountMeta, EventMeta, RepositoryMeta, TargetType, UnknownTargetType, WebhookMeta,
+};
 /// Derives [`Payload`] for a serde type, declaring its kind:
 /// `#[derive(Payload)] #[payload(EventKind::..)]`. See the trait.
 #[cfg(feature = "derive")]

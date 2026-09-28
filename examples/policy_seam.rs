@@ -48,12 +48,13 @@
 //! as a closure, each with the error type it has; the dispatcher boxes every
 //! one at its registration, so no enum joins them:
 //!
-//! - [`Auditor`] is a `Handler<Envelope>` in the `always` tier: it runs for
-//!   every delivery the dispatcher is handed, reads the metadata off the
-//!   envelope, and, with nothing decoded on its behalf, runs even for a
-//!   payload octocrab cannot represent. It cannot fail, and says so with
+//! - [`Auditor`] is a `Handler<EventMeta>` in the `always` tier: it runs for
+//!   every delivery the dispatcher is handed, reads the meta the dispatcher
+//!   decoded once to route by, and, with no view decoded on its behalf, runs
+//!   even for a payload octocrab cannot represent. It cannot fail, and says so with
 //!   `Infallible`. It does not see what the seam answers before calling
-//!   `dispatch`, a redelivery, nor the `ping` the receiver answered itself; a
+//!   `dispatch`, a redelivery, nor the `ping` the receiver answered itself,
+//!   nor a delivery whose meta did not decode, which fails first; a
 //!   count of every delivery the receiver hands over belongs at the top of
 //!   [`Inbox`], and one that must include the `ping` needs the receiver
 //!   built with `handle_ping(true)` as well.
@@ -72,7 +73,7 @@
 //! [`Inbox`] logs every failed delivery, source chain included, before
 //! returning the error, since the receiver answers a handler
 //! error with a bare 500 and says nothing else: the dispatcher's
-//! `DispatchError` names the tier, the delivery, the failing handler and the
+//! `DispatchError` names the delivery, the failing handler and the
 //! line that registered it, and its source is the handler's error, which the
 //! reporting code downcasts to tell a decode failure from the application's own.
 //!
@@ -95,8 +96,8 @@ use std::{
 use axum::{Router, routing::post_service};
 use octocrab::models::webhook_events::{WebhookEvent, payload::PullRequestWebhookEventPayload};
 use octoevents::{
-    Action, BoxError, DecodeError, DispatchError, Dispatcher, Envelope, Event, EventKind, Handler,
-    Match, Verifier, WebhookReceiverBuilder, WebhookSecret,
+    Action, BoxError, DecodeError, DispatchError, Dispatcher, Envelope, Event, EventKind,
+    EventMeta, Handler, Match, Verifier, WebhookReceiverBuilder, WebhookSecret,
 };
 
 /// A stand-in for a database: every envelope stored, by delivery ID, and the
@@ -148,12 +149,17 @@ impl Store {
 }
 
 /// Everything the seam can fail with: its own store, or whatever the
-/// dispatcher reports, tier, handler and registration site included.
+/// dispatcher reports, handler and registration site included.
+///
+/// The dispatch error is this error's `source()`, not forwarded through it
+/// with `#[error(transparent)]`, which would skip it: the receiver walks the
+/// chain to the `DispatchError` for the failed delivery's action and
+/// installation ID.
 #[derive(Debug, thiserror::Error)]
 enum InboxError {
     #[error(transparent)]
     Store(#[from] StoreError),
-    #[error(transparent)]
+    #[error("the dispatcher failed the delivery")]
     Dispatch(#[from] DispatchError),
 }
 
@@ -218,16 +224,15 @@ impl Inbox {
     }
 }
 
-/// Runs for every delivery the dispatcher is handed, reading only what
-/// `EventMeta` carries off the envelope. Printing cannot fail, and the error
+/// Runs for every delivery the dispatcher is handed whose meta decoded,
+/// reading only the `EventMeta` the dispatcher decoded. Printing cannot fail, and the error
 /// type says so.
 struct Auditor;
 
-impl Handler<Envelope> for Auditor {
+impl Handler<EventMeta> for Auditor {
     type Error = Infallible;
 
-    async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
-        let meta = &envelope.meta;
+    async fn handle(&self, meta: EventMeta) -> Result<(), Self::Error> {
         println!(
             "audit {} {} {:?} from {}",
             meta.delivery_id,
@@ -313,9 +318,10 @@ fn dispatcher() -> Dispatcher {
 ///
 /// The receiver's response is GitHub's delivery record, not a log. The
 /// handler calls this so an operator without a `tracing` subscriber learns
-/// why a delivery failed. A dispatch error names the tier, the delivery, the
-/// failing handler and the line that registered it; its source is the
-/// handler's error, boxed, which a downcast gets back.
+/// why a delivery failed. A dispatch error names the delivery, the
+/// failing handler and the line that registered it, or no handler when the
+/// delivery's meta did not decode; its source is the handler's error, or the
+/// decode error, boxed, which a downcast gets back.
 fn report(error: &InboxError) {
     eprintln!("{error}");
     let mut cause = error.source();
@@ -326,7 +332,13 @@ fn report(error: &InboxError) {
     if let InboxError::Dispatch(dispatch) = error
         && dispatch.source.is::<DecodeError>()
     {
-        eprintln!("  (octocrab's model no longer fits GitHub's payload: a deploy, not a page)");
+        if dispatch.handler().is_some() {
+            eprintln!("  (octocrab's model no longer fits GitHub's payload: a deploy, not a page)");
+        } else {
+            eprintln!(
+                "  (the payload is outside GitHub's schema: stored, redeliver it once fixed)"
+            );
+        }
     }
 }
 
@@ -356,7 +368,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use octoevents::{HeaderMeta, header};
+    use octoevents::{WebhookMeta, header};
 
     use super::*;
 
@@ -407,7 +419,7 @@ mod tests {
     async fn a_delivery_is_stored_then_routed() {
         let (inbox, counter) = inbox();
         let envelope = Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::PullRequest),
+            WebhookMeta::new("delivery-1", EventKind::PullRequest),
             OPENED,
         );
 
@@ -426,7 +438,7 @@ mod tests {
     async fn a_redelivery_is_answered_with_success_without_routing() {
         let (inbox, counter) = inbox();
         let envelope = Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::PullRequest),
+            WebhookMeta::new("delivery-1", EventKind::PullRequest),
             OPENED,
         );
 
@@ -459,7 +471,7 @@ mod tests {
                 .build(),
         };
         let envelope = Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::PullRequest),
+            WebhookMeta::new("delivery-1", EventKind::PullRequest),
             OPENED,
         );
 
@@ -482,13 +494,41 @@ mod tests {
         assert_eq!(recovered.matched, Match::Matched);
     }
 
+    /// The dispatcher's error stays in the seam's error chain, where the
+    /// receiver finds it to record the failed delivery's action and
+    /// installation ID.
+    #[tokio::test]
+    async fn a_failed_dispatch_stays_in_the_error_chain() {
+        let inbox = Inbox {
+            store: Store::default(),
+            dispatcher: Dispatcher::builder()
+                .on(EventKind::PullRequest, |_: EventMeta| async {
+                    Err::<(), _>("the GitHub API is unavailable")
+                })
+                .build(),
+        };
+        let envelope = Envelope::new(
+            WebhookMeta::new("delivery-1", EventKind::PullRequest),
+            OPENED,
+        );
+
+        let error = inbox.handle(envelope).await.unwrap_err();
+
+        let dispatch = error
+            .source()
+            .and_then(|source| source.downcast_ref::<DispatchError>())
+            .expect("the dispatch error is the seam error's source");
+        assert_eq!(dispatch.action, Some(Action::Opened));
+        assert_eq!(dispatch.installation_id, Some(7_777_777));
+    }
+
     /// A kind the route table never registered is dead-lettered, not failed,
     /// and GitHub sees success.
     #[tokio::test]
     async fn an_unknown_kind_is_dead_lettered_and_succeeds() {
         let (inbox, counter) = inbox();
         let envelope = Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::Push),
+            WebhookMeta::new("delivery-1", EventKind::Push),
             br#"{"ref":"refs/heads/main"}"#,
         );
 
@@ -507,7 +547,7 @@ mod tests {
     async fn an_added_action_of_a_known_kind_is_tolerated() {
         let (inbox, _) = inbox();
         let envelope = Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::PullRequest),
+            WebhookMeta::new("delivery-1", EventKind::PullRequest),
             br#"{"action":"future_action","number":2}"#,
         );
 

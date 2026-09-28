@@ -5,7 +5,7 @@
 use std::{convert::Infallible, sync::Arc};
 
 use octoevents::{
-    Action, Dispatcher, Envelope, EventKind, EventMatcher, EventMeta, Handler, HeaderMeta, Match,
+    Action, Dispatcher, Envelope, EventKind, EventMatcher, EventMeta, Handler, Match, WebhookMeta,
 };
 use tokio::sync::Mutex;
 
@@ -30,7 +30,7 @@ async fn static_and_forwarded_wire_names_route_with_the_same_identity() {
             .on((kind.clone(), action), recording(&calls, "registered"))
             .build();
         let envelope = Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::from(kind.to_string())),
+            WebhookMeta::new("delivery-1", EventKind::from(kind.to_string())),
             payload,
         );
         let forwarded = serde_json::to_string(&envelope).unwrap();
@@ -71,7 +71,7 @@ async fn duplicate_kinds_in_one_registration_run_once_per_delivery() {
     for kind in [EventKind::Push, EventKind::Issues, EventKind::Push] {
         calls.lock().await.clear();
         let outcome = dispatcher
-            .dispatch(Envelope::new(HeaderMeta::new("delivery-1", kind), b"{}"))
+            .dispatch(Envelope::new(WebhookMeta::new("delivery-1", kind), b"{}"))
             .await;
         assert_eq!(outcome.matched, Match::Matched);
         outcome.result.unwrap();
@@ -98,7 +98,7 @@ async fn duplicate_actions_in_one_registration_have_no_additional_effect() {
         calls.lock().await.clear();
         let outcome = dispatcher
             .dispatch(Envelope::new(
-                HeaderMeta::new("delivery-1", EventKind::Issues),
+                WebhookMeta::new("delivery-1", EventKind::Issues),
                 payload,
             ))
             .await;
@@ -153,7 +153,7 @@ async fn overlapping_selections_run_at_the_first_applicable_position() {
             calls.lock().await.clear();
             let outcome = dispatcher
                 .dispatch(Envelope::new(
-                    HeaderMeta::new("delivery-1", EventKind::Issues),
+                    WebhookMeta::new("delivery-1", EventKind::Issues),
                     payload,
                 ))
                 .await;
@@ -180,7 +180,7 @@ async fn shared_handler_registrations_at_the_same_source_location_remain_indepen
 
     let outcome = dispatcher
         .dispatch(Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::Issues),
+            WebhookMeta::new("delivery-1", EventKind::Issues),
             br#"{"action":"opened"}"#,
         ))
         .await;
@@ -216,7 +216,7 @@ async fn duplicate_relative_actions_run_the_payload_handler_once() {
 
     let outcome = dispatcher
         .dispatch(Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::Issues),
+            WebhookMeta::new("delivery-1", EventKind::Issues),
             br#"{"action":"opened","number":42}"#,
         ))
         .await;

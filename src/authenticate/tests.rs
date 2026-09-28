@@ -6,55 +6,49 @@
 //! checked against; [`headers`] is the well-formed header set of a
 //! `pull_request` delivery, for a test to start from.
 
-/// What `authenticate` produces: it verifies, then reads the headers and
-/// probes the payload, keeping the bytes exactly as they arrived.
+/// What `authenticate` produces: it verifies, then reads the headers,
+/// keeping the bytes exactly as they arrived and reading nothing of them.
 mod receive {
     use bytes::Bytes;
 
     use crate::test_support::{BODY, headers, headers_from, verifier};
     use crate::{
-        AccountMeta, Action, EventKind, EventMeta, ReceiveError, RepositoryMeta, SignatureError,
-        TargetType, authenticate,
+        Action, EventKind, EventMeta, ReceiveError, SignatureError, TargetType, WebhookMeta,
+        authenticate,
     };
 
     #[test]
-    fn verifies_then_reads_the_metadata() {
+    fn verifies_then_carries_the_webhook_meta_and_the_bytes_untouched() {
         let verifier = verifier();
         let signature = verifier.sign(BODY).to_string();
 
         let envelope =
             authenticate(&verifier, &headers(&signature), Bytes::from_static(BODY)).unwrap();
 
-        let meta = &envelope.meta;
-        assert_eq!(meta.delivery_id, "delivery");
-        assert_eq!(meta.kind, EventKind::PullRequest);
-        assert_eq!(meta.action, Some(Action::Opened));
-        assert_eq!(meta.installation_id, Some(42));
-        assert_eq!(
-            meta.repository,
-            Some(RepositoryMeta::new(1, "repo", "octo/repo", "octo"))
-        );
-        assert_eq!(meta.organization, Some(AccountMeta::new(9919, "github")));
-        assert_eq!(meta.sender, Some(AccountMeta::new(2, "monalisa")));
-        assert_eq!(meta.target_type, Some(TargetType::Repository));
-        assert_eq!(meta.target_id, Some(7));
+        let mut expected = WebhookMeta::new("delivery", EventKind::PullRequest);
+        expected.target_type = Some(TargetType::Repository);
+        expected.target_id = Some(7);
+        assert_eq!(envelope.meta, expected);
         assert_eq!(envelope.raw_payload, Bytes::from_static(BODY));
     }
 
     #[test]
-    fn reads_the_target_from_the_headers_when_the_payload_yields_nothing() {
-        // The target comes from the headers, not from the payload, so a
-        // payload the probe reads nothing from still has it.
-        let body = Bytes::from_static(b"not json");
-        let signature = verifier().sign(&body).to_string();
+    fn builds_an_envelope_over_any_authenticated_bytes() {
+        // Nothing of the payload is read, so bytes that are not JSON, or not
+        // an object, build an envelope as a payload GitHub sends does; what
+        // they say is the dispatcher's to decode.
+        for body in [&b"not json"[..], b"[]", b"", b"\xff"] {
+            let body = Bytes::from_static(body);
+            let signature = verifier().sign(&body).to_string();
 
-        let envelope = authenticate(&verifier(), &headers(&signature), body.clone()).unwrap();
+            let envelope = authenticate(&verifier(), &headers(&signature), body.clone()).unwrap();
 
-        let mut expected = EventMeta::new("delivery", EventKind::PullRequest);
-        expected.target_type = Some(TargetType::Repository);
-        expected.target_id = Some(7);
-        assert_eq!(envelope.meta, expected);
-        assert_eq!(envelope.raw_payload, body);
+            let mut expected = WebhookMeta::new("delivery", EventKind::PullRequest);
+            expected.target_type = Some(TargetType::Repository);
+            expected.target_id = Some(7);
+            assert_eq!(envelope.meta, expected);
+            assert_eq!(envelope.raw_payload, body);
+        }
     }
 
     #[test]
@@ -71,7 +65,8 @@ mod receive {
         let envelope = authenticate(&verifier(), &headers, body).unwrap();
 
         assert_eq!(envelope.meta.kind, EventKind::from("brand_new"));
-        assert_eq!(envelope.meta.action, Some(Action::from("brand_new")));
+        let meta = EventMeta::decode(&envelope).unwrap();
+        assert_eq!(meta.action, Some(Action::from("brand_new")));
     }
 
     #[test]
@@ -111,7 +106,6 @@ mod receive {
             authenticate(&verifier(), &headers, Bytes::from_static(UNICODE_BODY)).unwrap();
 
         assert_eq!(envelope.raw_payload.as_ref(), UNICODE_BODY);
-        assert_eq!(envelope.meta.action, Some(Action::Opened));
 
         let decoded: serde_json::Value = envelope.decode().unwrap();
         assert_eq!(decoded["zen"], "⚡ é café 🐙");
@@ -288,8 +282,7 @@ mod header_map {
 
     use crate::test_support::{BODY, headers, headers_from, verifier};
     use crate::{
-        Action, EventKind, HeaderMeta, ReceiveError, SignatureError, TargetType, authenticate,
-        header,
+        EventKind, ReceiveError, SignatureError, TargetType, WebhookMeta, authenticate, header,
     };
 
     #[test]
@@ -312,10 +305,8 @@ mod header_map {
 
         assert_eq!(envelope.meta.delivery_id, "delivery");
         assert_eq!(envelope.meta.kind, EventKind::PullRequest);
-        assert_eq!(envelope.meta.action, Some(Action::Opened));
         assert_eq!(envelope.meta.target_type, Some(TargetType::Integration));
         assert_eq!(envelope.meta.target_id, Some(12345));
-        assert_eq!(envelope.meta.installation_id, Some(42));
     }
 
     #[test]
@@ -325,7 +316,7 @@ mod header_map {
         let signature = verifier().sign(BODY).to_string();
         let headers = headers(&signature);
 
-        let meta = HeaderMeta::from_headers(&headers).unwrap();
+        let meta = WebhookMeta::from_headers(&headers).unwrap();
         let envelope = authenticate(&verifier(), &headers, Bytes::from_static(BODY)).unwrap();
 
         assert_eq!(meta.delivery_id, envelope.meta.delivery_id);
@@ -346,13 +337,13 @@ mod header_map {
         no_event.insert(header::DELIVERY_ID, HeaderValue::from_static("delivery"));
 
         assert_eq!(
-            HeaderMeta::from_headers(&neither),
+            WebhookMeta::from_headers(&neither),
             Err(ReceiveError::MissingHeader {
                 name: header::DELIVERY_ID
             })
         );
         assert_eq!(
-            HeaderMeta::from_headers(&no_event),
+            WebhookMeta::from_headers(&no_event),
             Err(ReceiveError::MissingHeader {
                 name: header::EVENT_NAME
             })

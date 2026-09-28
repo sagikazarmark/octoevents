@@ -4,7 +4,7 @@
 
 use octocrab::models::webhook_events::{WebhookEvent, payload};
 
-use crate::{DecodeError, Envelope, EventKind, FromEnvelope};
+use crate::{DecodeError, Envelope, EventKind, EventMeta, FromEnvelope};
 
 // Every per-kind payload struct octocrab models, bound to its event kind so
 // each can be a handler's input. The structs carry no
@@ -154,10 +154,10 @@ octocrab_payloads! {
 ///
 /// [`WebhookEventPayload::Unknown`]: octocrab::models::webhook_events::WebhookEventPayload::Unknown
 impl FromEnvelope for WebhookEvent {
-    fn from_envelope(envelope: &Envelope) -> Result<Self, DecodeError> {
+    fn from_envelope(envelope: &Envelope, meta: &EventMeta) -> Result<Self, DecodeError> {
         // octocrab accepts an already-encoded JSON string; its bare-name path
         // adds quotes without escaping, reinterpreting literal quotes and escapes.
-        let name = serde_json::to_string(envelope.meta.kind.as_str()).map_err(DecodeError::Json)?;
+        let name = serde_json::to_string(meta.kind.as_str()).map_err(DecodeError::Json)?;
         Self::try_from_header_and_body(&name, &envelope.raw_payload).map_err(DecodeError::Json)
     }
 }
@@ -169,16 +169,16 @@ mod tests {
 
     use super::WebhookEvent;
     use crate::{
-        DecodeError, Envelope, Event, EventKind, FromEnvelope,
+        DecodeError, Envelope, Event, EventKind, EventMeta, FromEnvelope,
         test_support::{
-            check_run_completed, envelope, installation_created, installation_repositories_removed,
-            ping, pull_request_opened, unknown, unrepresentable,
+            check_run_completed, envelope, input, installation_created,
+            installation_repositories_removed, ping, pull_request_opened, unknown, unrepresentable,
         },
     };
 
     #[test]
     fn returns_octocrab_models_when_the_payload_is_supported() {
-        let event = WebhookEvent::from_envelope(&envelope(
+        let event = input::<WebhookEvent>(&envelope(
             EventKind::Ping,
             br#"{"zen":"Keep it logically awesome."}"#,
         ))
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn represents_unknown_event_kinds_as_generic_json() {
-        let event = WebhookEvent::from_envelope(&envelope(
+        let event = input::<WebhookEvent>(&envelope(
             EventKind::from("future_event"),
             br#"{"future":true}"#,
         ))
@@ -216,9 +216,8 @@ mod tests {
             r"future\\event",
             r#"future\"event"#,
         ] {
-            let event =
-                Event::<WebhookEvent>::from_envelope(&envelope(EventKind::from(name), b"{}"))
-                    .unwrap_or_else(|error| panic!("{name:?}: {error}"));
+            let event = input::<Event<WebhookEvent>>(&envelope(EventKind::from(name), b"{}"))
+                .unwrap_or_else(|error| panic!("{name:?}: {error}"));
 
             assert!(matches!(
                 &event.meta.kind,
@@ -237,8 +236,8 @@ mod tests {
 
     #[test]
     fn composed_event_preserves_a_known_event_kind() {
-        let event = Event::<WebhookEvent>::from_envelope(&envelope(EventKind::from("ping"), b"{}"))
-            .unwrap();
+        let event =
+            input::<Event<WebhookEvent>>(&envelope(EventKind::from("ping"), b"{}")).unwrap();
 
         assert_eq!(event.meta.kind, EventKind::Ping);
         assert_eq!(event.payload.kind, WebhookEventType::Ping);
@@ -257,7 +256,7 @@ mod tests {
         // path refuses them, and the raw payload is untouched either way.
         let envelope = unrepresentable();
 
-        let error = WebhookEvent::from_envelope(&envelope).unwrap_err();
+        let error = input::<WebhookEvent>(&envelope).unwrap_err();
 
         assert!(matches!(error, DecodeError::Json(_)), "{error:?}");
         assert_eq!(
@@ -269,8 +268,9 @@ mod tests {
     #[test]
     fn fails_for_invalid_json_without_touching_the_raw_bytes() {
         let envelope = envelope(EventKind::Ping, b"not json");
+        let meta = EventMeta::new("delivery", EventKind::Ping);
 
-        assert!(WebhookEvent::from_envelope(&envelope).is_err());
+        assert!(WebhookEvent::from_envelope(&envelope, &meta).is_err());
         assert_eq!(envelope.raw_payload, Bytes::from_static(b"not json"));
     }
 
@@ -288,8 +288,7 @@ mod tests {
         /// into it: the two halves of `Payload` for one of octocrab's structs.
         fn assert_decodes<P: Payload + serde::de::DeserializeOwned>(envelope: &Envelope) {
             assert_eq!(P::KIND, envelope.meta.kind, "bound to the wrong kind");
-            P::from_envelope(envelope)
-                .unwrap_or_else(|error| panic!("{}: {error}", envelope.meta.kind));
+            input::<P>(envelope).unwrap_or_else(|error| panic!("{}: {error}", envelope.meta.kind));
         }
 
         assert_decodes::<PullRequestWebhookEventPayload>(&pull_request_opened());
@@ -329,7 +328,7 @@ mod tests {
         ];
 
         for (envelope, kind) in corpus {
-            let event = WebhookEvent::from_envelope(&envelope)
+            let event = input::<WebhookEvent>(&envelope)
                 .unwrap_or_else(|error| panic!("{}: {error}", envelope.meta.kind));
 
             assert_eq!(event.kind, kind);

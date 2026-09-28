@@ -52,9 +52,19 @@ Expect these distinguishing fields (timestamps and formatting are subscriber-dep
 | Body over the configured limit | 413 | Receive span close: `outcome="payload_too_large"`, `status=413` |
 | Signed request whose handler fails | 500 | `handler failed` ERROR event with the error; receive close with `outcome="handler_error"` |
 
-A dispatcher adds the failing handler, registration site and tier to its error;
+A dispatcher adds the failing handler and its registration site to its error;
 the subscriber renders the source chain beneath it.
 Decode failures appear at the handler whose input needed the decode.
+A payload whose metadata the dispatcher cannot decode (not JSON, or outside GitHub's shape) fails before any handler:
+its error says so and names no handler, and the dispatch span closes with `outcome="unmatched_error"` and no `handler`.
+
+The dispatch span and the `handler failed` event record `action` and `installation_id` from the metadata the dispatcher
+decoded from the payload; the event reads them from the dispatcher's error.
+A receiver whose handler is not a dispatcher, or a delivery whose metadata did not decode,
+records only the header fields, `delivery_id` and `event`.
+A policy seam that wraps the dispatcher's error in its own keeps the two fields only if the `DispatchError` stays in the
+error's `source()` chain: hold it as the wrapper's source, not behind `#[error(transparent)]`,
+which forwards `source()` past it.
 
 ## Interpret results
 

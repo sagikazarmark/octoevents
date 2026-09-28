@@ -22,7 +22,9 @@
 //!   `#[derive(Payload)]`, so the matcher, `AnyAction`, says only that every
 //!   action of that kind is wanted.
 //! - [`Forward`], in the `always` tier, is the part specific to this
-//!   deployment: it serializes each envelope the dispatcher is handed as the
+//!   deployment. A handler over `Event<Envelope>`, it receives the meta the
+//!   dispatcher decoded beside each envelope it is handed, reads the
+//!   installation ID off the meta, and serializes the envelope as the
 //!   crate's
 //!   [wire format](https://docs.rs/octoevents/latest/octoevents/struct.Envelope.html#wire-format),
 //!   the flat JSON document `serde_json::to_string(&envelope)` produces, and
@@ -77,28 +79,35 @@ enum ForwardError {
 
 /// Forwards the envelope to the Restate virtual object for its installation.
 /// Registered in the dispatcher's `always` tier, it receives each envelope
-/// the dispatcher is handed, bytes included, and runs before any routed
-/// handler; a delivery with no installation ID to key on, or one the ingress
-/// refused, fails and is not routed.
+/// the dispatcher is handed, bytes included, beside the meta the dispatcher
+/// decoded, and runs before any routed handler; a delivery with no
+/// installation ID to key on, or one the ingress refused, fails and is not
+/// routed.
 struct Forward {
     object_url: String,
 }
 
-impl Handler<Envelope> for Forward {
+impl Handler<Event<Envelope>> for Forward {
     type Error = ForwardError;
 
-    async fn handle(&self, envelope: Envelope) -> Result<(), Self::Error> {
-        let installation_id = envelope
-            .meta
+    async fn handle(
+        &self,
+        Event {
+            meta,
+            payload: envelope,
+        }: Event<Envelope>,
+    ) -> Result<(), Self::Error> {
+        let installation_id = meta
             .installation_id
             .ok_or_else(|| worker::Error::RustError("payload has no installation ID".into()))?;
         let endpoint = format!(
             "{}/{installation_id}/receive",
             self.object_url.trim_end_matches('/')
         );
-        // The wire format: one flat JSON object, the meta's fields at the top
-        // level beside `raw_payload` as base64, which the service on the
-        // other end reads back into an `Envelope` through serde.
+        // The wire format: one flat JSON object, the header meta's fields at
+        // the top level beside `raw_payload` as base64, which the service on
+        // the other end reads back into an `Envelope` through serde and
+        // dispatches, decoding the meta from the bytes again.
         let body = serde_json::to_string(&envelope)?;
         let mut init = RequestInit::new();
         init.with_method(Method::Post)

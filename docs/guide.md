@@ -34,20 +34,23 @@ flowchart TD
     Verify -->|Mismatch| Refusal
     Verify -->|Authenticated| Headers[Check content type]
     Headers -->|Invalid| Refusal
-    Headers -->|Accepted| Probe[Probe payload metadata, best-effort]
-    Probe --> Envelope[Envelope: metadata and exact payload bytes]
+    Headers -->|Accepted| Envelope[Envelope: header metadata and exact payload bytes]
     Envelope --> Ping{Ping short-circuit enabled?}
     Ping -->|Yes, and kind is ping| Success[204]
-    Ping -->|Otherwise| Dispatch[Dispatcher: route and await handlers]
+    Ping -->|Otherwise| Decode[Dispatcher: decode EventMeta from the payload]
+    Decode -->|Not JSON or outside GitHub's shape| Failure[500]
+    Decode -->|Decoded| Dispatch[Route by kind and action, await handlers]
     Dispatch -->|Success, including unmatched| Success
-    Dispatch -->|Decode or handler error| Failure[500]
+    Dispatch -->|Decode or handler error| Failure
 ```
 
 This diagram shows `receive`, which reads the body from the transport.
 With `receive_bytes`, the caller has already read the body; the receiver checks its length at the same point.
 The signature authenticates the bytes, not the header-derived event kind.
-A malformed JSON payload still produces an envelope;
-it fails only if a selected handler's input requires a decode that cannot succeed.
+The receiver reads nothing of the payload, so a malformed JSON payload still produces an envelope.
+The dispatcher then decodes the delivery's `EventMeta` from it, once, to route by the action:
+a payload that is not JSON, or does not fit GitHub's shape for the meta's fields, fails the delivery with a 500
+before any handler runs, so GitHub records it as failed and it can be redelivered.
 
 Every request goes through three steps:
 
@@ -150,18 +153,20 @@ There is one trait, `Handler<I>`, and the input type `I` says what the handler r
 
 | Input | The handler receives | Decoded | Registered with |
 | --- | --- | --- | --- |
-| `Envelope` | The meta and the exact payload bytes | Nothing | The receiver, `always`, `fallback`, `on` |
-| `EventMeta` | The meta alone | Nothing | `on` |
-| `P: Payload` | The payload as `P` | `P`, kind checked | `on`, with the kind from `P` or spelled |
-| `Event<P>` | The meta beside the payload as `P` | `P`, kind checked | `on`, with the kind from `P` or spelled |
+| `Envelope` | The header meta and the exact payload bytes | Nothing | The receiver, `always`, `fallback`, `on` |
+| `EventMeta` | The meta alone | Nothing | `always`, `on` |
+| `P: Payload` | The payload as `P` | `P`, kind checked | `always`, `on`, with the kind from `P` or spelled |
+| `Event<P>` | The meta beside the payload as `P` | `P`, kind checked | `always`, `on`, with the kind from `P` or spelled |
 
 "Decoded" is what is turned into the handler's input when its route runs,
 and where a delivery can fail before the handler sees it.
-"Nothing" does not mean the payload went unread: construction probes the metadata best-effort, before routing.
-Malformed JSON leaves the probed fields empty; it does not itself refuse the request.
+Under a dispatcher, "the meta" is the `EventMeta` it decodes once per delivery, before any handler:
+the delivery ID, kind and target from the headers, and the action, installation, repository, organization and sender
+from the payload.
+Every input is handed that meta, so none decodes it again; `Event<Envelope>` is the meta beside the bytes.
 The
 [`EventMeta` reference](https://docs.rs/octoevents/latest/octoevents/struct.EventMeta.html)
-defines the probe's field-level behavior and cost.
+defines the decode and what makes it fail.
 
 For the views below, add `serde = { version = "1", features = ["derive"] }` to your dependencies. octoevents' default
 `derive` feature supplies `Payload`.
@@ -187,9 +192,8 @@ struct Issue {
     title: String,
 }
 
-// Envelope: the meta and the raw payload, nothing decoded.
-async fn audit(envelope: Envelope) -> Result<(), BoxError> {
-    let meta = &envelope.meta;
+// Event<Envelope>: the meta beside the raw payload, no view decoded.
+async fn audit(Event { meta, payload: envelope }: Event<Envelope>) -> Result<(), BoxError> {
     println!("{} {} ({} bytes)", meta.delivery_id, meta.kind, envelope.raw_payload.len());
     Ok(())
 }
@@ -213,7 +217,7 @@ async fn notify(Event { meta, payload }: Event<IssueOpened>) -> Result<(), BoxEr
 }
 
 let dispatcher = Dispatcher::builder()
-    .always(audit)                                          // every delivery
+    .always(audit)                                          // every delivery whose metadata decodes
     .on((EventKind::Installation, Action::Deleted), record_installation)
     .on(Action::Opened, label)                              // kind from `IssueOpened`
     .on(Action::Opened, notify)
@@ -222,14 +226,14 @@ let dispatcher = Dispatcher::builder()
 
 Meta and payload together form one input, `Event<P>`, not two parameters.
 
-The envelope is built once at receipt.
-Each matched route converts it to the input its handler declares;
-handlers that need no decoded payload use the already-probed metadata or the envelope itself:
+The envelope is built once at receipt, and the dispatcher decodes its meta once.
+Each matched route converts the envelope and the meta to the input its handler declares;
+handlers that need no decoded payload use the decoded meta or the envelope itself:
 
 ```mermaid
 flowchart LR
-    Envelope[Envelope] --> Convert[FromEnvelope for one matched route]
-    Convert -->|Clone envelope| Bytes[Envelope: metadata and bytes]
+    Envelope[Envelope and its EventMeta] --> Convert[FromEnvelope for one matched route]
+    Convert -->|Clone envelope| Bytes[Envelope: header metadata and bytes]
     Convert -->|Clone metadata| Meta[EventMeta]
     Convert -->|Check kind and decode| Payload["P: Payload"]
     Convert -->|Pair metadata with decoded input| Event["Event&lt;P&gt;"]
@@ -240,7 +244,8 @@ flowchart LR
     Convert -->|Conversion fails| Error[DispatchError: handler is not invoked]
 ```
 
-A custom `FromEnvelope` implementation controls its own conversion.
+A custom `FromEnvelope` implementation controls its own conversion,
+`fn from_envelope(envelope: &Envelope, meta: &EventMeta)`, reading routing fields from the meta it is handed.
 The kind check shown for `Payload` does not authenticate the event kind; see
 [Security](security.md#authorize-the-operation-not-the-route).
 
@@ -362,11 +367,11 @@ Those inputs decode the original payload directly.
 ## Dispatcher
 
 A `Dispatcher` is itself a handler over the envelope.
-Per delivery it runs three tiers in order:
+Per delivery it decodes the `EventMeta` once, then runs three tiers in order:
 
 | Tier | Runs | Receives | Registered with |
 | --- | --- | --- | --- |
-| Always | First, for every delivery | `Envelope` | `always` |
+| Always | First, for every delivery whose metadata decodes | Any input | `always` |
 | Route | The handlers matching the kind and action, then those matching the kind | Any input | `on` |
 | Fallback | Only when no route matched | `Envelope` | `fallback` |
 
@@ -436,7 +441,7 @@ async fn reject(envelope: Envelope) -> Result<(), BoxError> {
 }
 
 let dispatcher = Dispatcher::builder()
-    // Always: first, for every delivery, bytes included.
+    // Always: first, for every delivery whose metadata decodes; `audit` takes the bytes.
     .always(audit)
     // Routes with the kind taken from the payload type...
     .on(AnyAction, notify)                                  // every `issues` action
@@ -472,8 +477,10 @@ show one.
 - `fallback` runs only when no route matched.
   It cannot see why: a kind the route table never registered and an action GitHub added to a kind it did arrive alike.
   It is empty by default, so unmatched deliveries succeed.
-- Neither decodes anything, so both run for a payload no routed handler can
-  decode.
+- Neither decodes a view unless its input asks for one, so both run for a payload no routed handler can decode.
+  Both need the meta to decode: a payload that is not JSON, or does not fit GitHub's shape for the meta's fields,
+  fails the delivery before either runs.
+  An `always` handler that reads the meta takes `EventMeta`, or `Event<Envelope>` for the meta beside the bytes.
 - A tier can continue or fail, never skip.
   A policy the tiers cannot express (answer a redelivery of a stored delivery ID with success,
   dead-letter an unmatched delivery) lives in a handler over the envelope that wraps `dispatch` and reads its outcome:
@@ -491,6 +498,7 @@ show one.
 `dispatch` reports an `Outcome`: whether the delivery matched, and the result of the handlers that ran.
 The two are independent: a matched delivery can fail,
 and an unmatched one succeeds unless an `always` or `fallback` handler fails it.
+A delivery whose meta did not decode is unmatched, by its kind alone, and fails with a `DispatchError` naming no handler.
 
 | `outcome.matched` | Meaning |
 | --- | --- |
@@ -512,8 +520,10 @@ The dispatcher boxes the error where the handler is registered,
 so handlers with different error types share one dispatcher and no enum joins them.
 A payload that does not fit a routed handler's view is boxed the same way, as the `DecodeError` it is.
 
-A failure is a `DispatchError`: the boxed error wrapped with the tier, the delivery's ID, kind and action,
+A failure is a `DispatchError`: the boxed error wrapped with the delivery's ID, kind, action and installation ID,
 the failing handler's name, and the source location of the registration that put it there.
+When the delivery's meta did not decode, no handler ran: `handler()` and `registration_site()` are `None`,
+and the source is the `DecodeError`.
 Its text says *where*; its source chain says *why*:
 
 ```rust
@@ -559,7 +569,7 @@ let webhook = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("deve
 When an `issues.opened` payload lacks the `title` the view names, `report` prints:
 
 ```text
-delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (issues.opened) failed in the route tier at the handler `app::label` registered at src/main.rs:29:6
+delivery 72d3162e-cc78-11e3-81ab-4c9367dc0958 (issues.opened) failed at the handler `app::label` registered at src/main.rs:29:6
   caused by: payload could not be decoded
   caused by: missing field `title` at line 1 column 39
 ```
@@ -616,15 +626,15 @@ let webhook = WebhookReceiverBuilder::new(Verifier::new(WebhookSecret::new("deve
 
 ## Testing without GitHub
 
-A handler is tested through `dispatch` with an envelope from `Envelope::new`: a `HeaderMeta`
+A handler is tested through `dispatch` with an envelope from `Envelope::new`: a `WebhookMeta`
 (the delivery ID and the kind, and the target if the handler reads it) and the payload bytes.
-Nothing is signed, because nothing is verified on this path; the constructor reads the action, installation ID,
-repository, organization and sender out of the bytes the way the receiver does,
-so the meta a handler sees is what the payload says.
+Nothing is signed, because nothing is verified on this path, and the constructor reads nothing of the bytes;
+`dispatch` decodes the action, installation ID, repository, organization and sender out of them
+as it does for a received delivery, so the meta a handler sees is what the payload says.
 In the quickstart's crate:
 
 ```rust,ignore
-use octoevents::{Action, Dispatcher, Envelope, EventKind, HeaderMeta, Match};
+use octoevents::{Action, Dispatcher, Envelope, EventKind, WebhookMeta, Match};
 
 #[tokio::test]
 async fn thanks_for_an_opened_issue() {
@@ -633,7 +643,7 @@ async fn thanks_for_an_opened_issue() {
         .build();
 
     let envelope = Envelope::new(
-        HeaderMeta::new("delivery-1", EventKind::Issues),
+        WebhookMeta::new("delivery-1", EventKind::Issues),
         br#"{"action":"opened","sender":{"id":1,"login":"octocat"}}"#,
     );
 
@@ -644,9 +654,9 @@ async fn thanks_for_an_opened_issue() {
 }
 ```
 
-`Envelope` cannot be built as a struct literal outside the crate,
-so a meta cannot be paired with a payload that says something else.
-The target type and ID come from headers, so they stay `None` unless assigned on the `HeaderMeta`.
+The target type and ID come from headers, so they stay `None` unless assigned on the `WebhookMeta`.
+An input is decoded by hand the same way, with the meta first:
+`IssueOpened::from_envelope(&envelope, &EventMeta::decode(&envelope)?)`.
 An envelope built this way is data: nothing about it says it was authenticated,
 which is why a transport receiving real requests builds its envelopes with `authenticate` instead.
 
@@ -763,12 +773,12 @@ and answers a failure with `ReceiveError::status`; its docs say what the receive
 It is the one path from a request to an envelope that can be trusted: it verifies the signature,
 checks the content type and reads the headers before it builds the envelope.
 A transport that authenticated the request by its own means builds the same envelope with `Envelope::new`,
-from `HeaderMeta::from_headers` and the body.
+from `WebhookMeta::from_headers` and the body.
 `Dispatcher::dispatch` is a plain `async fn` with no runtime of its own.
 
 The [`worker` example](../examples/worker/README.md) runs the receiver on Cloudflare Workers through `receive`,
-as a GitHub App's receiver: its `always` tier forwards each envelope the dispatcher is handed as the wire format,
-to an object keyed by the installation ID.
+as a GitHub App's receiver: its `always` tier, a handler over `Event<Envelope>`, forwards each envelope the dispatcher
+is handed as the wire format, to an object keyed by the installation ID the dispatcher decoded.
 It is a package of its own, outside the workspace, since it builds for `wasm32-unknown-unknown` alone;
 its README says how to build and run it.
 
@@ -793,14 +803,14 @@ where Probot runs every matching handler and aggregates their errors.
 | --- | --- |
 | `app.on('issues.opened', h)` | `on((EventKind::Issues, Action::Opened), h)`, or `on(Action::Opened, h)` with the kind taken from `h`'s payload type. There is no string route form |
 | `app.on('issues', h)` | `on(EventKind::Issues, h)`, or `on(AnyAction, h)` with the kind taken from `h`'s payload type |
-| `app.onAny(h)` | `always(h)`: first, for every delivery, over the envelope; its error fails the delivery. Sees `ping` only with `handle_ping(true)` |
-| `app.onError(h)` | Inspect `dispatcher.dispatch(envelope).await.result` in the policy seam; see [Error handling](#error-handling). A `DispatchError` says where (tier, handler, registration site), and its source chain says why. Refused requests reach no handler |
+| `app.onAny(h)` | `always(h)`: first, for every delivery whose metadata decodes, over the envelope, the meta, or `Event<Envelope>` for both; its error fails the delivery. Sees `ping` only with `handle_ping(true)` |
+| `app.onError(h)` | Inspect `dispatcher.dispatch(envelope).await.result` in the policy seam; see [Error handling](#error-handling). A `DispatchError` says where (handler and registration site, or none when the payload's meta did not decode), and its source chain says why. Refused requests reach no handler |
 | `app.receive(event)` | `dispatcher.dispatch(envelope)` with an envelope from `Envelope::new`; see [Testing without GitHub](#testing-without-github) |
 | `context.payload` | The handler's input: a serde view of your own (`#[derive(Payload)]`), or octocrab's structs with the `octocrab` feature |
 | `context.id`, `context.name` | `meta.delivery_id` and `meta.kind` on the `EventMeta`; a handler gets it beside the payload as `Event<P>` |
-| `context.payload.action` | `meta.action`, an `Option<Action>`, read from the bytes before any handler runs |
+| `context.payload.action` | `meta.action`, an `Option<Action>`, decoded from the bytes by the dispatcher before any handler runs |
 | `context.payload.installation.id` | `meta.installation_id`, an `Option<u64>`; no octocrab needed, and enough on its own for a handler over `EventMeta` |
-| `context.repo()` | `meta.repository`, an `Option<RepositoryMeta>` with `id`, `name`, `full_name` and `owner`; `None` when the payload carries no complete `repository` object |
+| `context.repo()` | `meta.repository`, an `Option<RepositoryMeta>` with `id`, `name`, `full_name` and `owner`; `None` when the payload carries no `repository`, and a failed delivery when it carries one without those fields |
 
 ## Cargo features
 

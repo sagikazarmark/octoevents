@@ -16,7 +16,7 @@ use axum::{Router, body::Body, extract::Request, routing::post};
 use bytes::Bytes;
 use http::StatusCode;
 use octoevents::{
-    Action, BoxError, Dispatcher, Envelope, EventKind, Verifier, WebhookReceiver,
+    Action, BoxError, Dispatcher, EventKind, EventMeta, Verifier, WebhookReceiver,
     WebhookReceiverBuilder, WebhookSecret,
 };
 use tower::ServiceExt as _;
@@ -27,9 +27,9 @@ fn verifier() -> Verifier {
     Verifier::new(WebhookSecret::new("development-secret"))
 }
 
-/// The README's quickstart handler: an `async fn` item over the envelope.
-async fn thank(envelope: Envelope) -> Result<(), BoxError> {
-    let sender = envelope.meta.sender.map(|s| s.login).unwrap_or_default();
+/// The README's quickstart handler: an `async fn` item over the meta.
+async fn thank(meta: EventMeta) -> Result<(), BoxError> {
+    let sender = meta.sender.map(|s| s.login).unwrap_or_default();
     println!("Thank you for your contribution, @{sender}! :)");
     Ok(())
 }

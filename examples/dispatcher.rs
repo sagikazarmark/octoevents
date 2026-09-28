@@ -16,9 +16,11 @@
 //! The dispatcher runs three tiers per delivery, in order, and the first
 //! error ends the dispatch:
 //!
-//! - **always**: [`audit`], a handler over the [`Envelope`], runs first for
-//!   every delivery the dispatcher is handed, bytes included and nothing
-//!   decoded on its behalf.
+//! - **always**: [`audit`], a handler over the meta beside the [`Envelope`]
+//!   (`Event<Envelope>`), runs first for every delivery the dispatcher is
+//!   handed, bytes included and no view decoded on its behalf. The meta is
+//!   the one the dispatcher decoded once, before any tier, to route by; a
+//!   delivery whose meta does not decode fails before this tier runs.
 //! - **route**: the handlers registered with `on` whose kind and action match.
 //!   [`label`] takes the payload alone, decoded as the [`IssueView`] view; its
 //!   kind comes from the view's type, so its matcher says only the action (a
@@ -26,7 +28,7 @@
 //!   [`Event<IssueView>`](Event), under two actions. [`record_installation`] takes the
 //!   [`EventMeta`] alone, which declares no kind, so its matcher spells the
 //!   kind and the action (an *absolute* matcher); nothing is decoded for it.
-//! - **fallback**: [`log_unrouted`], another handler over the envelope, runs
+//! - **fallback**: [`log_unrouted`], a handler over the envelope, runs
 //!   only when no route matched: a kind the route table never registered
 //!   (`push`), or an action GitHub added to one it did (`issues.closed`
 //!   here). It leaves the delivery green in GitHub; a strict one would fail
@@ -35,8 +37,10 @@
 //! Each handler keeps its own error type, and the dispatcher boxes it where
 //! the handler is registered. A payload the view does not fit fails the
 //! delivery at the handler that needed the decode, and the `DispatchError`
-//! names that handler and the line that registered it. The receiver's handler
-//! prints it, then walks the chain of sources for the why.
+//! names that handler and the line that registered it. A payload whose meta
+//! does not decode (not JSON, or outside GitHub's shape) fails before any
+//! tier runs. The receiver's handler prints the error, then walks the chain
+//! of sources for the why.
 //!
 //! The tests at the bottom drive the dispatcher with envelopes from
 //! [`Envelope::new`] and read the [`Match`](octoevents::Match) each reports;
@@ -65,9 +69,14 @@ struct Issue {
     title: String,
 }
 
-/// Always tier: the envelope, bytes included, for every delivery.
-async fn audit(envelope: Envelope) -> Result<(), BoxError> {
-    let meta = &envelope.meta;
+/// Always tier: the meta beside the envelope, bytes included, for every
+/// delivery.
+async fn audit(
+    Event {
+        meta,
+        payload: envelope,
+    }: Event<Envelope>,
+) -> Result<(), BoxError> {
     println!(
         "audit {} {} {:?} ({} bytes)",
         meta.delivery_id,
@@ -105,13 +114,11 @@ async fn record_installation(meta: EventMeta) -> Result<(), BoxError> {
     Ok(())
 }
 
-/// Fallback tier: whatever no route matched. It cannot see why.
+/// Fallback tier: whatever no route matched, as the envelope. It cannot see
+/// why.
 async fn log_unrouted(envelope: Envelope) -> Result<(), BoxError> {
     let meta = &envelope.meta;
-    println!(
-        "unrouted {} {} {:?}",
-        meta.delivery_id, meta.kind, meta.action
-    );
+    println!("unrouted {} {}", meta.delivery_id, meta.kind);
     Ok(())
 }
 
@@ -184,7 +191,7 @@ async fn main() -> Result<(), BoxError> {
 
 #[cfg(test)]
 mod tests {
-    use octoevents::{HeaderMeta, Match, header};
+    use octoevents::{Match, WebhookMeta, header};
 
     use super::*;
 
@@ -194,7 +201,7 @@ mod tests {
     /// Every tier that applies runs and the route table reports the match.
     #[tokio::test]
     async fn an_opened_issue_matches_and_every_handler_succeeds() {
-        let envelope = Envelope::new(HeaderMeta::new("delivery-1", EventKind::Issues), OPENED);
+        let envelope = Envelope::new(WebhookMeta::new("delivery-1", EventKind::Issues), OPENED);
 
         let outcome = dispatcher().dispatch(envelope).await;
 
@@ -207,7 +214,7 @@ mod tests {
     #[tokio::test]
     async fn a_closed_issue_is_unmatched_by_action_and_still_succeeds() {
         let envelope = Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::Issues),
+            WebhookMeta::new("delivery-1", EventKind::Issues),
             br#"{"action":"closed","issue":{"number":7,"title":"Hello"}}"#,
         );
 
@@ -221,7 +228,7 @@ mod tests {
     #[tokio::test]
     async fn a_push_is_unmatched_by_kind_and_still_succeeds() {
         let envelope = Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::Push),
+            WebhookMeta::new("delivery-1", EventKind::Push),
             br#"{"ref":"refs/heads/main"}"#,
         );
 
@@ -231,12 +238,12 @@ mod tests {
         outcome.result.unwrap();
     }
 
-    /// A handler over the meta alone decodes nothing, so a payload with
+    /// A handler over the meta alone decodes no view, so a payload with
     /// nothing but the action and the installation still reaches it.
     #[tokio::test]
     async fn an_installation_deleted_reaches_the_meta_handler() {
         let envelope = Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::Installation),
+            WebhookMeta::new("delivery-1", EventKind::Installation),
             br#"{"action":"deleted","installation":{"id":42}}"#,
         );
 
@@ -252,7 +259,7 @@ mod tests {
     #[tokio::test]
     async fn a_payload_the_view_does_not_fit_fails_at_the_decode() {
         let envelope = Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::Issues),
+            WebhookMeta::new("delivery-1", EventKind::Issues),
             br#"{"action":"opened","issue":{"number":7}}"#,
         );
 
@@ -260,7 +267,7 @@ mod tests {
 
         assert_eq!(outcome.matched, Match::Matched);
         let error = outcome.result.unwrap_err();
-        assert!(error.to_string().contains("failed in the route tier"));
+        assert!(error.to_string().contains("failed at the handler"));
         assert!(error.source.is::<DecodeError>(), "{error}");
         assert_eq!(error.delivery_id, "delivery-1");
     }

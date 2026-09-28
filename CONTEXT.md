@@ -8,41 +8,46 @@ since a receiver observes one and must answer it.
 
 ## Language
 
-**Envelope**: The unit of receipt: exact payload bytes plus the routing metadata extracted from headers
-and a best-effort payload probe.
-Composed of an `EventMeta` and the raw payload, as the fields `meta` and `raw_payload`.
+**Envelope**: The unit of receipt: what arrived, the `WebhookMeta` read from the headers and the exact payload bytes,
+as the fields `meta` and `raw_payload`.
+Building one reads nothing of the payload and cannot fail; what the payload says is decoded later,
+the `EventMeta` by the dispatcher.
 Data, with no verification claim: an `Envelope` value proves nothing about how it was built.
 A received one is trustworthy because it came from _authenticate_
 (or the receiver, which is built on it), not because of its type.
-Outside the crate one comes from `authenticate`, or from `Envelope::new`,
-the data constructor over a `HeaderMeta` and the payload
-(a test's path, or a transport that authenticated the request by its own means; unverified,
-the meta probed from the same bytes), never from a struct literal, so the two halves cannot disagree at birth.
-The third way, serde over the _wire format_, reads back an envelope a trusted transport forwarded, meta as forwarded,
-neither verified nor probed.
+Otherwise one comes from `Envelope::new`, the data constructor that pairs a `WebhookMeta` with bytes
+(a test's path, or a transport that authenticated the request by its own means; unverified),
+or from serde over the _wire format_, which reads back an envelope a trusted transport forwarded, nothing verified.
+Never from a struct literal outside the crate: the struct is `#[non_exhaustive]`,
+so a field can be added (the signature it arrived with, say) without a breaking change.
 Verification authenticates the payload bytes, not the delivery ID, event name, or target headers.
 Authorization uses authenticated payload data or independently trusted configuration;
 delivery-ID deduplication handles GitHub redelivery, not adversarial replay under a different ID.
 _Avoid_: Delivery (reserved for the outbound `octodelivery` project), event
 (the decoded unit, `Event<P>`, is the envelope decoded for one handler), message
 
-**EventMeta**: The envelope's routing metadata without the payload bytes: delivery ID, kind, action, installation ID,
+**EventMeta**: A delivery's routing metadata: delivery ID, kind, action, installation ID,
 repository, organization, sender, target.
-An input in its own right, for a handler routed by kind and action that reads no payload;
+The `WebhookMeta` fields under the same names, beside the fields `EventMeta::decode` reads from the payload,
+strictly, in GitHub's shape: a payload that does not fit is a decode error, not an empty field.
+The dispatcher decodes it once per delivery, before the always tier, routes on its action,
+and hands it to every input it builds, so no input decodes it again.
+An input in its own right, for a handler routed by kind and action that decodes no view;
 and the `meta` half of `Event<P>`.
-Built from a `HeaderMeta` and the probe, its header-read fields under the same names beside the probed ones.
 _Avoid_: Common (the former nested group; its name carried no meaning), header
-(it also holds probed payload fields),
+(it also holds payload fields),
 delivery (reserved for `octodelivery`), receipt (reads as acknowledgement, and sits too close to Receiver), context
 (implies ambient services; this is plain data),
 `Routing` or `RoutingMeta` as the type
 (delivery ID and sender are not routing; "routing metadata" in prose is fine, since the meta is what routing reads)
 
-**RepositoryMeta, AccountMeta**: The fields the probe keeps of one payload object, as the types `EventMeta::repository`,
+**RepositoryMeta, AccountMeta**: The fields `EventMeta::decode` keeps of one payload object, as the types `EventMeta::repository`,
 `organization` and `sender` hold: a repository's `id`, `name`, `full_name` and `owner`; an account's
 (a user's, an organization's or an app's) `id` and `login`.
 The rule the names follow: _X Meta_ is the meta of X, the projection that routing and a policy read,
 never the object GitHub sends, which a decoded payload holds.
+In `WebhookMeta`, the webhook is the request GitHub sends, read from its headers;
+the configured webhook it was sent for is the target.
 The ID is the identity a policy keys on; the name or login can change under it.
 Plain structs, built as literals or with `new`.
 _Avoid_: `Ref` as the suffix (the former names; a Rust word for a borrow and a GitHub word for a git ref, `ref`,
@@ -53,8 +58,9 @@ summary, reference, projection as the type (prose for what the types are is fine
 **Receiver**: The component that authenticates, bounds, and dispatches one HTTP request,
 owning no routing of paths or methods.
 The type is `WebhookReceiver`, built by `WebhookReceiverBuilder`:
-the `Webhook` prefix is the crate's rule for a name that would otherwise collide in a consumer's imports
-(`Receiver` is a channel end in std and tokio, `Secret` is `secrecy`'s), and no other type carries it.
+the `Webhook` prefix marks a type whose bare name would collide in a consumer's imports (`Receiver`, `Secret`)
+or say nothing on its own (`Meta`). `WebhookReceiver`, `WebhookSecret` and `WebhookMeta` carry it; no other type does.
+(`Receiver` is a channel end in std and tokio, `Secret` is `secrecy`'s.)
 Two entry points over one policy: `receive`, over an `http::Request` whose body is read from the transport
 (`http-body` feature), and `receive_bytes`, over the headers and the body already read, in the core.
 _Avoid_: Service (names the optional Tower impl, not the concept), endpoint, listener, `Receiver` as the type
@@ -66,7 +72,9 @@ Handlers _handle_; the receiver _receives_.
 One trait, named by what it receives: the input type `I` is any `FromEnvelope`,
 and it says what the handler gets and what is decoded for it: the `Envelope`
 (bytes included), the `EventMeta` alone, a `Payload` view alone, or `Event<P>` for the meta beside the payload.
-The receiver and the always and fallback tiers take a handler over the envelope; a routed handler is over any input.
+Under a dispatcher every input is built from the envelope and the `EventMeta` the dispatcher decoded once.
+The receiver and the fallback tier take a handler over the envelope; the always tier and a routed handler are over
+any input, `Event<Envelope>` for the meta beside the bytes.
 Its error is its own, `type Error` on the trait with no bound; where a handler is registered
 (`on`, `always`, `fallback`, the receiver's `build`)
 the error is asked to be `Into<BoxError>`, which every `Error + Send + Sync + 'static` is,
@@ -129,8 +137,9 @@ _Avoid_: Retry (the sender's act, `octodelivery`'s word), replay
 (an attacker's act, which the crate does not guard against; see Security),
 duplicate as the term for the attempt (a duplicate is what the policy seam finds)
 
-**Always**: The dispatcher tier that runs first, before routing, receiving the envelope, bytes included,
-for every delivery the dispatcher is handed: not a `ping` the receiver answered itself,
+**Always**: The dispatcher tier that runs first, before routing, receiving any input,
+the envelope (bytes included), the `EventMeta`, or `Event<Envelope>` for both,
+for every delivery the dispatcher is handed whose meta decoded: not a `ping` the receiver answered itself,
 nor a redelivery a wrapper answered before calling `dispatch`.
 Its failure fails the delivery; it never counts as a match,
 so a strict fallback still rejects kinds nothing else handles.
@@ -138,16 +147,15 @@ It can continue or fail but never skip.
 _Avoid_: Global handler, middleware, raw (the removed tier that once ran before it)
 
 **Fallback**: The dispatcher chain that runs only when no routed handler matched,
-receiving the envelope as the always tier does.
+receiving the envelope, bytes included.
 It cannot see the match: it runs alike for a kind the route table never registered and
 for an action GitHub added to a kind it did, and the envelope does not say which.
 Empty by default, so unmatched deliveries succeed.
 
 **Tier**: One of the three steps a dispatcher runs a delivery through, in order: always, route
 (the matched routes, action-specific then kind-wide), fallback.
-A _dispatch error_ names the tier its failing handler ran in.
-The `Tier` enum is internal: the tier appears in error text and tracing output,
-not as a public field consumers branch on.
+The tier is a property of the registration method (`always`, `on`, `fallback`), not a value:
+no type names it, and a _dispatch error_ points at its failing handler's registration site, which says which tier it was.
 _Avoid_: Stage, phase (kept for decode versus handle inside one handler), layer (middleware vocabulary)
 
 **Registration site**: The source location of the call that registered a handler
@@ -160,21 +168,24 @@ _Avoid_: Call site (ambiguous with the handler's own calls), origin, registered 
 recorded beside the registration site: a function path for an `async fn` item or a struct,
 a `{{closure}}` path for a closure.
 For an operator to read, not for code to match on; `type_name` promises no stable string.
-The `handler` field of a dispatch error and of the dispatch span.
+`DispatchError::handler`, and the `handler` field of the dispatch span.
 _Avoid_: Handler ID, handler label, type name alone (says the mechanism, not what it names)
 
-**Dispatch error**: What a failed dispatch reports: the application error, boxed as a `BoxError`, wrapped with the tier,
-the delivery's ID, kind and action, the handler name and the registration site of the failing handler.
+**Dispatch error**: What a failed dispatch reports: the application error, boxed as a `BoxError`, wrapped with
+the delivery's ID, kind, action and installation ID, the handler name and the registration site of the failing handler.
 Says where, not why; why is its source, the boxed application error,
 which a policy that wants its own type back downcasts (`source.downcast_ref::<AppError>()`).
-A decode failure is reported at the handler that needed the decode, the `DecodeError` as the source.
+A decode failure is reported at the handler that needed the decode, the `DecodeError` as the source;
+the one failure no handler owns is the `EventMeta` decode, reported with no handler or registration site,
+and no action or installation ID.
 The type is `DispatchError`, an `Error` whatever the handler's error was, so a dispatcher nests as a route of another.
 The policy seam can inspect it before returning it to the receiver.
 _Avoid_: Handler error (the application error inside it), failure
 (prose for the event, not the type), `DispatchError<E>` (the former generic shape; the source is always the box)
 
 **Failed-delivery event**: The one `tracing` event at ERROR the receiver emits when a handler fails, `handler failed`:
-the event meta's identifying fields (delivery ID, event name, and action and installation ID when the delivery has them)
+the delivery's identifying fields (delivery ID and event name from the headers, and action and installation ID when
+the handler failed with a dispatch error whose decoded meta has them)
 and the handler's error, boxed, as `error`, an error value whose text and chain of sources the subscriber renders
 (`error=<where> error.sources=[<why>, ..]` under the `fmt` subscriber).
 With the `tracing` feature, one event per failed delivery, error included.
@@ -232,7 +243,7 @@ In prose, "delivery" names one attempt
 **Target**: The resource the webhook is configured on, GitHub's _hook installation target_,
 from the `X-GitHub-Hook-Installation-Target-Type` and `-ID` headers: `integration` for a GitHub App,
 `repository` for a repository webhook, `organization` for an organization webhook, as the fields `target_type`
-(a `TargetType`) and `target_id`, on `HeaderMeta` and `EventMeta` alike.
+(a `TargetType`) and `target_id`, on `WebhookMeta` and `EventMeta` alike.
 The one meta field pair read from headers GitHub does not always send.
 The key a `VerifierSource` typically selects a secret by.
 It names the webhook's resource, not the webhook: two webhooks on one repository share a target.
@@ -241,14 +252,15 @@ made on both metas at once.
 Distinct from the `installation_target` event kind, which reports a change to a target.
 _Avoid_: Hook target, installation (the App installation, `installation_id`, is a different thing), owner, scope
 
-**HeaderMeta**: The values the receiver reads from a request's headers before the body: delivery ID, kind,
+**WebhookMeta**: The values the receiver reads from a request's headers before the body: delivery ID, kind,
 target type and target ID, but not the signature, which is parsed on its own into a `Signature`.
-What a `VerifierSource` is given to select a verifier, and the header half of an `EventMeta`.
+What a `VerifierSource` is given to select a verifier, what an `Envelope` carries beside the bytes,
+and the header half of an `EventMeta`.
 Unsigned when read, and still unsigned after verification, which authenticates the body alone: it selects a secret,
 it never authorizes.
-Named by the meta rule, the meta of the headers; `EventMeta` avoids "header" because it also holds probed fields,
-and this type holds none.
-_Avoid_: `WebhookMetadata` (the prefix is for collisions, and "Metadata" breaks the _X Meta_ rule), `RequestMeta`
+Named by the meta rule, the meta of the webhook request GitHub sends; `EventMeta` avoids "header"
+because it also holds payload fields, and this type holds none.
+_Avoid_: `HeaderMeta` (the former name), `WebhookMetadata`, `RequestMeta`
 (the receiver reads no path or method),
 `EventMeta::headers` as a nested group (the removed `Common`'s mistake), verified or signed meta
 
@@ -258,8 +270,10 @@ unauthorized (401) for a signature that is absent or does not match, or for head
 for (`UnknownTarget`), bad request (400) for a signature that is malformed, a missing required header,
 a content type other than `application/json` or a body the transport could not read,
 payload too large (413) for a body over the limit.
-Payload bytes that are not valid JSON are not a refusal: the probe is best-effort, the envelope is built,
-and a handler over it runs; only an input that decodes them fails, as a handler failure.
+Payload bytes that are not valid JSON are not a refusal: the receiver reads nothing of the payload,
+the envelope is built and handed to the handler.
+Under a dispatcher they fail the delivery at dispatch, as the `EventMeta` decode, before any handler runs,
+and the receiver answers 500, a handler failure; a receiver's handler over the envelope alone sees them as they are.
 The receive span's `outcome` names the class and its `error` the refusal's text; no handler runs.
 _Avoid_: Rejection, denial, failure (kept for a handler's), receive error as the concept (the type's name)
 
@@ -267,12 +281,16 @@ _Avoid_: Rejection, denial, failure (kept for a handler's), receive error as the
 decoded from the payload and indifferent to every other field GitHub sends or adds.
 A view over one kind declares it with `#[derive(Payload)]` and is a `Payload`;
 a view over fields several kinds share implements `FromEnvelope` itself with `Envelope::decode`.
+Its decode reads the bytes on its own; the meta beside it, in `Event<P>`, is the dispatcher's, not re-read.
 The crate's answer to one struct per kind.
 _Avoid_: Model (octocrab's structs, the whole object), DTO, schema, projection (kept for the meta types)
 
 **Wire format**: The one flat JSON object a serialized `Envelope` becomes,
-the meta's fields at the top level beside `raw_payload` as base64, for a trusted internal hop to another service,
-which reads it back through serde, meta as forwarded and nothing verified or probed.
+the `WebhookMeta` fields at the top level beside `raw_payload` as base64, for a trusted internal hop to another
+service, which reads it back through serde, nothing verified.
+The payload meta is not on the wire: the consumer's dispatcher decodes it from `raw_payload`,
+so forwarded meta cannot disagree with the bytes. Documents written by 0.3, which carried it,
+read back with those fields ignored; consumers upgrade before producers.
 Serialized by the crate, read by anything.
 Follows crate versioning, with no separate version field.
 Added optional fields are compatible; removed or renamed fields, newly required fields,
@@ -283,7 +301,7 @@ _Avoid_: Serialization format (the mechanism), envelope format, transport format
 **Authenticate**: The one path from an untrusted request to an envelope, `octoevents::authenticate`, over the verifier,
 the headers and the body.
 The signature header is parsed (`Missing`, `Malformed`) and _verified_ over the body (`Mismatch`),
-the content type is checked, then the required headers are read into a `HeaderMeta` and the envelope is built from it
+the content type is checked, then the required headers are read into a `WebhookMeta` and the envelope is built from it
 and the body.
 A free function beside the receiver, which calls it after asking its `VerifierSource`,
 so the receiver and a transport built on it authenticate alike.
@@ -335,7 +353,7 @@ _Avoid_: Validator, authenticator, signer (a role the verifier plays for a test,
 keyring (secrets tried in turn is what a verifier already is; and they are not keys)
 
 **VerifierSource**: What a receiver asks, per request and before verification,
-for the `Verifier` of the request's `HeaderMeta`, typically by its target: one webhook URL serving several GitHub Apps,
+for the `Verifier` of the request's `WebhookMeta`, typically by its target: one webhook URL serving several GitHub Apps,
 each signing with its own secret.
 Asynchronous, so the secrets can come from a secret manager.
 A `Verifier` is one, answering itself for every request, so a single-secret receiver names no source.
@@ -388,28 +406,12 @@ octocrab's `WebhookEvent` and a view over several kinds are not.
 _Avoid_: Body (reserved for the HTTP transport layer), raw unqualified
 (says unprocessed without saying of what, and named a removed tier; "raw payload" is the term)
 
-**Probe**: The best-effort read of the payload bytes that fills the payload-derived fields of an `EventMeta`
-(action, installation ID, repository, organization, sender) without decoding the rest of the document.
-Partial, and never fatal: invalid UTF-8 anywhere or malformed JSON syntax leaves every probed field empty,
-one malformed metadata field clears only itself, and the bytes are kept either way.
-Skipped string values must have valid escape syntax, but escaped surrogates need not be paired;
-an unpaired escaped surrogate in a string retained as metadata clears only the field that reads it.
-It runs at receipt, for every envelope, whatever input its handler will take: the dispatcher routes by the action,
-and the action is in the payload, so the probe cannot wait for a decode to ask for it.
-It validates UTF-8 in an allocation-free pass before scanning the JSON and decoding the retained values;
-the total cost stays linear in the payload.
-It is the reason "decodes nothing" never means "the payload went unread".
-An implementation term for prose and internals, not an API:
-it runs inside both envelope constructors and no public name says "probe".
-_Avoid_: Peek, sniff, extract (unqualified; "extracted" is fine in prose), decode
-(the full, fallible turn into a handler's input),
-parse (kept for the header-to-kind step), lazy or deferred meta
-(a shape considered and declined; the meta is complete when the envelope is)
-
 **Decode**: Turning an envelope into a handler's input, through `FromEnvelope`,
-the one way to decode and spelled the same for every input, `P::from_envelope`:
+the one way to decode and spelled the same for every input, `P::from_envelope(&envelope, &meta)`,
+given the `EventMeta` the caller decoded once with `EventMeta::decode`:
 a serde `Payload` type checks the kind and then decodes the bytes,
-`EventMeta` decodes nothing and `Envelope` is a clone, `Event<P>` pairs the meta with `P`'s decode,
+`EventMeta` is a clone of the meta it is given and `Envelope` a clone of the envelope,
+`Event<P>` pairs the meta with `P`'s decode,
 octocrab's `WebhookEvent` decodes into octocrab's model,
 and a consumer type implementing `FromEnvelope` itself decodes as it sees fit,
 a view over several kinds with the kind-free `Envelope::decode`, the one decoding primitive on the envelope.
@@ -419,6 +421,8 @@ a non-exhaustive variant built through `input` or `input_with_source`,
 its optional source a `BoxError` with the same platform bounds as handler errors,
 the one a consumer's impl returns for a failure that is neither) and fails the delivery at the position of the handler
 that needed it.
-_Avoid_: Parse (kept for the header-to-kind and probe steps), deserialize
+Decoding the `EventMeta` itself is a decode too, the dispatcher's, once per delivery; its failure fails the delivery
+before any handler runs.
+_Avoid_: Parse (kept for the header-to-kind step), deserialize
 (the serde mechanism, not the concept),
 `decode_payload` and `decode_event` (removed inherent spellings of `from_envelope`)

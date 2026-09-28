@@ -10,14 +10,15 @@ use crate::{MaybeSend, MaybeSync};
 ///
 /// | `I`                                   | receives                                  |
 /// |---------------------------------------|-------------------------------------------|
-/// | [`Envelope`](crate::Envelope)         | the meta and the exact payload bytes      |
-/// | [`EventMeta`](crate::EventMeta)       | the meta alone; nothing is decoded        |
-/// | `P: `[`Payload`](crate::Payload)      | the payload decoded as `P`, kind checked  |
-/// | [`Event<P>`](crate::Event)            | the meta beside the payload decoded as `P`|
+/// | [`Envelope`](crate::Envelope)         | the header meta and the exact payload bytes |
+/// | [`EventMeta`](crate::EventMeta)       | the meta alone; no view is decoded          |
+/// | `P: `[`Payload`](crate::Payload)      | the payload decoded as `P`, kind checked    |
+/// | [`Event<P>`](crate::Event)            | the meta beside the payload decoded as `P`  |
 ///
-/// The receiver and the dispatcher's `always` and `fallback` tiers take a
-/// `Handler<Envelope>`; the dispatcher's routes take a handler over any of
-/// them. The simplest handler is an `async fn` taking its input and returning
+/// The meta is the [`EventMeta`](crate::EventMeta) the dispatcher decodes
+/// once per delivery, before any handler runs. The receiver and the
+/// dispatcher's `fallback` tier take a `Handler<Envelope>`; the `always` tier
+/// and the dispatcher's routes take a handler over any of them. The simplest handler is an `async fn` taking its input and returning
 /// `Result<(), E>`; the receiver and the dispatcher accept the function
 /// itself, and the parameter's type is what fixes `I`:
 ///
@@ -29,7 +30,7 @@ use crate::{MaybeSend, MaybeSync};
 /// #[payload(EventKind::PullRequest)]
 /// struct PullRequestNumber { number: u64 }
 ///
-/// // Bytes included: what the receiver and the `always` tier take.
+/// // Bytes included: what the receiver and the `fallback` tier take.
 /// async fn audit(envelope: Envelope) -> Result<(), std::io::Error> {
 ///     println!("{} {} ({} bytes)", envelope.meta.delivery_id, envelope.meta.kind, envelope.raw_payload.len());
 ///     Ok(())
@@ -150,7 +151,8 @@ use crate::{MaybeSend, MaybeSync};
 /// is for.
 ///
 /// For one kind and nothing else, no dispatcher is needed: a handler over the
-/// envelope decodes its own view with `P::from_envelope(&envelope)`, the
+/// envelope decodes its own view with
+/// `P::from_envelope(&envelope, &EventMeta::decode(&envelope)?)`, the
 /// [`FromEnvelope`](crate::FromEnvelope) impl every [`Payload`](crate::Payload)
 /// has, whose kind check refuses a delivery of another kind at the kind, so
 /// a misconfigured webhook fails loudly rather than at a missing field.

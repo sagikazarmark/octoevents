@@ -1,7 +1,7 @@
 //! Start here: the README's quickstart, with explanatory comments and tests.
 //!
 //! A receiver that thanks the author of every opened issue. One `async fn`
-//! handler over the [`Envelope`], routed by kind and action through a
+//! handler over the [`EventMeta`], routed by kind and action through a
 //! dispatcher, behind a receiver that verifies every request and mounts on an
 //! axum route. The next rungs are `axum` (a receiver with no dispatcher, the
 //! simplest shape), `dispatcher` (every tier and every handler input) and
@@ -22,15 +22,15 @@
 
 use axum::{Router, routing::post_service};
 use octoevents::{
-    Action, BoxError, Dispatcher, Envelope, EventKind, Verifier, WebhookReceiverBuilder,
+    Action, BoxError, Dispatcher, EventKind, EventMeta, Verifier, WebhookReceiverBuilder,
     WebhookSecret,
 };
 
-/// Runs for `issues.opened`. The envelope is the unit of receipt, which the
-/// receiver authenticated before handing it over: its meta (delivery ID, kind, action, repository, sender, ...) and the raw payload.
+/// Runs for `issues.opened`, handed the delivery's meta (delivery ID, kind, action, repository, sender, ...),
+/// which the dispatcher decoded from the payload the receiver authenticated.
 /// `BoxError` is the crate's erased error; any `Error + Send + Sync + 'static` converts into it with `?`.
-async fn thank(envelope: Envelope) -> Result<(), BoxError> {
-    let sender = envelope.meta.sender.map(|s| s.login).unwrap_or_default();
+async fn thank(meta: EventMeta) -> Result<(), BoxError> {
+    let sender = meta.sender.map(|s| s.login).unwrap_or_default();
     println!("Thank you for your contribution, @{sender}! :)");
     Ok(())
 }
@@ -61,14 +61,14 @@ async fn main() -> Result<(), BoxError> {
 
 #[cfg(test)]
 mod tests {
-    use octoevents::{HeaderMeta, Match, header};
+    use octoevents::{Envelope, Match, WebhookMeta, header};
 
     use super::*;
 
     /// The handler is tested through `dispatch` with an envelope from
     /// `Envelope::new`: nothing is signed, because nothing is verified on
-    /// this path, and the meta is read from the bytes the way the receiver
-    /// reads it.
+    /// this path, and the dispatcher decodes the meta from the bytes as it
+    /// does for a received delivery.
     #[tokio::test]
     async fn thanks_for_an_opened_issue() {
         let dispatcher = Dispatcher::builder()
@@ -76,7 +76,7 @@ mod tests {
             .build();
 
         let envelope = Envelope::new(
-            HeaderMeta::new("delivery-1", EventKind::Issues),
+            WebhookMeta::new("delivery-1", EventKind::Issues),
             br#"{"action":"opened","sender":{"id":1,"login":"octocat"}}"#,
         );
 

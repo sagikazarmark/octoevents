@@ -93,13 +93,13 @@ it does not expose which secret verified a real request.
 
 Each GitHub App signs its deliveries with its own webhook secret.
 To serve several Apps at one URL, build the receiver with `WebhookReceiverBuilder::from_source` and a `VerifierSource`
-that chooses the verifier from the request's `HeaderMeta`, typically by its target type and ID:
+that chooses the verifier from the request's `WebhookMeta`, typically by its target type and ID:
 
 ```rust
 use std::collections::HashMap;
 
 use octoevents::{
-    Dispatcher, HeaderMeta, TargetType, Verifier, WebhookReceiverBuilder, WebhookSecret,
+    Dispatcher, WebhookMeta, TargetType, Verifier, WebhookReceiverBuilder, WebhookSecret,
 };
 
 // By App ID. Each App's verifier can open its own rotation window with `also`.
@@ -108,7 +108,7 @@ let apps = HashMap::from([
     (2, Verifier::new(WebhookSecret::new("second-app-development-secret"))),
 ]);
 
-let webhook = WebhookReceiverBuilder::from_source(move |headers: &HeaderMeta| {
+let webhook = WebhookReceiverBuilder::from_source(move |headers: &WebhookMeta| {
     match (headers.target_type.as_ref(), headers.target_id) {
         (Some(TargetType::Integration), Some(id)) => apps.get(&id).cloned(),
         _ => None,
@@ -146,8 +146,9 @@ let webhook = WebhookReceiverBuilder::from_source(move |headers: &HeaderMeta| {
 - The body limit bounds accumulated payload length.
   Buffer capacity and transport-owned frames can exceed it; it is not a process-memory ceiling.
   Bound body-read time and concurrent requests in your HTTP transport too.
-- A signed body need not be valid JSON.
-  The metadata probe is best-effort; a handler that decodes invalid bytes fails at its decode.
+- A signed body need not be valid JSON for the receiver: it reads nothing of the payload.
+  A dispatcher decodes the delivery's metadata before any handler and fails the delivery (500) when the payload is not
+  JSON or does not fit GitHub's shape for those fields; a handler that decodes other invalid bytes fails at its decode.
   Authentication and JSON/schema acceptance are separate decisions.
 - A verified `ping` is answered 204 before handlers by default; `handle_ping(true)` passes it through.
   The event name remains unsigned.
@@ -160,8 +161,9 @@ let webhook = WebhookReceiverBuilder::from_source(move |headers: &HeaderMeta| {
 
 Serializing an `Envelope` uses the documented
 [wire format](https://docs.rs/octoevents/latest/octoevents/struct.Envelope.html#wire-format):
-flat metadata beside base64-encoded exact payload bytes.
-Deserializing it **neither verifies a signature nor probes the metadata again**.
+flat header metadata beside base64-encoded exact payload bytes.
+Deserializing it **verifies no signature**; the consumer's dispatcher decodes the payload metadata from the bytes,
+so only the header metadata is taken on the producer's word.
 
 Authenticate and authorize the forwarding producer at the receiving service
 (for example through authenticated service-to-service transport), and restrict ingress to that producer.
@@ -170,8 +172,8 @@ Apply size limits to the encoded document as well as the payload; base64 adds ro
 
 Preserved payload bytes could be verified against a separately retained GitHub signature,
 but the wire format does not carry that signature
-and reverification would still not authenticate the forwarded metadata.
-The hop therefore trusts the producer's metadata and acceptance policy.
+and reverification would still not authenticate the forwarded header metadata.
+The hop therefore trusts the producer's header metadata and acceptance policy.
 Never expose serde deserialization as the public GitHub webhook endpoint.
 
 The [Worker forwarder](../examples/worker/README.md) illustrates the outbound POST,
