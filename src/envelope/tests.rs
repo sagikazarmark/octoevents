@@ -165,8 +165,7 @@ mod meta_decode {
     fn every_corpus_fixture_decodes_to_the_meta_it_carries() {
         // Real payloads, not the synthetic `BODY`: what GitHub sends is what
         // the decode must read, the accounts out of GitHub's full account
-        // objects with the fields the meta does not keep ignored. The
-        // expectations are what the probe this decode replaced read.
+        // objects with the fields the meta does not keep ignored.
         let gagbo = || Some(AccountMeta::new(10_496_163, "gagbo"));
         let corpus = [
             (
@@ -271,6 +270,14 @@ mod meta_decode {
     fn a_field_outside_githubs_shape_is_an_error() {
         for (field, value) in [
             ("action", "42"),
+            ("installation", "[42]"),
+            ("repository", r#"[1,"repo","octo/repo",{"login":"octo"}]"#),
+            (
+                "repository",
+                r#"{"id":1,"name":"repo","full_name":"octo/repo","owner":["octo"]}"#,
+            ),
+            ("organization", r#"[9919,"github"]"#),
+            ("sender", r#"[2,"monalisa"]"#),
             ("installation", r#"{"id":"42"}"#),
             ("repository", r#""octo/repo""#),
             ("sender", r#"{"id":2,"login":null}"#),
@@ -281,6 +288,19 @@ mod meta_decode {
             let error = decode(payload.to_string().as_bytes()).unwrap_err();
 
             assert!(matches!(error, DecodeError::Json(_)), "{field}: {error:?}");
+        }
+    }
+
+    #[test]
+    fn a_repeated_meta_key_is_an_error() {
+        for payload in [
+            r#"{"action":"opened","action":"closed"}"#,
+            r#"{"sender":{"id":2,"login":"monalisa","login":"octo"}}"#,
+        ] {
+            assert!(
+                matches!(decode(payload.as_bytes()), Err(DecodeError::Json(_))),
+                "{payload}"
+            );
         }
     }
 
@@ -297,7 +317,17 @@ mod meta_decode {
 
     #[test]
     fn a_non_object_top_level_is_an_error() {
-        for payload in ["[]", "null", "true", "42", r#""opened""#] {
+        // Serde's derived structs also read a positional array; the meta is
+        // an object or nothing.
+        for payload in [
+            "[]",
+            "[null,null,null,null,null]",
+            r#"["opened",{"id":42},null,null,null]"#,
+            "null",
+            "true",
+            "42",
+            r#""opened""#,
+        ] {
             assert!(
                 matches!(decode(payload.as_bytes()), Err(DecodeError::Json(_))),
                 "{payload}"

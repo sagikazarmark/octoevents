@@ -1,7 +1,7 @@
-use std::fmt;
+use std::{fmt, marker::PhantomData};
 
 use http::HeaderMap;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 
 use crate::{Action, DecodeError, Envelope, EventKind, ReceiveError, events::string_enum, header};
 
@@ -159,13 +159,13 @@ impl EventMeta {
     /// `organization` or `sender` that is not an object with the fields
     /// read here. A field that is absent or `null` is `None`, not an error.
     pub fn decode(envelope: &Envelope) -> Result<Self, DecodeError> {
-        let PayloadMeta {
+        let Object(PayloadMeta {
             action,
             installation,
             repository,
             organization,
             sender,
-        } = envelope.decode()?;
+        }) = envelope.decode()?;
         let WebhookMeta {
             delivery_id,
             kind,
@@ -177,10 +177,10 @@ impl EventMeta {
             delivery_id,
             kind,
             action,
-            installation_id: installation.map(|installation| installation.id),
-            repository: repository.map(RepositoryMeta::from),
-            organization,
-            sender,
+            installation_id: installation.map(|Object(installation)| installation.id),
+            repository: repository.map(|Object(repository)| repository.into()),
+            organization: organization.map(|Object(organization)| organization),
+            sender: sender.map(|Object(sender)| sender),
             target_type,
             target_id,
         })
@@ -211,10 +211,10 @@ impl EventMeta {
 /// ```
 /// use octoevents::{EventKind, WebhookMeta, TargetType};
 ///
-/// let mut headers = WebhookMeta::new("72d3162e-cc78-11e3-81ab-4c9367dc0958", EventKind::Issues);
-/// headers.target_type = Some(TargetType::Integration);
-/// headers.target_id = Some(12345);
-/// # let _ = headers;
+/// let mut meta = WebhookMeta::new("72d3162e-cc78-11e3-81ab-4c9367dc0958", EventKind::Issues);
+/// meta.target_type = Some(TargetType::Integration);
+/// meta.target_id = Some(12345);
+/// # let _ = meta;
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -459,14 +459,40 @@ string_enum! {
 /// The payload half of an [`EventMeta`], in GitHub's shape: what
 /// [`EventMeta::decode`] reads of a payload, and nothing more. A plain
 /// derive, so it is as strict as serde is: a field of another type, a
-/// missing required field or a repeated key is an error.
+/// missing required field or a repeated key is an error. Every object is
+/// read through [`Object`], so a positional array is one too.
 #[derive(Debug, Deserialize)]
 struct PayloadMeta {
     action: Option<Action>,
-    installation: Option<Installation>,
-    repository: Option<Repository>,
-    organization: Option<AccountMeta>,
-    sender: Option<AccountMeta>,
+    installation: Option<Object<Installation>>,
+    repository: Option<Object<Repository>>,
+    organization: Option<Object<AccountMeta>>,
+    sender: Option<Object<AccountMeta>>,
+}
+
+/// A JSON object read as `T`, and nothing else: a derived struct also reads
+/// a positional array, which GitHub never sends for the meta's objects.
+#[derive(Debug)]
+struct Object<T>(T);
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Object<T> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ObjectVisitor<T>(PhantomData<T>);
+
+        impl<'de, T: Deserialize<'de>> de::Visitor<'de> for ObjectVisitor<T> {
+            type Value = Object<T>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an object")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+                T::deserialize(de::value::MapAccessDeserializer::new(map)).map(Object)
+            }
+        }
+
+        deserializer.deserialize_map(ObjectVisitor(PhantomData))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -479,7 +505,7 @@ struct Repository {
     id: u64,
     name: String,
     full_name: String,
-    owner: Owner,
+    owner: Object<Owner>,
 }
 
 impl From<Repository> for RepositoryMeta {
@@ -488,7 +514,7 @@ impl From<Repository> for RepositoryMeta {
             id: repository.id,
             name: repository.name,
             full_name: repository.full_name,
-            owner: repository.owner.login,
+            owner: repository.owner.0.login,
         }
     }
 }

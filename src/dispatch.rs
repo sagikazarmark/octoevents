@@ -72,15 +72,16 @@ where
 /// action.
 ///
 /// Per delivery the dispatcher runs three tiers: always, route and fallback.
-/// The `always` chain runs first, for every delivery, and receives the
-/// verified [`Envelope`], bytes included. The routed chains run next: the
+/// The `always` chain runs first, for every delivery, and receives any
+/// input, usually the verified [`Envelope`], bytes included, or the meta
+/// beside it. The routed chains run next: the
 /// chain for the envelope's kind and action, then the kind-wide chain. Every
 /// routed handler is a [`Handler`] over some [`FromEnvelope`] input,
 /// registered with `on` for the kinds and actions a matcher selects; a
 /// handler over a [`Payload`](crate::Payload) may give actions alone and take
 /// the kind from its type, or use [`handle`](DispatcherBuilder::handle) for
 /// that kind without an action restriction. The `fallback` chain runs only if
-/// neither routed chain matched, and receives the envelope as `always` does.
+/// neither routed chain matched, and receives the envelope, bytes included.
 /// Handlers run one at a time: the chains in the order just given, whichever
 /// handler was registered first, and within a chain in registration order.
 /// Each `on` registration runs at most once per delivery, at its first
@@ -130,9 +131,9 @@ where
 /// JSON, or a field outside GitHub's shape) fails the delivery before the
 /// first tier: no handler runs, and the [`DispatchError`] names no handler.
 ///
-/// Beyond the meta, nothing is decoded until a handler needs it. `always`
-/// and `fallback` receive the bytes as they were verified, and no view is
-/// decoded on their behalf. A routed handler decodes its own input, through
+/// Beyond the meta, nothing is decoded until a handler needs it. `fallback`
+/// receives the bytes as they were verified, and so does an `always`
+/// handler over the envelope; no view is decoded on their behalf. A routed handler decodes its own input, through
 /// [`FromEnvelope`], when its route runs, and only then: a handler
 /// registered for some actions decodes nothing for a delivery carrying
 /// another. So a payload one handler's input cannot represent
@@ -904,8 +905,8 @@ impl Error for DispatchError {
 /// Named by a [`DispatchError`] to say which one the failing handler ran in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Tier {
-    /// The `always` chain: handlers over the envelope, bytes included, that
-    /// run for every delivery before routing.
+    /// The `always` chain: handlers over any input, that run for every
+    /// delivery before routing.
     Always,
     /// The routed chains: the handlers `on` or `handle` registered for the
     /// delivery's kind and action.
@@ -1097,7 +1098,7 @@ impl DispatcherBuilder {
     /// shipped impls:
     ///
     /// - the [`EventMeta`] alone, for a handler routed by kind and action
-    ///   that decodes nothing;
+    ///   that decodes no view, only the meta the dispatcher decoded;
     /// - the [`Envelope`], bytes included, for one kind's forwarder;
     /// - a `Payload` or `Event<P>`, which decodes with its kind check, so a
     ///   matcher that says a kind the view disagrees with fails the delivery

@@ -135,8 +135,9 @@ _Avoid_: Retry (the sender's act, `octodelivery`'s word), replay
 (an attacker's act, which the crate does not guard against; see Security),
 duplicate as the term for the attempt (a duplicate is what the policy seam finds)
 
-**Always**: The dispatcher tier that runs first, before routing, receiving the envelope, bytes included,
-for every delivery the dispatcher is handed: not a `ping` the receiver answered itself,
+**Always**: The dispatcher tier that runs first, before routing, receiving any input,
+the envelope (bytes included), the `EventMeta`, or `Event<Envelope>` for both,
+for every delivery the dispatcher is handed whose meta decoded: not a `ping` the receiver answered itself,
 nor a redelivery a wrapper answered before calling `dispatch`.
 Its failure fails the delivery; it never counts as a match,
 so a strict fallback still rejects kinds nothing else handles.
@@ -144,14 +145,14 @@ It can continue or fail but never skip.
 _Avoid_: Global handler, middleware, raw (the removed tier that once ran before it)
 
 **Fallback**: The dispatcher chain that runs only when no routed handler matched,
-receiving the envelope as the always tier does.
+receiving the envelope, bytes included.
 It cannot see the match: it runs alike for a kind the route table never registered and
 for an action GitHub added to a kind it did, and the envelope does not say which.
 Empty by default, so unmatched deliveries succeed.
 
 **Tier**: One of the three steps a dispatcher runs a delivery through, in order: always, route
 (the matched routes, action-specific then kind-wide), fallback.
-A _dispatch error_ names the tier its failing handler ran in.
+A _dispatch error_ names the tier its failing handler ran in, and none when the meta did not decode before any tier.
 The `Tier` enum is internal: the tier appears in error text and tracing output,
 not as a public field consumers branch on.
 _Avoid_: Stage, phase (kept for decode versus handle inside one handler), layer (middleware vocabulary)
@@ -170,17 +171,20 @@ The `handler` field of a dispatch error and of the dispatch span.
 _Avoid_: Handler ID, handler label, type name alone (says the mechanism, not what it names)
 
 **Dispatch error**: What a failed dispatch reports: the application error, boxed as a `BoxError`, wrapped with the tier,
-the delivery's ID, kind and action, the handler name and the registration site of the failing handler.
+the delivery's ID, kind, action and installation ID, the handler name and the registration site of the failing handler.
 Says where, not why; why is its source, the boxed application error,
 which a policy that wants its own type back downcasts (`source.downcast_ref::<AppError>()`).
-A decode failure is reported at the handler that needed the decode, the `DecodeError` as the source.
+A decode failure is reported at the handler that needed the decode, the `DecodeError` as the source;
+the one failure no handler owns is the `EventMeta` decode, reported with no tier, handler or registration site,
+and no action or installation ID.
 The type is `DispatchError`, an `Error` whatever the handler's error was, so a dispatcher nests as a route of another.
 The policy seam can inspect it before returning it to the receiver.
 _Avoid_: Handler error (the application error inside it), failure
 (prose for the event, not the type), `DispatchError<E>` (the former generic shape; the source is always the box)
 
 **Failed-delivery event**: The one `tracing` event at ERROR the receiver emits when a handler fails, `handler failed`:
-the event meta's identifying fields (delivery ID, event name, and action and installation ID when the delivery has them)
+the delivery's identifying fields (delivery ID and event name from the headers, and action and installation ID when
+the handler failed with a dispatch error whose decoded meta has them)
 and the handler's error, boxed, as `error`, an error value whose text and chain of sources the subscriber renders
 (`error=<where> error.sources=[<why>, ..]` under the `fmt` subscriber).
 With the `tracing` feature, one event per failed delivery, error included.

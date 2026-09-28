@@ -237,7 +237,7 @@ mod tests {
         outcome.result.unwrap();
     }
 
-    /// A handler over the meta alone decodes nothing, so a payload with
+    /// A handler over the meta alone decodes no view, so a payload with
     /// nothing but the action and the installation still reaches it.
     #[tokio::test]
     async fn an_installation_deleted_reaches_the_meta_handler() {
