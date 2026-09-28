@@ -187,10 +187,6 @@ impl Handler<Envelope> for Inbox {
 }
 
 impl Inbox {
-    // `DispatchError` is returned once per failed delivery, on a path that
-    // already awaited a handler; boxing it to save a copy would cost an
-    // allocation for nothing.
-    #[expect(clippy::result_large_err)]
     async fn process(&self, envelope: Envelope) -> Result<(), InboxError> {
         // Stored first, so a delivery whose envelope could not be stored is
         // never routed, and a redelivery is recognized before any handler
@@ -336,7 +332,7 @@ fn report(error: &InboxError) {
     if let InboxError::Dispatch(dispatch) = error
         && dispatch.source.is::<DecodeError>()
     {
-        if dispatch.handler.is_some() {
+        if dispatch.handler().is_some() {
             eprintln!("  (octocrab's model no longer fits GitHub's payload: a deploy, not a page)");
         } else {
             eprintln!(

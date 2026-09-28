@@ -424,8 +424,9 @@ impl Dispatcher {
     /// succeeded), `handler_error` (matched, a handler failed),
     /// `unmatched_ok` (nothing routed matched, no fallback failed) and
     /// `unmatched_error` (nothing routed matched, a handler failed, in
-    /// whichever tier, or the meta did not decode). On failure it also records `tier`, `handler` and
-    /// `registration_site`, the [`DispatchError`]'s, so the span alone says
+    /// whichever tier, or the meta did not decode). On failure it also
+    /// records `tier`, `handler` and `registration_site`, the
+    /// [`DispatchError`]'s, so the span alone says
     /// which handler failed the delivery; a delivery whose meta did not
     /// decode records none of the three. The crate's tracing contract as a
     /// whole is under [Tracing](crate#tracing).
@@ -457,7 +458,7 @@ impl Dispatcher {
                     let result = self
                         .run_tiers(&envelope, &meta, matched, routed)
                         .await
-                        .map_err(|failed| failed.route.failed(failed.tier, &meta, failed.source));
+                        .map_err(|(route, source)| route.failed(&meta, source));
                     Outcome { matched, result }
                 }
                 Err(error) => Outcome {
@@ -466,16 +467,12 @@ impl Dispatcher {
                 },
             };
             span.record("outcome", outcome.label());
-            if let Err(error) = &outcome.result {
-                if let Some(tier) = error.tier {
-                    span.record("tier", tier.as_str());
-                }
-                if let Some(handler) = error.handler {
-                    span.record("handler", handler);
-                }
-                if let Some(site) = error.registration_site {
-                    trace::record_display(&span, "registration_site", site);
-                }
+            if let Err(error) = &outcome.result
+                && let Some(registration) = &error.registration
+            {
+                span.record("tier", registration.tier.as_str());
+                span.record("handler", registration.handler);
+                trace::record_display(&span, "registration_site", registration.site);
             }
             outcome
         };
@@ -492,46 +489,35 @@ impl Dispatcher {
         meta: &EventMeta,
         matched: Match,
         routed: impl Iterator<Item = &'a Route>,
-    ) -> Result<(), Failed<'a>> {
-        run_chain(envelope, meta, Tier::Always, &self.routes.always).await?;
+    ) -> Result<(), (&'a Route, BoxError)> {
+        run_chain(envelope, meta, &self.routes.always).await?;
 
         match matched {
-            Match::Matched => run_chain(envelope, meta, Tier::Route, routed).await,
+            Match::Matched => run_chain(envelope, meta, routed).await,
             Match::UnmatchedAction | Match::UnmatchedKind => {
-                run_chain(envelope, meta, Tier::Fallback, &self.routes.fallback).await
+                run_chain(envelope, meta, &self.routes.fallback).await
             }
         }
     }
 }
 
-/// A chain's first error, with the tier and the route it came from: what
-/// `dispatch` wraps into a [`DispatchError`] once, on the way out, so the
-/// clones for the error happen only on that path and the chains pass a small
-/// value up.
-struct Failed<'a> {
-    tier: Tier,
-    route: &'a Route,
-    source: BoxError,
-}
-
-/// Runs one chain in order, stopping at the first error, returned with the
-/// tier and the failing route.
+/// Runs one chain in order, stopping at the first error, returned beside
+/// the route that failed: `dispatch` wraps the two into a [`DispatchError`]
+/// once, on the way out, so the clones for the error happen only on that
+/// path.
 async fn run_chain<'a>(
     envelope: &Envelope,
     meta: &EventMeta,
-    tier: Tier,
     chain: impl IntoIterator<Item = &'a Route>,
-) -> Result<(), Failed<'a>> {
+) -> Result<(), (&'a Route, BoxError)> {
     for route in chain {
-        let failed = |source| Failed {
-            tier,
-            route,
-            source,
-        };
         // Two failure points, one shape: a decode failure before the future
         // exists, the handler's after it ran.
-        let future = route.handler.call(envelope, meta).map_err(failed)?;
-        future.await.map_err(failed)?;
+        let future = route
+            .handler
+            .call(envelope, meta)
+            .map_err(|source| (route, source))?;
+        future.await.map_err(|source| (route, source))?;
     }
     Ok(())
 }
@@ -683,6 +669,13 @@ impl Outcome {
 /// The three cases are exhaustive by construction of the route table, which
 /// is keyed by kind and then by action, so a policy matches on them without
 /// a wildcard arm.
+///
+/// A delivery whose [`EventMeta`] did not decode has no action to route by,
+/// so it is decided by the kind alone: `UnmatchedKind` when no route names
+/// the kind, `UnmatchedAction` otherwise. It needs no case of its own, since
+/// such a delivery always fails, and its [`Outcome::result`] is the error: a
+/// policy that reads `result` before it acts on an unmatched delivery, as
+/// `?` does, never dead-letters it as unmatched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Match {
     /// At least one routed handler is registered for the delivery's kind, or
@@ -732,7 +725,8 @@ impl fmt::Display for Match {
 ///
 /// The one failure no handler owns is a delivery whose [`EventMeta`] did not
 /// decode: the dispatcher decodes it before the first tier, so none has run.
-/// Then `handler` and `registration_site` are `None`, the action and
+/// Then [`handler`](Self::handler) and
+/// [`registration_site`](Self::registration_site) are `None`, the action and
 /// installation ID are `None` for want of a meta, the source is the
 /// `DecodeError`, and `Display` says the delivery failed before any handler
 /// ran.
@@ -817,17 +811,11 @@ impl fmt::Display for Match {
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct DispatchError {
-    /// The tier the failing handler ran in; `None` when the meta did not
-    /// decode and no handler ran.
-    tier: Option<Tier>,
-    /// The failing handler's name: [`type_name`] of the handler the
-    /// registration method received, as the docs on this type describe.
-    /// `None` when the delivery's meta did not decode, so no handler ran.
-    pub handler: Option<&'static str>,
-    /// Where the failing handler was registered: the call to the registration
-    /// method in the consumer's source. `None` when the delivery's meta did
-    /// not decode, so no handler ran.
-    pub registration_site: Option<&'static Location<'static>>,
+    /// The failing handler's registration: its tier, name and registration
+    /// site, read through [`handler`](Self::handler) and
+    /// [`registration_site`](Self::registration_site). `None` when the
+    /// delivery's meta did not decode, so no handler ran.
+    registration: Option<Arc<Registration>>,
     /// The `X-GitHub-Delivery` value of the delivery that failed.
     pub delivery_id: String,
     /// The kind of the delivery that failed.
@@ -853,15 +841,42 @@ impl DispatchError {
             delivery_id, kind, ..
         } = meta.clone();
         Self {
-            tier: None,
-            handler: None,
-            registration_site: None,
+            registration: None,
             delivery_id,
             kind,
             action: None,
             installation_id: None,
             source: error.into(),
         }
+    }
+
+    /// The failing handler's name: [`type_name`] of the handler the
+    /// registration method received, as the docs on this type describe.
+    /// `None` when the delivery's meta did not decode, so no handler ran.
+    #[must_use]
+    pub fn handler(&self) -> Option<&'static str> {
+        self.registration
+            .as_ref()
+            .map(|registration| registration.handler)
+    }
+
+    /// Where the failing handler was registered: the call to the registration
+    /// method in the consumer's source. `None` when the delivery's meta did
+    /// not decode, so no handler ran.
+    #[must_use]
+    pub fn registration_site(&self) -> Option<&'static Location<'static>> {
+        self.registration
+            .as_ref()
+            .map(|registration| registration.site)
+    }
+
+    /// The tier the failing handler ran in; `None` when the meta did not
+    /// decode and no handler ran.
+    #[cfg(test)]
+    fn tier(&self) -> Option<Tier> {
+        self.registration
+            .as_ref()
+            .map(|registration| registration.tier)
     }
 
     /// Drops the wrapping and returns the application error.
@@ -884,12 +899,13 @@ impl fmt::Display for DispatchError {
         if let Some(action) = &self.action {
             write!(formatter, ".{action}")?;
         }
-        match (self.tier, self.handler, self.registration_site) {
-            (Some(tier), Some(handler), Some(site)) => write!(
+        match &self.registration {
+            Some(registration) => write!(
                 formatter,
-                ") failed in the {tier} tier at the handler `{handler}` registered at {site}"
+                ") failed in the {} tier at the handler `{}` registered at {}",
+                registration.tier, registration.handler, registration.site
             ),
-            _ => formatter.write_str(") failed before any handler ran: its meta did not decode"),
+            None => formatter.write_str(") failed before any handler ran: its meta did not decode"),
         }
     }
 }
@@ -1014,7 +1030,9 @@ impl DispatcherBuilder {
         H: Handler<I> + MaybeSend + MaybeSync + 'static,
         H::Error: Into<BoxError>,
     {
-        self.routes.always.push(Route::routed::<I, H>(handler));
+        self.routes
+            .always
+            .push(Route::routed::<I, H>(Tier::Always, handler));
         self
     }
 
@@ -1333,7 +1351,7 @@ impl DispatcherBuilder {
         H::Error: Into<BoxError>,
         M: IntoMatcher<I>,
     {
-        let route = Route::routed(handler);
+        let route = Route::routed(Tier::Route, handler);
         self.insert_each(matcher.into_matcher().into_slots(), &route);
         self
     }
@@ -1408,7 +1426,7 @@ impl DispatcherBuilder {
     {
         self.routes
             .fallback
-            .push(Route::routed::<Envelope, H>(handler));
+            .push(Route::routed::<Envelope, H>(Tier::Fallback, handler));
         self
     }
 
@@ -1452,12 +1470,25 @@ impl DispatcherBuilder {
 /// recorded without the other.
 struct Route {
     handler: Arc<dyn ErasedHandler>,
+    /// Which tier, which handler and where, shared with every clone of the
+    /// route and every [`DispatchError`] it fails a delivery with.
+    registration: Arc<Registration>,
+}
+
+/// One registration: the tier it put its handler in, the handler's name and
+/// the call that registered it. Built once per registration method call and
+/// shared behind an `Arc`, so a [`DispatchError`] carries all three in one
+/// pointer and a failure costs a reference count, not a copy.
+#[derive(Debug)]
+struct Registration {
+    /// The tier the registration method put the handler in.
+    tier: Tier,
     /// [`type_name`] of the handler before erasure: a static string, on
     /// `wasm32` as anywhere.
-    handler_name: &'static str,
+    handler: &'static str,
     /// The call to the registration method, captured through
     /// `#[track_caller]`: a static reference, on `wasm32` as anywhere.
-    registration_site: &'static Location<'static>,
+    site: &'static Location<'static>,
 }
 
 impl Route {
@@ -1470,13 +1501,14 @@ impl Route {
     /// on the registration method calling this makes the location the
     /// consumer's call to that method, not any frame of this chain.
     #[track_caller]
-    fn routed<I, H>(handler: H) -> Self
+    fn routed<I, H>(tier: Tier, handler: H) -> Self
     where
         I: FromEnvelope + 'static,
         H: Handler<I> + MaybeSend + MaybeSync + 'static,
         H::Error: Into<BoxError>,
     {
         Self::registered(
+            tier,
             Arc::new(Routed {
                 handler,
                 input: PhantomData,
@@ -1489,21 +1521,22 @@ impl Route {
     /// `#[track_caller]` resolves to: the consumer's call to the registration
     /// method, through the constructor above and that method.
     #[track_caller]
-    fn registered(handler: Arc<dyn ErasedHandler>, handler_name: &'static str) -> Self {
+    fn registered(tier: Tier, handler: Arc<dyn ErasedHandler>, handler_name: &'static str) -> Self {
         Self {
             handler,
-            handler_name,
-            registration_site: Location::caller(),
+            registration: Arc::new(Registration {
+                tier,
+                handler: handler_name,
+                site: Location::caller(),
+            }),
         }
     }
 
-    /// Wraps this route's failure with the tier it ran in, the delivery, and
-    /// the handler name and registration site the route carries.
-    fn failed(&self, tier: Tier, meta: &EventMeta, source: BoxError) -> DispatchError {
+    /// Wraps this route's failure with the delivery and the registration the
+    /// route carries: its tier, handler name and registration site.
+    fn failed(&self, meta: &EventMeta, source: BoxError) -> DispatchError {
         DispatchError {
-            tier: Some(tier),
-            handler: Some(self.handler_name),
-            registration_site: Some(self.registration_site),
+            registration: Some(Arc::clone(&self.registration)),
             delivery_id: meta.delivery_id.clone(),
             kind: meta.kind.clone(),
             action: meta.action.clone(),
@@ -1517,8 +1550,7 @@ impl Clone for Route {
     fn clone(&self) -> Self {
         Self {
             handler: Arc::clone(&self.handler),
-            handler_name: self.handler_name,
-            registration_site: self.registration_site,
+            registration: Arc::clone(&self.registration),
         }
     }
 }
@@ -1531,8 +1563,8 @@ impl fmt::Debug for Route {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_tuple("Route")
-            .field(&format_args!("{}", self.handler_name))
-            .field(&format_args!("{}", self.registration_site))
+            .field(&format_args!("{}", self.registration.handler))
+            .field(&format_args!("{}", self.registration.site))
             .finish_non_exhaustive()
     }
 }

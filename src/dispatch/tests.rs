@@ -714,6 +714,18 @@ mod errors {
         test_support::{AppError, envelope, installation_created, ping, pull_request_opened},
     };
 
+    #[test]
+    fn a_dispatch_error_fits_the_large_error_threshold() {
+        // Clippy's `result_large_err` warns, by default, on a `Result` whose
+        // error is over 128 bytes: at that size every consumer returning or
+        // wrapping this error would be told to box it.
+        assert!(
+            std::mem::size_of::<crate::DispatchError>() <= 128,
+            "{} bytes",
+            std::mem::size_of::<crate::DispatchError>()
+        );
+    }
+
     #[tokio::test]
     async fn a_failure_names_the_tier_the_delivery_and_the_registration_site() {
         // The location is that of the registration method's name, so the
@@ -733,12 +745,12 @@ mod errors {
             .result
             .unwrap_err();
 
-        assert_eq!(error.tier, Some(Tier::Route));
+        assert_eq!(error.tier(), Some(Tier::Route));
         assert_eq!(error.delivery_id, "delivery");
         assert_eq!(error.kind, EventKind::PullRequest);
         assert_eq!(error.action, Some(Action::Opened));
-        assert_eq!(error.registration_site.unwrap().file(), file!());
-        assert_eq!(error.registration_site.unwrap().line(), registration_site);
+        assert_eq!(error.registration_site().unwrap().file(), file!());
+        assert_eq!(error.registration_site().unwrap().line(), registration_site);
         assert_eq!(
             AppError::from_boxed(error.source),
             AppError::Handler("routed")
@@ -821,8 +833,8 @@ mod errors {
                 .await
                 .result
                 .unwrap_err();
-            assert_eq!(error.tier, Some(tier), "{value}");
-            assert_eq!(error.registration_site.unwrap().line(), line, "{value}");
+            assert_eq!(error.tier(), Some(tier), "{value}");
+            assert_eq!(error.registration_site().unwrap().line(), line, "{value}");
             assert_eq!(AppError::from_boxed(error.source), AppError::Handler(value));
         }
     }
@@ -836,7 +848,7 @@ mod errors {
 
         let error = dispatcher.dispatch(ping()).await.result.unwrap_err();
 
-        assert_eq!(error.tier, Some(Tier::Fallback));
+        assert_eq!(error.tier(), Some(Tier::Fallback));
         assert_eq!(error.kind, EventKind::Ping);
         assert_eq!(error.action, None);
     }
@@ -877,11 +889,11 @@ mod errors {
             .await
             .result
             .unwrap_err();
-        assert_eq!(error.handler.unwrap(), type_name_of_val(&revoke));
+        assert_eq!(error.handler().unwrap(), type_name_of_val(&revoke));
         assert!(
-            error.handler.unwrap().ends_with("::revoke"),
+            error.handler().unwrap().ends_with("::revoke"),
             "{}",
-            error.handler.unwrap()
+            error.handler().unwrap()
         );
         assert_eq!(
             AppError::from_boxed(error.source),
@@ -902,11 +914,11 @@ mod errors {
             .await
             .result
             .unwrap_err();
-        assert_eq!(error.handler.unwrap(), type_name::<Revoker>());
+        assert_eq!(error.handler().unwrap(), type_name::<Revoker>());
         assert!(
-            error.handler.unwrap().ends_with("::Revoker"),
+            error.handler().unwrap().ends_with("::Revoker"),
             "{}",
-            error.handler.unwrap()
+            error.handler().unwrap()
         );
         assert_eq!(
             AppError::from_boxed(error.source),
@@ -935,8 +947,8 @@ mod errors {
             .result
             .unwrap_err();
 
-        assert_eq!(error.tier, Some(Tier::Route));
-        assert_eq!(error.registration_site.unwrap().line(), registration_site);
+        assert_eq!(error.tier(), Some(Tier::Route));
+        assert_eq!(error.registration_site().unwrap().line(), registration_site);
         assert_eq!(AppError::from_boxed(error.source), AppError::Decode);
         assert_eq!(calls.lock().await.as_slice(), ["always"]);
     }
@@ -972,8 +984,8 @@ mod errors {
             .result
             .unwrap_err();
 
-        assert_eq!(error.tier, Some(Tier::Route));
-        assert_eq!(error.registration_site.unwrap().line(), registration_site);
+        assert_eq!(error.tier(), Some(Tier::Route));
+        assert_eq!(error.registration_site().unwrap().line(), registration_site);
         assert_eq!(AppError::from_boxed(error.source), AppError::Decode);
         assert_eq!(calls.lock().await.as_slice(), ["always", "payload-before"]);
     }
@@ -1030,8 +1042,8 @@ mod errors {
             .await
             .result
             .unwrap_err();
-        assert_eq!(error.tier, Some(Tier::Route));
-        assert_eq!(error.registration_site.unwrap().line(), registration_site);
+        assert_eq!(error.tier(), Some(Tier::Route));
+        assert_eq!(error.registration_site().unwrap().line(), registration_site);
         let reason = error.source().expect("the decode error is the source");
         assert_eq!(reason.to_string(), "payload has no installation");
         assert!(
@@ -1073,14 +1085,14 @@ mod errors {
 
         // The message names where, not why: the source chain says why, as
         // it does for every other error in the crate.
-        assert_eq!(error.registration_site.unwrap().line(), registration_site);
+        assert_eq!(error.registration_site().unwrap().line(), registration_site);
         assert_eq!(
             error.to_string(),
             format!(
                 "delivery delivery (pull_request.opened) failed in the route tier at the handler \
                  `{}` registered at {}",
                 type_name_of_val(&database_down),
-                error.registration_site.unwrap()
+                error.registration_site().unwrap()
             )
         );
         let source = error.source().expect("the application error is the source");
@@ -1182,12 +1194,12 @@ mod errors {
         let outcome = outer.dispatch(pull_request_opened()).await;
         assert_eq!(outcome.matched, Match::Matched);
         let error = outcome.result.unwrap_err();
-        assert_eq!(error.tier, Some(Tier::Route));
+        assert_eq!(error.tier(), Some(Tier::Route));
         let inner_error = error
             .source()
             .and_then(|source| source.downcast_ref::<DispatchError>())
             .expect("the inner dispatch error is the source");
-        assert_eq!(inner_error.tier, Some(Tier::Route));
+        assert_eq!(inner_error.tier(), Some(Tier::Route));
         assert_eq!(
             inner_error
                 .source()
@@ -1407,9 +1419,9 @@ mod meta {
             assert_eq!(error.kind, kind);
             assert_eq!(error.action, None, "{text}");
             assert_eq!(error.installation_id, None, "{text}");
-            assert_eq!(error.handler, None, "{text}");
-            assert_eq!(error.registration_site, None, "{text}");
-            assert_eq!(error.tier, None, "{text}");
+            assert_eq!(error.handler(), None, "{text}");
+            assert_eq!(error.registration_site(), None, "{text}");
+            assert_eq!(error.tier(), None, "{text}");
             assert!(
                 matches!(
                     error.source.downcast_ref::<DecodeError>(),
@@ -1682,7 +1694,7 @@ mod inputs {
             .await
             .result
             .unwrap_err();
-        assert_eq!(error.tier, Some(Tier::Route));
+        assert_eq!(error.tier(), Some(Tier::Route));
         assert_eq!(AppError::from_boxed(error.source), AppError::Decode);
     }
 
@@ -2051,8 +2063,8 @@ mod matchers {
             .result
             .unwrap_err();
 
-        assert_eq!(error.tier, Some(Tier::Route));
-        assert_eq!(error.registration_site.unwrap().line(), registration_site);
+        assert_eq!(error.tier(), Some(Tier::Route));
+        assert_eq!(error.registration_site().unwrap().line(), registration_site);
         assert!(
             matches!(
                 error.source.downcast_ref::<DecodeError>(),
@@ -2409,8 +2421,8 @@ mod octocrab {
             .result
             .unwrap_err();
 
-        assert_eq!(error.tier, Some(Tier::Route));
-        assert_eq!(error.registration_site.unwrap().line(), registration_site);
+        assert_eq!(error.tier(), Some(Tier::Route));
+        assert_eq!(error.registration_site().unwrap().line(), registration_site);
         assert_eq!(AppError::from_boxed(error.source), AppError::Decode);
         assert_eq!(calls.lock().await.as_slice(), ["view"]);
     }

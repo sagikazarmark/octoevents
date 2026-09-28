@@ -66,8 +66,8 @@
 //!   read from the headers beside the exact payload bytes. Building one reads
 //!   nothing of the payload and cannot fail. It is data and makes no claim
 //!   that it was authenticated: [`Envelope::new`] builds one from a
-//!   `WebhookMeta` and the bytes, as a struct literal does, and an envelope a
-//!   trusted transport forwarded is read back through serde.
+//!   `WebhookMeta` and the bytes, and an envelope a trusted transport
+//!   forwarded is read back through serde.
 //! - [`authenticate`]: the one path from an untrusted request to an envelope
 //!   that can be trusted. It verifies the signature over the body, then
 //!   builds the envelope; the receiver is built on it, and a received

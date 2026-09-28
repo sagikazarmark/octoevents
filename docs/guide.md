@@ -522,7 +522,7 @@ A payload that does not fit a routed handler's view is boxed the same way, as th
 
 A failure is a `DispatchError`: the boxed error wrapped with the tier, the delivery's ID, kind, action and installation
 ID, the failing handler's name, and the source location of the registration that put it there.
-When the delivery's meta did not decode, no handler ran: the handler and registration site are `None`,
+When the delivery's meta did not decode, no handler ran: `handler()` and `registration_site()` are `None`,
 and the source is the `DecodeError`.
 Its text says *where*; its source chain says *why*:
 

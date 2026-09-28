@@ -15,9 +15,11 @@ the `EventMeta` by the dispatcher.
 Data, with no verification claim: an `Envelope` value proves nothing about how it was built.
 A received one is trustworthy because it came from _authenticate_
 (or the receiver, which is built on it), not because of its type.
-Otherwise one comes from `Envelope::new` or a struct literal, which pair a `WebhookMeta` with bytes
+Otherwise one comes from `Envelope::new`, the data constructor that pairs a `WebhookMeta` with bytes
 (a test's path, or a transport that authenticated the request by its own means; unverified),
 or from serde over the _wire format_, which reads back an envelope a trusted transport forwarded, nothing verified.
+Never from a struct literal outside the crate: the struct is `#[non_exhaustive]`,
+so a field can be added (the signature it arrived with, say) without a breaking change.
 Verification authenticates the payload bytes, not the delivery ID, event name, or target headers.
 Authorization uses authenticated payload data or independently trusted configuration;
 delivery-ID deduplication handles GitHub redelivery, not adversarial replay under a different ID.
@@ -167,7 +169,7 @@ _Avoid_: Call site (ambiguous with the handler's own calls), origin, registered 
 recorded beside the registration site: a function path for an `async fn` item or a struct,
 a `{{closure}}` path for a closure.
 For an operator to read, not for code to match on; `type_name` promises no stable string.
-The `handler` field of a dispatch error and of the dispatch span.
+`DispatchError::handler`, and the `handler` field of the dispatch span.
 _Avoid_: Handler ID, handler label, type name alone (says the mechanism, not what it names)
 
 **Dispatch error**: What a failed dispatch reports: the application error, boxed as a `BoxError`, wrapped with the tier,

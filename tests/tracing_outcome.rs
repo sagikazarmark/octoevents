@@ -234,12 +234,15 @@ fn a_failure_records_the_tier_the_handler_and_the_registration_site_of_the_faili
     let error = outcome.result.unwrap_err();
     assert_eq!(
         fields.str("handler"),
-        error.handler,
+        error.handler(),
         "the span and the error name the same handler"
     );
     assert_eq!(
         fields.str("registration_site"),
-        error.registration_site.map(ToString::to_string).as_deref(),
+        error
+            .registration_site()
+            .map(ToString::to_string)
+            .as_deref(),
         "the span and the error name the same registration site"
     );
 
@@ -296,7 +299,7 @@ fn a_handler_name_with_spaces_in_it_is_recorded_whole() {
     assert_eq!(fields.str("handler"), Some(name));
     assert_eq!(
         fields.str("handler"),
-        outcome.result.unwrap_err().handler,
+        outcome.result.unwrap_err().handler(),
         "the span and the error name the same handler"
     );
 }

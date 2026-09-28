@@ -28,22 +28,34 @@ use crate::{BoxError, EventKind, SignatureError, TargetType, WebhookMeta};
 /// makes a received one trustworthy is the path it came from:
 /// [`authenticate`](crate::authenticate), which verifies an untrusted request
 /// before it builds the envelope, and the receiver, which is built on it.
-/// Otherwise an envelope comes from [`Envelope::new`] or a struct literal,
-/// which pair a [`WebhookMeta`] with bytes and authenticate nothing, or from
-/// the serde `Deserialize` impl for one a trusted internal transport
-/// forwarded (see the wire format below). The struct is plain data, so the
-/// three build the same value:
+/// Outside the crate an envelope comes from there, from [`Envelope::new`],
+/// which pairs a [`WebhookMeta`] with bytes and authenticates nothing, or
+/// from the serde `Deserialize` impl for one a trusted internal transport
+/// forwarded (see the wire format below). The fields are public, so reading
+/// them and destructuring with `..` work:
 ///
 /// ```
+/// use octoevents::{Envelope, EventKind, WebhookMeta};
+///
+/// let envelope = Envelope::new(WebhookMeta::new("delivery-1", EventKind::Issues), br#"{"action":"opened"}"#);
+///
+/// let Envelope { meta, raw_payload, .. } = &envelope;
+/// assert_eq!(meta.kind, EventKind::Issues);
+/// assert_eq!(raw_payload.len(), 19);
+/// ```
+///
+/// The struct is `#[non_exhaustive]`, so it is built with `new` and not as a
+/// literal outside the crate: a field can be added to what an envelope
+/// carries (the signature it arrived with, say, to verify a forwarded
+/// envelope again) without that becoming a breaking change.
+///
+/// ```compile_fail,E0639
 /// use octoevents::{Bytes, Envelope, EventKind, WebhookMeta};
 ///
-/// let meta = WebhookMeta::new("delivery-1", EventKind::Issues);
-/// let literal = Envelope {
-///     meta: meta.clone(),
+/// let envelope = Envelope {
+///     meta: WebhookMeta::new("delivery-1", EventKind::Issues),
 ///     raw_payload: Bytes::from_static(br#"{"action":"opened"}"#),
 /// };
-///
-/// assert_eq!(literal, Envelope::new(meta, br#"{"action":"opened"}"#));
 /// ```
 ///
 /// # Wire format
@@ -114,6 +126,7 @@ use crate::{BoxError, EventKind, SignatureError, TargetType, WebhookMeta};
 /// the wire format is for: a hop between services of one deployment, not an
 /// input from outside it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[non_exhaustive]
 pub struct Envelope {
     /// The meta read from the request's headers.
     #[serde(flatten)]
@@ -187,7 +200,7 @@ impl Envelope {
     /// Builds an envelope from the header meta and the payload bytes,
     /// verifying nothing and reading nothing.
     ///
-    /// A data constructor, the struct literal with the bytes copied: the
+    /// A data constructor, the fields as given with the bytes copied: the
     /// envelope it returns makes no claim that the bytes were authenticated,
     /// and nothing of the payload is read, so any bytes build one, JSON or
     /// not. The path that authenticates a request and builds its envelope is
