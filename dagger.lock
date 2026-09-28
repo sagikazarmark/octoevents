@@ -6,6 +6,7 @@
 ["","git-latest",["github.com/sagikazarmark/daggerverse-beta",["tagPrefix","lychee"]],"refs/heads/main"]
 ["","git-latest",["github.com/sagikazarmark/daggerverse-beta",["tagPrefix","rust"]],"refs/heads/main"]
 ["","git-latest",["github.com/sagikazarmark/daggerverse-beta",["tagPrefix","typos"]],"refs/heads/main"]
+["","git-sha",["github.com/rustsec/advisory-db","HEAD"],"ef03605143a913024f864d2edf476adad5720c93"]
 ["","git-sha",["github.com/sagikazarmark/daggerverse-beta","refs/heads/main"],"34caea9a8c99fa2a4f5598a81204d7948af3abf0"]
 ["","oci-sha",["docker.io/library/alpine:3.23.4"],"sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11"]
 ["","oci-sha",["docker.io/library/rust:1.98-slim-trixie"],"sha256:f47a8de237dcbb0b0ce1099901e60a89728e3d51f24e664b40e947171538ade7"]
