@@ -16,11 +16,11 @@ fmt:
 
 # Check the workspace.
 check:
-    cargo hack check --package octoevents --feature-powerset --all-targets --locked
+    cargo hack check --workspace --feature-powerset --all-targets --locked
 
 # Run clippy.
 clippy:
-    cargo hack clippy --package octoevents --each-feature --all-targets --locked -- --deny warnings
+    cargo hack clippy --workspace --each-feature --all-targets --locked -- --deny warnings
 
 # Run tests.
 test:
@@ -30,3 +30,4 @@ test:
 [env("RUSTDOCFLAGS", "--deny warnings")]
 doc:
     cargo hack doc --package octoevents --each-feature --features 'octocrab?/jwt-rust-crypto' --no-deps --locked
+    cargo hack doc --package octoevents-derive --each-feature --no-deps --locked
