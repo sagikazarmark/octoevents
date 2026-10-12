@@ -1,3 +1,0 @@
-# Check Markdown documentation and its anchor links through `dagger check`.
-extensions = ["md"]
-include_fragments = "full"

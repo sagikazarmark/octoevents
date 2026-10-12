@@ -1,6 +1,6 @@
 # octoevents
 
-[![ci](https://img.shields.io/github/actions/workflow/status/sagikazarmark/octoevents/dagger.yaml?style=flat-square&label=ci)](https://github.com/sagikazarmark/octoevents/actions/workflows/dagger.yaml)
+[![ci](https://img.shields.io/github/actions/workflow/status/sagikazarmark/octoevents/ci.yaml?style=flat-square&label=ci)](https://github.com/sagikazarmark/octoevents/actions/workflows/ci.yaml)
 [![openssf scorecard](https://api.securityscorecards.dev/projects/github.com/sagikazarmark/octoevents/badge?style=flat-square)](https://securityscorecards.dev/viewer/?uri=github.com/sagikazarmark/octoevents)
 [![crates.io](https://img.shields.io/crates/v/octoevents?style=flat-square)](https://crates.io/crates/octoevents)
 [![docs.rs](https://img.shields.io/docsrs/octoevents?style=flat-square)](https://docs.rs/octoevents/latest/octoevents/)

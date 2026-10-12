@@ -1,11 +1,6 @@
 { pkgs, ... }:
 
 {
-  dagger = {
-    enable = true;
-    version = "v1.0.0-beta.14";
-  };
-
   packages = with pkgs; [
     just
 
@@ -16,10 +11,6 @@
     cargo-nextest
     cargo-release
     cargo-watch
-
-    rumdl
-    typos
-    lychee
   ];
 
   languages = {

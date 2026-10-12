@@ -1,3 +1,0 @@
-[default]
-# Unicode test payloads spell café with Rust's escaped é.
-extend-ignore-re = ['caf\\u\{e9\}']
