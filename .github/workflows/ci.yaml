@@ -36,9 +36,8 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cmd-format: devenv shell -- {0}
 
-      # Library-only builds pick an octocrab backend; the dev-dependencies pick one for the rest.
       - name: Build
-        run: cargo build --workspace --all-features --features octocrab/jwt-rust-crypto --locked
+        run: just build
   fmt:
     name: Format
     runs-on: ubuntu-latest
@@ -53,7 +52,7 @@ jobs:
         uses: sagikazarmark/setup-devenv@f2d55def32daee3f89bb3dfa0499b439a988392a # v0.2.0
 
       - name: Check formatting
-        run: cargo fmt --all --check
+        run: just fmt
 
   check:
     name: Check
@@ -75,7 +74,7 @@ jobs:
           cmd-format: devenv shell -- {0}
 
       - name: Check
-        run: cargo check --workspace --all-targets --all-features --locked
+        run: just check
 
   test:
     name: Test
@@ -97,7 +96,7 @@ jobs:
           cmd-format: devenv shell -- {0}
 
       - name: Test
-        run: cargo test --workspace --all-features --locked
+        run: just test
 
   clippy:
     name: Clippy
@@ -119,14 +118,11 @@ jobs:
           cmd-format: devenv shell -- {0}
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features --locked -- --deny warnings
+        run: just clippy
 
   doc:
     name: Doc
     runs-on: ubuntu-latest
-
-    env:
-      RUSTDOCFLAGS: --deny warnings
 
     steps:
       - name: Checkout repository
@@ -144,4 +140,4 @@ jobs:
           cmd-format: devenv shell -- {0}
 
       - name: Doc
-        run: cargo doc --workspace --no-deps --all-features --features octocrab/jwt-rust-crypto --locked
+        run: just doc
